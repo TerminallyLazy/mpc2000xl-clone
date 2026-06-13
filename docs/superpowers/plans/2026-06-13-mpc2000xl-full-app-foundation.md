@@ -1368,11 +1368,15 @@ FORBIDDEN_SUFFIXES = {
     ".7z",
     ".aif",
     ".aiff",
+    ".avi",
     ".bin",
     ".bmp",
+    ".bz2",
     ".dmg",
     ".flac",
     ".gif",
+    ".gz",
+    ".heic",
     ".img",
     ".iso",
     ".jpeg",
@@ -1380,7 +1384,10 @@ FORBIDDEN_SUFFIXES = {
     ".m4a",
     ".mid",
     ".midi",
+    ".mkv",
+    ".mov",
     ".mp3",
+    ".mp4",
     ".ogg",
     ".pdf",
     ".png",
@@ -1390,31 +1397,35 @@ FORBIDDEN_SUFFIXES = {
     ".sit",
     ".snd",
     ".syx",
+    ".tar",
+    ".tgz",
     ".tif",
     ".tiff",
     ".wav",
     ".webp",
+    ".xz",
     ".zip",
 }
 ALLOWLIST = {
-    # Add generated, rights-safe assets here with a short justification in the commit.
+    # "path/to/generated-fixture.wav": "Synthetic test fixture generated from repo-owned code.",
 }
 
 
 def tracked_files() -> list[Path]:
     result = subprocess.run(
-        ["git", "ls-files"],
+        ["git", "ls-files", "-z"],
         cwd=ROOT,
         check=True,
-        text=True,
         stdout=subprocess.PIPE,
     )
-    return [ROOT / line for line in result.stdout.splitlines() if line]
+    return [ROOT / path.decode("utf-8") for path in result.stdout.split(b"\0") if path]
 
 
 def is_forbidden(path: Path) -> bool:
     relative = path.relative_to(ROOT).as_posix()
-    return relative not in ALLOWLIST and path.suffix.lower() in FORBIDDEN_SUFFIXES
+    return relative not in ALLOWLIST and any(
+        suffix.lower() in FORBIDDEN_SUFFIXES for suffix in path.suffixes
+    )
 
 
 def main() -> int:
@@ -1424,7 +1435,7 @@ def main() -> int:
         print("Refusing forbidden tracked reference/media assets:")
         for violation in violations:
             print(f" - {violation}")
-        print("If a generated rights-safe fixture is intentional, add its repo path to ALLOWLIST with a commit note.")
+        print("If a generated rights-safe fixture is intentional, add its repo path to ALLOWLIST with a reason.")
         return 1
 
     print("Asset guard passed: no forbidden tracked reference/media assets found.")
