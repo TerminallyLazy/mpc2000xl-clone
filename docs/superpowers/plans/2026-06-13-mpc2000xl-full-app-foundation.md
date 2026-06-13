@@ -1217,41 +1217,51 @@ git commit -m "feat: add firmware image inspector"
 ### Task 6: Evidence Seeds And Asset Guard
 
 **Files:**
-- Create: `docs/evidence/source-map.md`
-- Create: `docs/evidence/behavior-matrix.json`
-- Create: `tools/check_assets.py`
+- Update: `docs/evidence/source-map.md`
+- Update: `docs/evidence/behavior-matrix.json`
+- Update: `tools/check_assets.py`
 
-- [ ] **Step 1: Create source-map seed**
+- [ ] **Step 1: Create source-map seed with source IDs**
 
-Create `docs/evidence/source-map.md`:
+Create `docs/evidence/source-map.md` with stable source IDs and local path hints:
 
 ```markdown
 # MPC2000XL Source Map
 
-This file tracks evidence sources without copying proprietary source pages, scans, firmware, or media into the repository.
+This file tracks evidence sources without copying proprietary source pages, scans, firmware, or media into the repository. Source IDs are stable references; local path hints are workstation pointers only.
 
-## Local References
+## Sources
 
-- Owner manual: `/Users/lazy/Downloads/akai_mpc2000xl_manual.pdf`
-- Analog schematic: `/Users/lazy/Downloads/MPC2000XL_ServManual/MPC2k analog.pdf`
-- Main schematic 1: `/Users/lazy/Downloads/MPC2000XL_ServManual/MPC2k main 1_2.pdf`
-- Main schematic 2: `/Users/lazy/Downloads/MPC2000XL_ServManual/MPC2k main 2_2.pdf`
-- Operation schematic: `/Users/lazy/Downloads/MPC2000XL_ServManual/MPC2k operation.pdf`
-- Combined schematic: `/Users/lazy/Downloads/Akai-MPC-2000-XL-Schematic.pdf`
-- Schematic photo 1: `/Users/lazy/Downloads/MPC2000XL_ServManual/P7200082.jpg`
-- Schematic photo 2: `/Users/lazy/Downloads/MPC2000XL_ServManual/P7200083.jpg`
+| ID | Type | Description | Local path hint |
+| --- | --- | --- | --- |
+| owner-manual | owner_manual | MPC2000XL owner manual | `/Users/lazy/Downloads/akai_mpc2000xl_manual.pdf` |
+| analog-schematic | service_schematic | MPC2000XL analog schematic | `/Users/lazy/Downloads/MPC2000XL_ServManual/MPC2k analog.pdf` |
+| main-schematic-1 | service_schematic | MPC2000XL main schematic, part 1 | `/Users/lazy/Downloads/MPC2000XL_ServManual/MPC2k main 1_2.pdf` |
+| main-schematic-2 | service_schematic | MPC2000XL main schematic, part 2 | `/Users/lazy/Downloads/MPC2000XL_ServManual/MPC2k main 2_2.pdf` |
+| operation-schematic | service_schematic | MPC2000XL operation schematic | `/Users/lazy/Downloads/MPC2000XL_ServManual/MPC2k operation.pdf` |
+| combined-schematic | service_schematic | MPC2000XL combined schematic | `/Users/lazy/Downloads/Akai-MPC-2000-XL-Schematic.pdf` |
+| schematic-photo-1 | service_photo | MPC2000XL service manual schematic photo 1 | `/Users/lazy/Downloads/MPC2000XL_ServManual/P7200082.jpg` |
+| schematic-photo-2 | service_photo | MPC2000XL service manual schematic photo 2 | `/Users/lazy/Downloads/MPC2000XL_ServManual/P7200083.jpg` |
+| full-app-product-spec | spec | Full app product design notes | `docs/superpowers/specs/2026-06-13-mpc2000xl-full-app-product-design.md` |
+| conformance-lab-spec | spec | Conformance lab design notes | `docs/superpowers/specs/2026-06-13-mpc2000xl-conformance-lab-design.md` |
+
+## Legal Boundary
+
+Do not copy proprietary manuals, firmware, service scans, hardware photos, or audio/media samples into the repository.
 
 ## Mapping Rules
 
 - Store independently written behavior summaries.
+- Use source IDs in behavior matrices, fixtures, tests, and implementation notes.
 - Store page, section, and file references when known.
 - Keep raw manuals, firmware, service scans, hardware photos, and audio samples outside git.
+- Treat local path hints as optional private lookup aids, not canonical source identity.
 - Mark conflicts between manual, VMPC, firmware, and hardware traces explicitly.
 ```
 
-- [ ] **Step 2: Create behavior matrix seed**
+- [ ] **Step 2: Create structured behavior matrix seed**
 
-Create `docs/evidence/behavior-matrix.json`:
+Create `docs/evidence/behavior-matrix.json` with evidence classifications, input events, channel-scoped outputs, tolerance, fixture references, and conflict notes:
 
 ```json
 {
@@ -1262,79 +1272,162 @@ Create `docs/evidence/behavior-matrix.json`:
       "name": "Core starts on MAIN screen",
       "area": "front_panel",
       "state": "fixture-backed",
-      "source_refs": [
-        "docs/superpowers/specs/2026-06-13-mpc2000xl-full-app-product-design.md#front-panel-runtime",
-        "docs/superpowers/specs/2026-06-13-mpc2000xl-conformance-lab-design.md#behavior-matrix"
+      "evidence": [
+        {
+          "source_id": "full-app-product-spec",
+          "type": "spec",
+          "ref": "docs/superpowers/specs/2026-06-13-mpc2000xl-full-app-product-design.md#front-panel-runtime"
+        },
+        {
+          "source_id": "conformance-lab-spec",
+          "type": "spec",
+          "ref": "docs/superpowers/specs/2026-06-13-mpc2000xl-conformance-lab-design.md#behavior-matrix"
+        }
       ],
-      "expected": "A new machine core starts in main mode with a MAIN LCD frame and transport stopped.",
+      "inputs": [],
+      "expected_outputs": {
+        "state": {
+          "mode": "main",
+          "playing": false,
+          "recording": false,
+          "lcd_title": "MAIN"
+        },
+        "lcd": {
+          "title": "MAIN"
+        },
+        "transport": {
+          "status": "stopped"
+        }
+      },
+      "tolerance": null,
       "fixture_refs": [
         "crates/mpc_core/tests/core_flow.rs"
-      ]
+      ],
+      "conflict_notes": []
     },
     {
       "id": "core.main.program-mode",
       "name": "Program button changes LCD title",
       "area": "front_panel",
       "state": "fixture-backed",
-      "source_refs": [
-        "docs/superpowers/specs/2026-06-13-mpc2000xl-full-app-product-design.md#front-panel-runtime",
-        "docs/superpowers/specs/2026-06-13-mpc2000xl-conformance-lab-design.md#fixture-strategy"
+      "evidence": [
+        {
+          "source_id": "full-app-product-spec",
+          "type": "spec",
+          "ref": "docs/superpowers/specs/2026-06-13-mpc2000xl-full-app-product-design.md#front-panel-runtime"
+        },
+        {
+          "source_id": "conformance-lab-spec",
+          "type": "spec",
+          "ref": "docs/superpowers/specs/2026-06-13-mpc2000xl-conformance-lab-design.md#fixture-strategy"
+        }
       ],
-      "expected": "Pressing the Program mode control changes core mode to program and emits a PROGRAM LCD frame.",
+      "inputs": [
+        {
+          "channel": "front_panel",
+          "event": "press",
+          "control": "program"
+        }
+      ],
+      "expected_outputs": {
+        "state": {
+          "mode": "program",
+          "playing": false,
+          "recording": false,
+          "lcd_title": "PROGRAM"
+        },
+        "lcd": {
+          "title": "PROGRAM"
+        },
+        "events": {
+          "event_count": 1
+        }
+      },
+      "tolerance": null,
       "fixture_refs": [
         "crates/mpc_conformance/tests/fixtures/main_screen.json"
-      ]
+      ],
+      "conflict_notes": []
     }
   ]
 }
 ```
 
-- [ ] **Step 3: Create asset guard**
+- [ ] **Step 3: Create tracked-file asset guard**
 
-Create `tools/check_assets.py`:
+Create `tools/check_assets.py` so it scans tracked files only, expands forbidden reference/media suffix coverage, and includes an explicit allowlist for generated rights-safe fixtures:
 
 ```python
 #!/usr/bin/env python3
 from pathlib import Path
+import subprocess
 import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 FORBIDDEN_SUFFIXES = {
+    ".7z",
     ".aif",
     ".aiff",
     ".bin",
+    ".bmp",
+    ".dmg",
+    ".flac",
+    ".gif",
     ".img",
     ".iso",
     ".jpeg",
     ".jpg",
+    ".m4a",
+    ".mid",
+    ".midi",
+    ".mp3",
+    ".ogg",
     ".pdf",
     ".png",
+    ".rar",
+    ".raw",
     ".rom",
+    ".sit",
     ".snd",
+    ".syx",
+    ".tif",
+    ".tiff",
     ".wav",
+    ".webp",
+    ".zip",
 }
-SKIP_DIRS = {".git", ".superpowers", "target"}
+ALLOWLIST = {
+    # Add generated, rights-safe assets here with a short justification in the commit.
+}
 
 
-def is_skipped(path: Path) -> bool:
-    return any(part in SKIP_DIRS for part in path.relative_to(ROOT).parts)
+def tracked_files() -> list[Path]:
+    result = subprocess.run(
+        ["git", "ls-files"],
+        cwd=ROOT,
+        check=True,
+        text=True,
+        stdout=subprocess.PIPE,
+    )
+    return [ROOT / line for line in result.stdout.splitlines() if line]
+
+
+def is_forbidden(path: Path) -> bool:
+    relative = path.relative_to(ROOT).as_posix()
+    return relative not in ALLOWLIST and path.suffix.lower() in FORBIDDEN_SUFFIXES
 
 
 def main() -> int:
-    violations: list[str] = []
-    for path in ROOT.rglob("*"):
-        if not path.is_file() or is_skipped(path):
-            continue
-        if path.suffix.lower() in FORBIDDEN_SUFFIXES:
-            violations.append(str(path.relative_to(ROOT)))
+    violations = [path.relative_to(ROOT).as_posix() for path in tracked_files() if is_forbidden(path)]
 
     if violations:
-        print("Refusing proprietary or binary reference assets in git:")
+        print("Refusing forbidden tracked reference/media assets:")
         for violation in violations:
             print(f" - {violation}")
+        print("If a generated rights-safe fixture is intentional, add its repo path to ALLOWLIST with a commit note.")
         return 1
 
-    print("Asset guard passed: no forbidden reference assets found.")
+    print("Asset guard passed: no forbidden tracked reference/media assets found.")
     return 0
 
 
@@ -1350,13 +1443,24 @@ Run:
 python3 tools/check_assets.py
 ```
 
-Expected: PASS with `Asset guard passed: no forbidden reference assets found.`
+Expected: PASS with `Asset guard passed: no forbidden tracked reference/media assets found.`
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 5: Validate JSON and commit**
+
+Run:
 
 ```bash
-git add docs/evidence tools/check_assets.py
-git commit -m "chore: add evidence seeds and asset guard"
+python3 -m json.tool docs/evidence/behavior-matrix.json >/tmp/behavior-matrix.pretty
+git status --short
+```
+
+Expected before commit: only Task 6 files modified.
+
+Commit:
+
+```bash
+git add docs/evidence/source-map.md docs/evidence/behavior-matrix.json tools/check_assets.py docs/superpowers/plans/2026-06-13-mpc2000xl-full-app-foundation.md
+git commit -m "fix: tighten tracked asset guard"
 ```
 
 ---

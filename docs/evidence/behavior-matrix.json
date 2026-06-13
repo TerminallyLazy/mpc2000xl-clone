@@ -6,28 +6,82 @@
       "name": "Core starts on MAIN screen",
       "area": "front_panel",
       "state": "fixture-backed",
-      "source_refs": [
-        "docs/superpowers/specs/2026-06-13-mpc2000xl-full-app-product-design.md#front-panel-runtime",
-        "docs/superpowers/specs/2026-06-13-mpc2000xl-conformance-lab-design.md#behavior-matrix"
+      "evidence": [
+        {
+          "source_id": "full-app-product-spec",
+          "type": "spec",
+          "ref": "docs/superpowers/specs/2026-06-13-mpc2000xl-full-app-product-design.md#front-panel-runtime"
+        },
+        {
+          "source_id": "conformance-lab-spec",
+          "type": "spec",
+          "ref": "docs/superpowers/specs/2026-06-13-mpc2000xl-conformance-lab-design.md#behavior-matrix"
+        }
       ],
-      "expected": "A new machine core starts in main mode with a MAIN LCD frame and transport stopped.",
+      "inputs": [],
+      "expected_outputs": {
+        "state": {
+          "mode": "main",
+          "playing": false,
+          "recording": false,
+          "lcd_title": "MAIN"
+        },
+        "lcd": {
+          "title": "MAIN"
+        },
+        "transport": {
+          "status": "stopped"
+        }
+      },
+      "tolerance": null,
       "fixture_refs": [
         "crates/mpc_core/tests/core_flow.rs"
-      ]
+      ],
+      "conflict_notes": []
     },
     {
       "id": "core.main.program-mode",
       "name": "Program button changes LCD title",
       "area": "front_panel",
       "state": "fixture-backed",
-      "source_refs": [
-        "docs/superpowers/specs/2026-06-13-mpc2000xl-full-app-product-design.md#front-panel-runtime",
-        "docs/superpowers/specs/2026-06-13-mpc2000xl-conformance-lab-design.md#fixture-strategy"
+      "evidence": [
+        {
+          "source_id": "full-app-product-spec",
+          "type": "spec",
+          "ref": "docs/superpowers/specs/2026-06-13-mpc2000xl-full-app-product-design.md#front-panel-runtime"
+        },
+        {
+          "source_id": "conformance-lab-spec",
+          "type": "spec",
+          "ref": "docs/superpowers/specs/2026-06-13-mpc2000xl-conformance-lab-design.md#fixture-strategy"
+        }
       ],
-      "expected": "Pressing the Program mode control changes core mode to program and emits a PROGRAM LCD frame.",
+      "inputs": [
+        {
+          "channel": "front_panel",
+          "event": "press",
+          "control": "program"
+        }
+      ],
+      "expected_outputs": {
+        "state": {
+          "mode": "program",
+          "playing": false,
+          "recording": false,
+          "lcd_title": "PROGRAM"
+        },
+        "lcd": {
+          "title": "PROGRAM"
+        },
+        "events": {
+          "event_count": 1
+        }
+      },
+      "tolerance": null,
       "fixture_refs": [
         "crates/mpc_conformance/tests/fixtures/main_screen.json"
-      ]
+      ],
+      "conflict_notes": []
     }
   ]
 }
