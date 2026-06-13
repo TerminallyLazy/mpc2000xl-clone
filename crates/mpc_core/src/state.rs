@@ -50,7 +50,7 @@ impl MpcCore {
     }
 
     pub fn dispatch(&mut self, event: HardwareEvent) -> Vec<MachineOutput> {
-        self.state.event_count += 1;
+        self.state.event_count = self.state.event_count.saturating_add(1);
 
         match event {
             HardwareEvent::Press { control } => self.handle_press(control),
@@ -64,6 +64,10 @@ impl MpcCore {
                 if pad == 0 || pad > 16 {
                     vec![MachineOutput::Ignored {
                         reason: "pad must be in range 1..=16".to_string(),
+                    }]
+                } else if velocity == 0 || velocity > 127 {
+                    vec![MachineOutput::Ignored {
+                        reason: "velocity must be in range 1..=127".to_string(),
                     }]
                 } else {
                     self.state.pad_bank = bank;
@@ -91,19 +95,25 @@ impl MpcCore {
             PanelControl::Play => {
                 self.state.playing = true;
                 self.refresh_lcd();
-                vec![MachineOutput::TransportChanged {
-                    playing: true,
-                    recording: self.state.recording,
-                }]
+                vec![
+                    MachineOutput::TransportChanged {
+                        playing: true,
+                        recording: self.state.recording,
+                    },
+                    MachineOutput::LcdChanged,
+                ]
             }
             PanelControl::Stop => {
                 self.state.playing = false;
                 self.state.recording = false;
                 self.refresh_lcd();
-                vec![MachineOutput::TransportChanged {
-                    playing: false,
-                    recording: false,
-                }]
+                vec![
+                    MachineOutput::TransportChanged {
+                        playing: false,
+                        recording: false,
+                    },
+                    MachineOutput::LcdChanged,
+                ]
             }
             PanelControl::Rec => {
                 self.state.recording = true;
@@ -116,10 +126,13 @@ impl MpcCore {
                 self.state.recording = true;
                 self.state.playing = true;
                 self.refresh_lcd();
-                vec![MachineOutput::TransportChanged {
-                    playing: true,
-                    recording: true,
-                }]
+                vec![
+                    MachineOutput::TransportChanged {
+                        playing: true,
+                        recording: true,
+                    },
+                    MachineOutput::LcdChanged,
+                ]
             }
             PanelControl::CursorUp
             | PanelControl::CursorDown
@@ -142,8 +155,9 @@ impl MpcCore {
     }
 
     fn adjust_tempo(&mut self, delta: i32) -> Vec<MachineOutput> {
-        let current = self.state.tempo_bpm_x100 as i32;
-        let next = (current + delta * 100).clamp(3000, 30000) as u32;
+        let current = i64::from(self.state.tempo_bpm_x100);
+        let delta = i64::from(delta) * 100;
+        let next = (current + delta).clamp(3000, 30000) as u32;
         self.state.tempo_bpm_x100 = next;
         self.refresh_lcd();
         vec![MachineOutput::LcdChanged]
