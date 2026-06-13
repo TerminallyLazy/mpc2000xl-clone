@@ -129,6 +129,7 @@ git commit -m "chore: add Rust workspace skeleton"
 - Create: `crates/mpc_core/src/lcd.rs`
 - Create: `crates/mpc_core/src/state.rs`
 - Create: `crates/mpc_core/tests/core_flow.rs`
+- Create: `Cargo.lock`
 
 - [ ] **Step 1: Create the core crate manifest**
 
@@ -540,11 +541,12 @@ cargo test -p mpc_core
 ```
 
 Expected: PASS, four tests.
+This first successful Cargo test run should create `Cargo.lock`; keep it committed for reproducible app builds.
 
 - [ ] **Step 8: Commit**
 
 ```bash
-git add crates/mpc_core
+git add Cargo.lock crates/mpc_core
 git commit -m "feat: add deterministic MPC core foundation"
 ```
 
