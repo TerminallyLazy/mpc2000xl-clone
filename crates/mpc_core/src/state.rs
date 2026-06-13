@@ -1,7 +1,13 @@
 use serde::{Deserialize, Serialize};
 
-use crate::events::{HardwareEvent, MachineOutput, Mode, PadBank, PanelControl};
+use crate::events::{HardwareEvent, MachineOutput, Mode, PadBank, PanelControl, SequenceEvent};
 use crate::lcd::LcdFrame;
+
+/// Internal timing resolution for this foundation slice.
+///
+/// The exact MPC2000XL timing source mapping is still pending reference
+/// evidence, so sequence recording uses a deterministic 96 PPQN basis for now.
+pub const INTERNAL_PPQN: u32 = 96;
 
 const MIN_TEMPO_BPM_X100: u32 = 3000;
 const MAX_TEMPO_BPM_X100: u32 = 30000;
@@ -11,6 +17,7 @@ const MIN_TRACK_INDEX: u8 = 1;
 const MAX_TRACK_INDEX: u8 = 64;
 const MIN_BAR_COUNT: u16 = 1;
 const MAX_BAR_COUNT: u16 = 999;
+const TICK_DENOMINATOR: u128 = 60_000_000_u128 * 100;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -62,6 +69,9 @@ pub struct MpcState {
     pub bar_count: u16,
     pub selected_main_field: MainScreenField,
     pub pad_bank: PadBank,
+    pub playhead_ticks: u64,
+    pub playhead_tick_remainder: u64,
+    pub recorded_events: Vec<SequenceEvent>,
     pub lcd: LcdFrame,
     pub event_count: u64,
 }
@@ -83,8 +93,11 @@ impl Default for MpcState {
                 selected_track,
                 tempo_bpm_x100,
                 false,
+                false,
                 bar_count,
                 selected_main_field,
+                0,
+                0,
             ),
             sequence_index,
             sequence_name,
@@ -95,6 +108,9 @@ impl Default for MpcState {
             bar_count,
             selected_main_field,
             pad_bank: PadBank::A,
+            playhead_ticks: 0,
+            playhead_tick_remainder: 0,
+            recorded_events: Vec::new(),
             event_count: 0,
         }
     }
@@ -135,15 +151,10 @@ impl MpcCore {
                         reason: "velocity must be in range 1..=127".to_string(),
                     }]
                 } else {
-                    self.state.pad_bank = bank;
-                    vec![MachineOutput::PadTriggered {
-                        bank,
-                        pad,
-                        velocity,
-                    }]
+                    self.handle_pad_strike(bank, pad, velocity)
                 }
             }
-            HardwareEvent::Tick { .. } => Vec::new(),
+            HardwareEvent::Tick { micros } => self.handle_tick(micros),
         }
     }
 
@@ -182,10 +193,14 @@ impl MpcCore {
             }
             PanelControl::Rec => {
                 self.state.recording = true;
-                vec![MachineOutput::TransportChanged {
-                    playing: self.state.playing,
-                    recording: true,
-                }]
+                self.refresh_lcd();
+                vec![
+                    MachineOutput::TransportChanged {
+                        playing: self.state.playing,
+                        recording: true,
+                    },
+                    MachineOutput::LcdChanged,
+                ]
             }
             PanelControl::Overdub => {
                 self.state.recording = true;
@@ -331,8 +346,11 @@ impl MpcCore {
                 self.state.selected_track,
                 self.state.tempo_bpm_x100,
                 self.state.playing,
+                self.state.recording,
                 self.state.bar_count,
                 self.state.selected_main_field,
+                self.state.playhead_ticks,
+                self.state.recorded_events.len(),
             ),
             Mode::Program => LcdFrame::mode_screen("PROGRAM", "Program: InitProgram"),
             Mode::Sample => LcdFrame::mode_screen("SAMPLE", "Sample record"),
@@ -346,6 +364,63 @@ impl MpcCore {
 
     fn ignored(reason: String) -> Vec<MachineOutput> {
         vec![MachineOutput::Ignored { reason }]
+    }
+
+    fn handle_pad_strike(&mut self, bank: PadBank, pad: u8, velocity: u8) -> Vec<MachineOutput> {
+        self.state.pad_bank = bank;
+        let mut outputs = vec![MachineOutput::PadTriggered {
+            bank,
+            pad,
+            velocity,
+        }];
+
+        if self.state.playing && self.state.recording {
+            let event = SequenceEvent {
+                selected_track: self.state.selected_track,
+                pad_bank: bank,
+                pad_number: pad,
+                velocity,
+                tick: self.state.playhead_ticks,
+            };
+            self.state.recorded_events.push(event.clone());
+            outputs.push(MachineOutput::SequenceEventRecorded { event });
+
+            let previous_lcd = self.state.lcd.clone();
+            self.refresh_lcd();
+            if self.state.lcd != previous_lcd {
+                outputs.push(MachineOutput::LcdChanged);
+            }
+        }
+
+        outputs
+    }
+
+    fn handle_tick(&mut self, micros: u64) -> Vec<MachineOutput> {
+        if !self.state.playing {
+            return Vec::new();
+        }
+
+        let previous_lcd = self.state.lcd.clone();
+        let numerator = u128::from(micros)
+            .saturating_mul(u128::from(self.state.tempo_bpm_x100))
+            .saturating_mul(u128::from(INTERNAL_PPQN))
+            .saturating_add(u128::from(self.state.playhead_tick_remainder));
+        let tick_delta = numerator / TICK_DENOMINATOR;
+        let remainder = numerator % TICK_DENOMINATOR;
+        let tick_delta = u64::try_from(tick_delta).unwrap_or(u64::MAX);
+        self.state.playhead_ticks = self.state.playhead_ticks.saturating_add(tick_delta);
+        self.state.playhead_tick_remainder = if self.state.playhead_ticks == u64::MAX {
+            0
+        } else {
+            remainder as u64
+        };
+
+        self.refresh_lcd();
+        if self.state.lcd != previous_lcd {
+            vec![MachineOutput::LcdChanged]
+        } else {
+            Vec::new()
+        }
     }
 }
 

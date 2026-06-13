@@ -1,5 +1,5 @@
 use anyhow::{Context, Result, bail};
-use mpc_core::{HardwareEvent, MainScreenField, Mode, MpcCore};
+use mpc_core::{HardwareEvent, MainScreenField, Mode, MpcCore, SequenceEvent};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::Path;
@@ -32,6 +32,12 @@ pub struct ExpectedState {
     pub sequence_name: Option<String>,
     #[serde(default)]
     pub bar_count: Option<u16>,
+    #[serde(default)]
+    pub recorded_event_count: Option<usize>,
+    #[serde(default)]
+    pub playhead_ticks: Option<u64>,
+    #[serde(default)]
+    pub last_recorded_event: Option<SequenceEvent>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -145,6 +151,35 @@ pub fn run_fixture(fixture: &Fixture) -> FixtureReport {
             details.push(format!(
                 "bar_count mismatch: expected {}, got {}",
                 bar_count, state.bar_count
+            ));
+        }
+    }
+
+    if let Some(recorded_event_count) = fixture.expect.recorded_event_count {
+        if state.recorded_events.len() != recorded_event_count {
+            details.push(format!(
+                "recorded_event_count mismatch: expected {}, got {}",
+                recorded_event_count,
+                state.recorded_events.len()
+            ));
+        }
+    }
+
+    if let Some(playhead_ticks) = fixture.expect.playhead_ticks {
+        if state.playhead_ticks != playhead_ticks {
+            details.push(format!(
+                "playhead_ticks mismatch: expected {}, got {}",
+                playhead_ticks, state.playhead_ticks
+            ));
+        }
+    }
+
+    if let Some(last_recorded_event) = &fixture.expect.last_recorded_event {
+        if state.recorded_events.last() != Some(last_recorded_event) {
+            details.push(format!(
+                "last_recorded_event mismatch: expected {:?}, got {:?}",
+                last_recorded_event,
+                state.recorded_events.last()
             ));
         }
     }

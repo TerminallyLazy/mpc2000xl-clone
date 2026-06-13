@@ -1,5 +1,6 @@
 use mpc_core::{
-    HardwareEvent, MachineOutput, MainScreenField, Mode, MpcCore, PadBank, PanelControl,
+    HardwareEvent, INTERNAL_PPQN, MachineOutput, MainScreenField, Mode, MpcCore, PadBank,
+    PanelControl, SequenceEvent,
 };
 
 #[test]
@@ -13,6 +14,8 @@ fn core_starts_on_main_screen() {
     assert_eq!(core.state().selected_track, 1);
     assert_eq!(core.state().bar_count, 1);
     assert_eq!(core.state().selected_main_field, MainScreenField::Tempo);
+    assert_eq!(core.state().playhead_ticks, 0);
+    assert_eq!(core.state().recorded_events, Vec::new());
     assert!(!core.state().playing);
 }
 
@@ -71,6 +74,154 @@ fn valid_pad_strike_is_reported() {
             velocity: 96
         }
     )));
+}
+
+#[test]
+fn stopped_or_armed_pad_strikes_do_not_record_sequence_events() {
+    let mut core = MpcCore::new();
+
+    let stopped_outputs = core.dispatch(HardwareEvent::StrikePad {
+        bank: PadBank::A,
+        pad: 1,
+        velocity: 90,
+    });
+    assert!(
+        stopped_outputs
+            .iter()
+            .any(|output| matches!(output, MachineOutput::PadTriggered { .. }))
+    );
+    assert!(core.state().recorded_events.is_empty());
+
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::Rec,
+    });
+    assert!(core.state().recording);
+    assert!(!core.state().playing);
+
+    let armed_outputs = core.dispatch(HardwareEvent::StrikePad {
+        bank: PadBank::B,
+        pad: 2,
+        velocity: 91,
+    });
+    assert!(
+        !armed_outputs
+            .iter()
+            .any(|output| matches!(output, MachineOutput::SequenceEventRecorded { .. }))
+    );
+    assert!(core.state().recorded_events.is_empty());
+}
+
+#[test]
+fn rec_then_play_records_pad_strike_as_sequence_event() {
+    let mut core = MpcCore::new();
+
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::Rec,
+    });
+    assert!(core.state().recording);
+    assert!(!core.state().playing);
+
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::Play,
+    });
+    let outputs = core.dispatch(HardwareEvent::StrikePad {
+        bank: PadBank::B,
+        pad: 12,
+        velocity: 96,
+    });
+
+    let expected = SequenceEvent {
+        selected_track: 1,
+        pad_bank: PadBank::B,
+        pad_number: 12,
+        velocity: 96,
+        tick: 0,
+    };
+    assert!(core.state().playing);
+    assert!(core.state().recording);
+    assert_eq!(core.state().recorded_events, vec![expected.clone()]);
+    assert!(outputs.iter().any(|output| matches!(
+        output,
+        MachineOutput::SequenceEventRecorded { event } if event == &expected
+    )));
+    assert!(core.state().lcd.lines[3].contains("E001"));
+}
+
+#[test]
+fn overdub_starts_playback_and_records_pad_strike() {
+    let mut core = MpcCore::new();
+
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::Overdub,
+    });
+    let outputs = core.dispatch(HardwareEvent::StrikePad {
+        bank: PadBank::C,
+        pad: 4,
+        velocity: 64,
+    });
+
+    assert!(core.state().playing);
+    assert!(core.state().recording);
+    assert_eq!(core.state().recorded_events.len(), 1);
+    assert_eq!(core.state().recorded_events[0].pad_bank, PadBank::C);
+    assert_eq!(core.state().recorded_events[0].pad_number, 4);
+    assert_eq!(core.state().recorded_events[0].velocity, 64);
+    assert!(outputs.iter().any(|output| matches!(
+        output,
+        MachineOutput::SequenceEventRecorded { event }
+            if event.pad_bank == PadBank::C && event.pad_number == 4
+    )));
+}
+
+#[test]
+fn tick_advances_playhead_only_while_playing() {
+    let mut core = MpcCore::new();
+
+    let stopped_outputs = core.dispatch(HardwareEvent::Tick { micros: 500_000 });
+    assert!(stopped_outputs.is_empty());
+    assert_eq!(core.state().playhead_ticks, 0);
+
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::Play,
+    });
+    let playing_outputs = core.dispatch(HardwareEvent::Tick { micros: 500_000 });
+    assert_eq!(core.state().playhead_ticks, u64::from(INTERNAL_PPQN));
+    assert_eq!(playing_outputs, vec![MachineOutput::LcdChanged]);
+    assert!(core.state().lcd.lines[3].contains("T000096"));
+
+    core.dispatch(HardwareEvent::Tick { micros: u64::MAX });
+    assert!(core.state().playhead_ticks > u64::from(INTERNAL_PPQN));
+
+    let after_large_tick = core.state().playhead_ticks;
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::Stop,
+    });
+    core.dispatch(HardwareEvent::Tick { micros: 500_000 });
+    assert_eq!(core.state().playhead_ticks, after_large_tick);
+}
+
+#[test]
+fn stop_disarms_recording() {
+    let mut core = MpcCore::new();
+
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::Overdub,
+    });
+    assert!(core.state().playing);
+    assert!(core.state().recording);
+
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::Stop,
+    });
+    assert!(!core.state().playing);
+    assert!(!core.state().recording);
+
+    core.dispatch(HardwareEvent::StrikePad {
+        bank: PadBank::A,
+        pad: 1,
+        velocity: 100,
+    });
+    assert!(core.state().recorded_events.is_empty());
 }
 
 #[test]
@@ -259,12 +410,12 @@ fn ignored_controls_are_reported_without_changing_mode() {
 fn replaying_same_events_produces_same_state() {
     let events = vec![
         HardwareEvent::Press {
-            control: PanelControl::Program,
+            control: PanelControl::Rec,
         },
         HardwareEvent::Press {
             control: PanelControl::Play,
         },
-        HardwareEvent::TurnDataWheel { delta: 2 },
+        HardwareEvent::Tick { micros: 500_000 },
         HardwareEvent::StrikePad {
             bank: PadBank::C,
             pad: 4,
@@ -281,6 +432,16 @@ fn replaying_same_events_produces_same_state() {
     }
 
     assert_eq!(first.state(), second.state());
+    assert_eq!(
+        first.state().recorded_events,
+        vec![SequenceEvent {
+            selected_track: 1,
+            pad_bank: PadBank::C,
+            pad_number: 4,
+            velocity: 64,
+            tick: u64::from(INTERNAL_PPQN),
+        }]
+    );
 }
 
 #[test]

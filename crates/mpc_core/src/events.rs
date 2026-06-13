@@ -22,6 +22,15 @@ pub enum PadBank {
     D,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SequenceEvent {
+    pub selected_track: u8,
+    pub pad_bank: PadBank,
+    pub pad_number: u8,
+    pub velocity: u8,
+    pub tick: u64,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PanelControl {
@@ -82,6 +91,9 @@ pub enum MachineOutput {
         bank: PadBank,
         pad: u8,
         velocity: u8,
+    },
+    SequenceEventRecorded {
+        event: SequenceEvent,
     },
     Ignored {
         reason: String,

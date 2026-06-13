@@ -1,0 +1,40 @@
+{
+  "id": "core.sequence.rec-play-pad-recording",
+  "name": "Rec arms recording and Play records a pad strike",
+  "source_refs": [
+    "docs/superpowers/plans/2026-06-13-mpc2000xl-sequence-recording.md#source-and-evidence-status"
+  ],
+  "events": [
+    {
+      "type": "press",
+      "control": "rec"
+    },
+    {
+      "type": "press",
+      "control": "play"
+    },
+    {
+      "type": "strike_pad",
+      "bank": "b",
+      "pad": 12,
+      "velocity": 96
+    }
+  ],
+  "expect": {
+    "mode": "main",
+    "lcd_title": "MAIN",
+    "playing": true,
+    "recording": true,
+    "event_count": 3,
+    "selected_track": 1,
+    "recorded_event_count": 1,
+    "playhead_ticks": 0,
+    "last_recorded_event": {
+      "selected_track": 1,
+      "pad_bank": "b",
+      "pad_number": 12,
+      "velocity": 96,
+      "tick": 0
+    }
+  }
+}

@@ -16,11 +16,19 @@ impl LcdFrame {
         selected_track: u8,
         tempo_bpm_x100: u32,
         playing: bool,
+        recording: bool,
         bar_count: u16,
         selected_field: MainScreenField,
+        playhead_ticks: u64,
+        recorded_event_count: usize,
     ) -> Self {
         let tempo = format!("{}.{:02}", tempo_bpm_x100 / 100, tempo_bpm_x100 % 100);
-        let status = if playing { "PLAY" } else { "STOP" };
+        let status = match (playing, recording) {
+            (true, true) => "REC",
+            (true, false) => "PLAY",
+            (false, true) => "ARM",
+            (false, false) => "STOP",
+        };
         let marker = |field| {
             if selected_field == field { ">" } else { " " }
         };
@@ -45,10 +53,12 @@ impl LcdFrame {
                     tempo
                 ),
                 format!(
-                    "{}Bars {:03}  Focus {}",
+                    "{}Bars {:03} T{:06} E{:03} {}",
                     marker(MainScreenField::Bars),
                     bar_count,
-                    selected_field.label()
+                    playhead_ticks.min(999_999),
+                    recorded_event_count.min(999),
+                    selected_field.label(),
                 ),
             ],
             soft_keys: [

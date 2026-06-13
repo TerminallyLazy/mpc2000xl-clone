@@ -45,6 +45,7 @@ impl eframe::App for MpcDesktopApp {
             self.draw_edit_controls(ui);
             ui.add_space(16.0);
             self.draw_transport(ui);
+            self.draw_sequence_status(ui);
             ui.add_space(16.0);
             self.draw_pads(ui);
             ui.add_space(16.0);
@@ -133,6 +134,21 @@ impl MpcDesktopApp {
             return format!("Ignored: {reason}");
         }
 
+        if let Some(MachineOutput::SequenceEventRecorded { event }) = outputs
+            .iter()
+            .find(|output| matches!(output, MachineOutput::SequenceEventRecorded { .. }))
+        {
+            return format!(
+                "Recorded Trk {:02} {:?}{:02} velocity {} at tick {} ({} events)",
+                event.selected_track,
+                event.pad_bank,
+                event.pad_number,
+                event.velocity,
+                event.tick,
+                state.recorded_events.len()
+            );
+        }
+
         if let Some(MachineOutput::PadTriggered {
             bank,
             pad,
@@ -190,6 +206,23 @@ impl MpcDesktopApp {
                     control: PanelControl::Overdub,
                 });
             }
+            if ui.button("TICK +100ms").clicked() {
+                self.dispatch_event(HardwareEvent::Tick { micros: 100_000 });
+            }
+        });
+    }
+
+    fn draw_sequence_status(&self, ui: &mut egui::Ui) {
+        let state = self.core.state();
+        ui.horizontal_wrapped(|ui| {
+            ui.label(format!(
+                "Transport: playing={} recording={}",
+                state.playing, state.recording
+            ));
+            ui.separator();
+            ui.label(format!("Playhead: {} ticks", state.playhead_ticks));
+            ui.separator();
+            ui.label(format!("Recorded events: {}", state.recorded_events.len()));
         });
     }
 
@@ -217,12 +250,14 @@ impl MpcDesktopApp {
 fn main_screen_status(state: &MpcState) -> String {
     match state.mode {
         Mode::Main => format!(
-            "LCD updated: {} focus, Seq {:02}, Trk {:02}, Tempo {}, Bars {:03}",
+            "LCD updated: {} focus, Seq {:02}, Trk {:02}, Tempo {}, Bars {:03}, Tick {}, Events {}",
             state.selected_main_field.label(),
             state.sequence_index,
             state.selected_track,
             tempo_text(state.tempo_bpm_x100),
-            state.bar_count
+            state.bar_count,
+            state.playhead_ticks,
+            state.recorded_events.len()
         ),
         mode => format!("LCD updated: {mode:?}"),
     }
