@@ -34,6 +34,7 @@ This file tracks evidence sources without copying proprietary source pages, scan
 | full-app-product-spec | internal_spec | spec | Full app product design notes | `docs/superpowers/specs/2026-06-13-mpc2000xl-full-app-product-design.md` |
 | conformance-lab-spec | internal_spec | spec | Conformance lab design notes | `docs/superpowers/specs/2026-06-13-mpc2000xl-conformance-lab-design.md` |
 | sequence-playback-scheduling-slice-plan | internal_spec | plan | Deterministic recorded sequence playback scheduling foundation | `docs/superpowers/plans/2026-06-13-mpc2000xl-sequence-playback-scheduling.md` |
+| project-file-storage-slice-plan | internal_spec | plan | Rights-safe host-side JSON project file storage foundation | `docs/superpowers/plans/2026-06-13-mpc2000xl-project-file-storage.md` |
 
 ## Legal Boundary
 

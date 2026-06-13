@@ -7,6 +7,10 @@ use mpc_core::{
     HardwareEvent, MachineOutput, Mode, MpcCore, MpcState, PadAssignmentChange, PadBank,
     PanelControl, ProgramPad, SamplePlaybackResolution,
 };
+use mpc_storage::{
+    DEFAULT_PROJECT_FILE_PATH, load_project_file_with_report,
+    save_project_file as save_project_file_to_path,
+};
 
 fn main() -> eframe::Result<()> {
     let options = eframe::NativeOptions {
@@ -34,6 +38,10 @@ struct MpcDesktopApp {
     last_project_snapshot_status: String,
     last_project_snapshot_version: Option<u16>,
     last_project_snapshot_bytes: Option<usize>,
+    project_file_path: String,
+    last_project_file_status: String,
+    last_project_file_version: Option<u16>,
+    last_project_file_bytes: Option<usize>,
 }
 
 impl Default for MpcDesktopApp {
@@ -52,6 +60,10 @@ impl Default for MpcDesktopApp {
             last_project_snapshot_status: "Snapshot: none".to_string(),
             last_project_snapshot_version: None,
             last_project_snapshot_bytes: None,
+            project_file_path: DEFAULT_PROJECT_FILE_PATH.to_string(),
+            last_project_file_status: "Project file: none".to_string(),
+            last_project_file_version: None,
+            last_project_file_bytes: None,
         }
     }
 }
@@ -172,6 +184,25 @@ impl MpcDesktopApp {
                 self.last_project_snapshot_bytes,
             ));
         });
+
+        ui.horizontal_wrapped(|ui| {
+            ui.label("Project file");
+            ui.add(egui::TextEdit::singleline(&mut self.project_file_path).desired_width(460.0));
+
+            if ui.button("Save File").clicked() {
+                self.save_project_file();
+            }
+            if ui.button("Load File").clicked() {
+                self.load_project_file();
+            }
+
+            ui.separator();
+            ui.label(project_file_status_text(
+                &self.last_project_file_status,
+                self.last_project_file_version,
+                self.last_project_file_bytes,
+            ));
+        });
     }
 
     fn save_project_snapshot(&mut self) {
@@ -231,6 +262,66 @@ impl MpcDesktopApp {
             Err(error) => {
                 let message = format!("Snapshot load failed: {error}");
                 self.last_project_snapshot_status = message.clone();
+                self.last_status = message;
+            }
+        }
+    }
+
+    fn save_project_file(&mut self) {
+        let path = self.project_file_path.trim();
+        match save_project_file_to_path(&self.core, path) {
+            Ok(report) => {
+                self.last_project_file_version = Some(report.snapshot_version);
+                self.last_project_file_bytes = Some(report.byte_count);
+                self.last_project_file_status =
+                    format!("saved metadata JSON to {}", report.path.display());
+                self.last_status = format!(
+                    "Saved project file v{} ({} bytes)",
+                    report.snapshot_version, report.byte_count
+                );
+            }
+            Err(error) => {
+                let message = format!("Project file save failed: {error}");
+                self.last_project_file_version = None;
+                self.last_project_file_bytes = None;
+                self.last_project_file_status = message.clone();
+                self.last_status = message;
+            }
+        }
+    }
+
+    fn load_project_file(&mut self) {
+        let path = self.project_file_path.trim();
+        match load_project_file_with_report(path) {
+            Ok(loaded) => {
+                let report = loaded.report;
+                match self.core.restore_project_snapshot(loaded.snapshot) {
+                    Ok(()) => {
+                        self.last_project_file_version = Some(report.snapshot_version);
+                        self.last_project_file_bytes = Some(report.byte_count);
+                        self.last_project_file_status = format!(
+                            "loaded metadata JSON from {}; transport stopped",
+                            report.path.display()
+                        );
+                        self.last_status = format!(
+                            "Loaded project file v{}; transport stopped/disarmed",
+                            report.snapshot_version
+                        );
+                    }
+                    Err(error) => {
+                        let message = format!("Project file load failed: {error}");
+                        self.last_project_file_version = None;
+                        self.last_project_file_bytes = None;
+                        self.last_project_file_status = message.clone();
+                        self.last_status = message;
+                    }
+                }
+            }
+            Err(error) => {
+                let message = format!("Project file load failed: {error}");
+                self.last_project_file_version = None;
+                self.last_project_file_bytes = None;
+                self.last_project_file_status = message.clone();
                 self.last_status = message;
             }
         }
@@ -644,6 +735,19 @@ fn project_snapshot_status_text(
     match (version, byte_count) {
         (Some(version), Some(byte_count)) => {
             format!("Snapshot: v{version}, {byte_count} bytes, {status}")
+        }
+        _ => status.to_string(),
+    }
+}
+
+fn project_file_status_text(
+    status: &str,
+    version: Option<u16>,
+    byte_count: Option<usize>,
+) -> String {
+    match (version, byte_count) {
+        (Some(version), Some(byte_count)) => {
+            format!("Project file: v{version}, {byte_count} bytes, {status}")
         }
         _ => status.to_string(),
     }

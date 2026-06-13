@@ -1205,6 +1205,91 @@
       ]
     },
     {
+      "id": "storage.project.file-save-load",
+      "name": "Project file save/load stores repo-owned metadata-only JSON snapshots",
+      "area": "storage/project_persistence",
+      "state": "unit-backed-internal-spec",
+      "evidence": [
+        {
+          "source_id": "project-file-storage-slice-plan",
+          "source_category": "internal_spec",
+          "type": "plan",
+          "status": "mapped",
+          "ref": "docs/superpowers/plans/2026-06-13-mpc2000xl-project-file-storage.md#behavior-slice"
+        }
+      ],
+      "source_coverage": [
+        {
+          "source_category": "manual",
+          "source_id": "owner-manual",
+          "status": "investigation",
+          "ref": null,
+          "note": "Exact MPC2000XL project file naming, disk save/load workflow, and invalid-file UX are not mapped yet."
+        },
+        {
+          "source_category": "firmware",
+          "source_id": "mpc2000xl-os-local-reference",
+          "status": "investigation",
+          "ref": null,
+          "note": "No user-supplied firmware trace or native binary project/disk format evidence has been captured for file persistence."
+        },
+        {
+          "source_category": "vmpc",
+          "source_id": "vmpc-docs-public",
+          "status": "investigation",
+          "ref": null,
+          "note": "VMPC comparative project file behavior remains pending docs/source/license review."
+        },
+        {
+          "source_category": "internal_spec",
+          "source_id": "project-file-storage-slice-plan",
+          "status": "mapped",
+          "ref": "docs/superpowers/plans/2026-06-13-mpc2000xl-project-file-storage.md#rights-safe-file-boundary",
+          "note": "The file format is repo-owned JSON metadata produced by mpc_core snapshots, not a native MPC2000XL disk-format claim."
+        }
+      ],
+      "inputs": [
+        {
+          "channel": "storage",
+          "event": "save_project_file",
+          "path_suffix": ".mpc2000xl-project.json"
+        },
+        {
+          "channel": "storage",
+          "event": "load_project_file",
+          "path_suffix": ".mpc2000xl-project.json"
+        }
+      ],
+      "expected_outputs": {
+        "file": {
+          "default_path": "local-assets/projects/last.mpc2000xl-project.json",
+          "suffix": ".mpc2000xl-project.json",
+          "parent_directories": "created on save",
+          "write_strategy": "sibling temp file then rename",
+          "contains_audio_bytes": false
+        },
+        "snapshot": {
+          "version": 1,
+          "rights_boundary": "metadata_only_no_audio_bytes",
+          "validation": "load delegates project JSON validation to mpc_core"
+        },
+        "errors": [
+          "empty paths are rejected",
+          "existing directory paths are rejected",
+          "wrong suffixes are rejected before writing",
+          "malformed or invalid project JSON returns structured storage errors"
+        ]
+      },
+      "tolerance": null,
+      "fixture_refs": [
+        "crates/mpc_storage/src/lib.rs",
+        "apps/desktop/src/main.rs"
+      ],
+      "conflict_notes": [
+        "This is a rights-safe host JSON storage foundation; native MPC2000XL disk structures, project file compatibility, and proprietary binary formats remain evidence gaps."
+      ]
+    },
+    {
       "id": "core.project.restore-validation",
       "name": "Project snapshot restore validates version, ranges, duplicate pads, and transport safety",
       "area": "project_persistence",

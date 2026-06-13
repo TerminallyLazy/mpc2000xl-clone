@@ -1970,6 +1970,7 @@ dependencies = [
  "eframe",
  "mpc_audio",
  "mpc_core",
+ "mpc_storage",
 ]
 
 [[package]]
@@ -1982,6 +1983,14 @@ dependencies = [
  "serde_json",
  "sha2",
  "tempfile",
+]
+
+[[package]]
+name = "mpc_storage"
+version = "0.1.0"
+dependencies = [
+ "mpc_core",
+ "serde_json",
 ]
 
 [[package]]
