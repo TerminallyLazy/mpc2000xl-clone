@@ -10,8 +10,10 @@ Do not commit proprietary Akai OS images, manuals, service scans, factory sample
 
 ## Verification
 
-Run the full local verification suite:
+The full verification entrypoint will be added by the foundation implementation plan as `./scripts/verify.sh`.
+
+At the workspace-skeleton stage, this command is expected to fail until the workspace member crates are added:
 
 ```bash
-./scripts/verify.sh
+cargo metadata --no-deps
 ```
