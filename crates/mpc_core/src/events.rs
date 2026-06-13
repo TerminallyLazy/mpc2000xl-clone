@@ -156,6 +156,16 @@ pub enum HardwareEvent {
         pad: u8,
         velocity: u8,
     },
+    MidiNoteOn {
+        channel: u8,
+        note: u8,
+        velocity: u8,
+    },
+    MidiNoteOff {
+        channel: u8,
+        note: u8,
+        velocity: u8,
+    },
     Tick {
         micros: u64,
     },
@@ -182,6 +192,16 @@ pub enum MachineOutput {
     },
     SamplePlaybackMiss {
         miss: SamplePlaybackMiss,
+    },
+    MidiNoteMapped {
+        channel: u8,
+        note: u8,
+        bank: PadBank,
+        pad: u8,
+        velocity: u8,
+    },
+    MidiInputIgnored {
+        reason: String,
     },
     PadAssignmentChanged {
         bank: PadBank,

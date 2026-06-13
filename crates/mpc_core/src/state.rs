@@ -37,6 +37,11 @@ const DEFAULT_PAD_PAN: i8 = 0;
 const MAX_PAD_LEVEL: u8 = 127;
 const MIN_PAD_PAN: i8 = -50;
 const MAX_PAD_PAN: i8 = 50;
+const MIDI_MIN_CHANNEL: u8 = 1;
+const MIDI_MAX_CHANNEL: u8 = 16;
+const MIDI_MAX_NOTE: u8 = 127;
+const MIDI_MIN_MAPPED_NOTE: u8 = 36;
+const MIDI_MAX_MAPPED_NOTE: u8 = 51;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -380,6 +385,16 @@ impl MpcCore {
                     self.handle_pad_strike(bank, pad, velocity)
                 }
             }
+            HardwareEvent::MidiNoteOn {
+                channel,
+                note,
+                velocity,
+            } => self.handle_midi_note_on(channel, note, velocity),
+            HardwareEvent::MidiNoteOff {
+                channel,
+                note,
+                velocity,
+            } => self.handle_midi_note_off(channel, note, velocity),
             HardwareEvent::Tick { micros } => self.handle_tick(micros),
         }
     }
@@ -677,6 +692,42 @@ impl MpcCore {
         }
 
         outputs
+    }
+
+    fn handle_midi_note_on(&mut self, channel: u8, note: u8, velocity: u8) -> Vec<MachineOutput> {
+        if let Some(reason) = validate_midi_note_on(channel, note, velocity) {
+            return Self::midi_ignored(reason);
+        }
+
+        let Some(pad) = midi_note_to_bank_a_pad(note) else {
+            return Self::midi_ignored(format!(
+                "midi note {note} is not mapped in this slice; mapped range is 36..=51"
+            ));
+        };
+
+        let mut outputs = vec![MachineOutput::MidiNoteMapped {
+            channel,
+            note,
+            bank: PadBank::A,
+            pad,
+            velocity,
+        }];
+        outputs.extend(self.handle_pad_strike(PadBank::A, pad, velocity));
+        outputs
+    }
+
+    fn handle_midi_note_off(&mut self, channel: u8, note: u8, velocity: u8) -> Vec<MachineOutput> {
+        if let Some(reason) = validate_midi_note_off(channel, note, velocity) {
+            return Self::midi_ignored(reason);
+        }
+
+        Self::midi_ignored("midi note-off is a no-op in this slice")
+    }
+
+    fn midi_ignored(reason: impl Into<String>) -> Vec<MachineOutput> {
+        vec![MachineOutput::MidiInputIgnored {
+            reason: reason.into(),
+        }]
     }
 
     fn handle_tick(&mut self, micros: u64) -> Vec<MachineOutput> {
@@ -1340,6 +1391,52 @@ fn validate_pad_number(field: &str, pad_number: u8) -> Result<(), ProjectSnapsho
 
 fn validate_velocity(field: &str, velocity: u8) -> Result<(), ProjectSnapshotError> {
     validate_range_u8(field, velocity, 1, 127)
+}
+
+fn validate_midi_channel(channel: u8) -> Option<String> {
+    if !(MIDI_MIN_CHANNEL..=MIDI_MAX_CHANNEL).contains(&channel) {
+        return Some("midi channel must be in range 1..=16".to_string());
+    }
+    None
+}
+
+fn validate_midi_note(note: u8) -> Option<String> {
+    if note > MIDI_MAX_NOTE {
+        return Some("midi note must be in range 0..=127".to_string());
+    }
+    None
+}
+
+fn validate_midi_note_on(channel: u8, note: u8, velocity: u8) -> Option<String> {
+    validate_midi_channel(channel)
+        .or_else(|| validate_midi_note(note))
+        .or_else(|| {
+            if velocity == 0 || velocity > 127 {
+                Some("midi note-on velocity must be in range 1..=127".to_string())
+            } else {
+                None
+            }
+        })
+}
+
+fn validate_midi_note_off(channel: u8, note: u8, velocity: u8) -> Option<String> {
+    validate_midi_channel(channel)
+        .or_else(|| validate_midi_note(note))
+        .or_else(|| {
+            if velocity > 127 {
+                Some("midi note-off velocity must be in range 0..=127".to_string())
+            } else {
+                None
+            }
+        })
+}
+
+fn midi_note_to_bank_a_pad(note: u8) -> Option<u8> {
+    if (MIDI_MIN_MAPPED_NOTE..=MIDI_MAX_MAPPED_NOTE).contains(&note) {
+        Some(note - 35)
+    } else {
+        None
+    }
 }
 
 fn validate_playhead_remainder(remainder: u64) -> Result<(), ProjectSnapshotError> {

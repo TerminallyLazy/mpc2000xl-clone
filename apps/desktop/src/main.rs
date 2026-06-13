@@ -42,6 +42,9 @@ struct MpcDesktopApp {
     last_project_file_status: String,
     last_project_file_version: Option<u16>,
     last_project_file_bytes: Option<usize>,
+    midi_channel: u8,
+    midi_note: u8,
+    midi_velocity: u8,
 }
 
 impl Default for MpcDesktopApp {
@@ -64,6 +67,9 @@ impl Default for MpcDesktopApp {
             last_project_file_status: "Project file: none".to_string(),
             last_project_file_version: None,
             last_project_file_bytes: None,
+            midi_channel: 1,
+            midi_note: 36,
+            midi_velocity: 100,
         }
     }
 }
@@ -84,6 +90,7 @@ impl eframe::App for MpcDesktopApp {
             self.draw_project_snapshot_controls(ui);
             ui.add_space(16.0);
             self.draw_transport(ui);
+            self.draw_midi_controls(ui);
             self.draw_sequence_status(ui);
             self.draw_program_status(ui);
             self.draw_audio_render_status(ui);
@@ -365,6 +372,28 @@ impl MpcDesktopApp {
     }
 
     fn status_from_outputs(outputs: &[MachineOutput], state: &MpcState) -> String {
+        if let Some(MachineOutput::MidiInputIgnored { reason }) = outputs
+            .iter()
+            .find(|output| matches!(output, MachineOutput::MidiInputIgnored { .. }))
+        {
+            return format!("MIDI ignored: {reason}");
+        }
+
+        if let Some(MachineOutput::MidiNoteMapped {
+            channel,
+            note,
+            bank,
+            pad,
+            velocity,
+        }) = outputs
+            .iter()
+            .find(|output| matches!(output, MachineOutput::MidiNoteMapped { .. }))
+        {
+            return format!(
+                "MIDI ch {channel} note {note} -> {bank:?}{pad:02} velocity {velocity}"
+            );
+        }
+
         if let Some(MachineOutput::Ignored { reason }) = outputs
             .iter()
             .find(|output| matches!(output, MachineOutput::Ignored { .. }))
@@ -520,6 +549,53 @@ impl MpcDesktopApp {
             if ui.button("TICK +100ms").clicked() {
                 self.dispatch_event(HardwareEvent::Tick { micros: 100_000 });
             }
+        });
+    }
+
+    fn draw_midi_controls(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal_wrapped(|ui| {
+            ui.label("MIDI sim");
+            ui.add(egui::Slider::new(&mut self.midi_channel, 1..=16).text("Ch"));
+            ui.add(egui::Slider::new(&mut self.midi_note, 0..=127).text("Note"));
+            ui.add(egui::Slider::new(&mut self.midi_velocity, 1..=127).text("Vel"));
+
+            if ui.button("Note On").clicked() {
+                self.dispatch_event(HardwareEvent::MidiNoteOn {
+                    channel: self.midi_channel,
+                    note: self.midi_note,
+                    velocity: self.midi_velocity,
+                });
+            }
+            if ui.button("Note Off").clicked() {
+                self.dispatch_event(HardwareEvent::MidiNoteOff {
+                    channel: self.midi_channel,
+                    note: self.midi_note,
+                    velocity: 64,
+                });
+            }
+
+            ui.separator();
+            if ui.button("36 -> A01").clicked() {
+                self.send_midi_note_on(36);
+            }
+            if ui.button("40 -> A05").clicked() {
+                self.send_midi_note_on(40);
+            }
+            if ui.button("51 -> A16").clicked() {
+                self.send_midi_note_on(51);
+            }
+            if ui.button("35 ignored").clicked() {
+                self.send_midi_note_on(35);
+            }
+        });
+    }
+
+    fn send_midi_note_on(&mut self, note: u8) {
+        self.midi_note = note;
+        self.dispatch_event(HardwareEvent::MidiNoteOn {
+            channel: self.midi_channel,
+            note,
+            velocity: self.midi_velocity,
         });
     }
 

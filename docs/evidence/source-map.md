@@ -35,6 +35,7 @@ This file tracks evidence sources without copying proprietary source pages, scan
 | conformance-lab-spec | internal_spec | spec | Conformance lab design notes | `docs/superpowers/specs/2026-06-13-mpc2000xl-conformance-lab-design.md` |
 | sequence-playback-scheduling-slice-plan | internal_spec | plan | Deterministic recorded sequence playback scheduling foundation | `docs/superpowers/plans/2026-06-13-mpc2000xl-sequence-playback-scheduling.md` |
 | project-file-storage-slice-plan | internal_spec | plan | Rights-safe host-side JSON project file storage foundation | `docs/superpowers/plans/2026-06-13-mpc2000xl-project-file-storage.md` |
+| midi-note-input-slice-plan | internal_spec | plan | Deterministic MIDI note-on/note-off input mapping foundation | `docs/superpowers/plans/2026-06-13-mpc2000xl-midi-note-input.md` |
 
 ## Legal Boundary
 

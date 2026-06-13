@@ -781,6 +781,277 @@ fn recording_assigned_pad_captures_sample_metadata() {
 }
 
 #[test]
+fn midi_note_36_maps_to_pad_a01_and_reuses_playback_intent() {
+    let mut physical_core = MpcCore::new();
+    let mut midi_core = MpcCore::new();
+
+    let physical_outputs = physical_core.dispatch(HardwareEvent::StrikePad {
+        bank: PadBank::A,
+        pad: 1,
+        velocity: 100,
+    });
+    let midi_outputs = midi_core.dispatch(HardwareEvent::MidiNoteOn {
+        channel: 1,
+        note: 36,
+        velocity: 100,
+    });
+
+    assert!(midi_outputs.iter().any(|output| matches!(
+        output,
+        MachineOutput::MidiNoteMapped {
+            channel: 1,
+            note: 36,
+            bank: PadBank::A,
+            pad: 1,
+            velocity: 100
+        }
+    )));
+    assert!(midi_outputs.iter().any(|output| matches!(
+        output,
+        MachineOutput::PadTriggered {
+            bank: PadBank::A,
+            pad: 1,
+            velocity: 100
+        }
+    )));
+    assert_eq!(
+        playback_intents(&midi_outputs),
+        playback_intents(&physical_outputs)
+    );
+    assert_eq!(
+        midi_core.state().last_playback,
+        physical_core.state().last_playback
+    );
+}
+
+#[test]
+fn midi_note_51_maps_to_pad_a16() {
+    let mut core = MpcCore::new();
+
+    let outputs = core.dispatch(HardwareEvent::MidiNoteOn {
+        channel: 16,
+        note: 51,
+        velocity: 127,
+    });
+
+    assert!(outputs.iter().any(|output| matches!(
+        output,
+        MachineOutput::MidiNoteMapped {
+            channel: 16,
+            note: 51,
+            bank: PadBank::A,
+            pad: 16,
+            velocity: 127
+        }
+    )));
+    assert!(outputs.iter().any(|output| matches!(
+        output,
+        MachineOutput::SamplePlaybackIntent { intent }
+            if intent.bank == PadBank::A
+                && intent.pad_number == 16
+                && intent.sample_id == "synthetic_a_16"
+                && intent.sample_name == "SYN-A16"
+                && intent.velocity == 127
+    )));
+    assert!(matches!(
+        &core.state().last_playback,
+        Some(SamplePlaybackResolution::Intent { intent })
+            if intent.sample_id == "synthetic_a_16" && intent.velocity == 127
+    ));
+}
+
+#[test]
+fn midi_out_of_range_note_is_ignored_without_playback_or_recording_change() {
+    let mut core = MpcCore::new();
+    core.dispatch(HardwareEvent::StrikePad {
+        bank: PadBank::A,
+        pad: 2,
+        velocity: 91,
+    });
+    let previous_last_playback = core.state().last_playback.clone();
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::Rec,
+    });
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::Play,
+    });
+
+    let outputs = core.dispatch(HardwareEvent::MidiNoteOn {
+        channel: 1,
+        note: 35,
+        velocity: 100,
+    });
+
+    assert_eq!(
+        outputs,
+        vec![MachineOutput::MidiInputIgnored {
+            reason: "midi note 35 is not mapped in this slice; mapped range is 36..=51".to_string(),
+        }]
+    );
+    assert_eq!(core.state().last_playback, previous_last_playback);
+    assert!(core.state().recorded_events.is_empty());
+}
+
+#[test]
+fn midi_note_off_is_noop_and_does_not_trigger_playback_or_recording() {
+    let mut core = MpcCore::new();
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::Overdub,
+    });
+
+    let outputs = core.dispatch(HardwareEvent::MidiNoteOff {
+        channel: 1,
+        note: 36,
+        velocity: 64,
+    });
+
+    assert_eq!(
+        outputs,
+        vec![MachineOutput::MidiInputIgnored {
+            reason: "midi note-off is a no-op in this slice".to_string(),
+        }]
+    );
+    assert!(
+        !outputs
+            .iter()
+            .any(|output| matches!(output, MachineOutput::PadTriggered { .. }))
+    );
+    assert!(playback_intents(&outputs).is_empty());
+    assert!(
+        !outputs
+            .iter()
+            .any(|output| matches!(output, MachineOutput::SequenceEventRecorded { .. }))
+    );
+    assert_eq!(core.state().last_playback, None);
+    assert!(core.state().recorded_events.is_empty());
+    assert!(core.state().playing);
+    assert!(core.state().recording);
+}
+
+#[test]
+fn midi_note_on_overdub_records_mapped_pad_sample_metadata() {
+    let mut core = MpcCore::new();
+
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::Overdub,
+    });
+    let outputs = core.dispatch(HardwareEvent::MidiNoteOn {
+        channel: 10,
+        note: 40,
+        velocity: 88,
+    });
+
+    let recorded = core
+        .state()
+        .recorded_events
+        .last()
+        .expect("mapped MIDI note should record sequence event while overdubbing");
+    let playback = recorded
+        .playback
+        .as_ref()
+        .expect("mapped assigned pad should snapshot playback metadata");
+
+    assert_eq!(recorded.selected_track, 1);
+    assert_eq!(recorded.pad_bank, PadBank::A);
+    assert_eq!(recorded.pad_number, 5);
+    assert_eq!(recorded.velocity, 88);
+    assert_eq!(recorded.tick, 0);
+    assert_eq!(playback.sample_id, "synthetic_a_05");
+    assert_eq!(playback.sample_name, "SYN-A05");
+    assert_eq!(playback.velocity, 88);
+    assert!(outputs.iter().any(|output| matches!(
+        output,
+        MachineOutput::MidiNoteMapped {
+            channel: 10,
+            note: 40,
+            bank: PadBank::A,
+            pad: 5,
+            velocity: 88
+        }
+    )));
+    assert!(outputs.iter().any(|output| matches!(
+        output,
+        MachineOutput::SequenceEventRecorded { event }
+            if event.pad_bank == PadBank::A
+                && event.pad_number == 5
+                && event.playback.as_ref().map(|intent| intent.sample_id.as_str())
+                    == Some("synthetic_a_05")
+    )));
+}
+
+#[test]
+fn midi_invalid_channel_note_and_velocity_are_ignored_deterministically() {
+    let cases = [
+        (
+            HardwareEvent::MidiNoteOn {
+                channel: 0,
+                note: 36,
+                velocity: 100,
+            },
+            "midi channel must be in range 1..=16",
+        ),
+        (
+            HardwareEvent::MidiNoteOn {
+                channel: 17,
+                note: 36,
+                velocity: 100,
+            },
+            "midi channel must be in range 1..=16",
+        ),
+        (
+            HardwareEvent::MidiNoteOn {
+                channel: 1,
+                note: 128,
+                velocity: 100,
+            },
+            "midi note must be in range 0..=127",
+        ),
+        (
+            HardwareEvent::MidiNoteOn {
+                channel: 1,
+                note: 36,
+                velocity: 0,
+            },
+            "midi note-on velocity must be in range 1..=127",
+        ),
+        (
+            HardwareEvent::MidiNoteOn {
+                channel: 1,
+                note: 36,
+                velocity: 128,
+            },
+            "midi note-on velocity must be in range 1..=127",
+        ),
+        (
+            HardwareEvent::MidiNoteOff {
+                channel: 1,
+                note: 36,
+                velocity: 128,
+            },
+            "midi note-off velocity must be in range 0..=127",
+        ),
+    ];
+
+    for (event, expected_reason) in cases {
+        let mut core = MpcCore::new();
+        core.dispatch(HardwareEvent::Press {
+            control: PanelControl::Overdub,
+        });
+
+        let outputs = core.dispatch(event);
+
+        assert_eq!(
+            outputs,
+            vec![MachineOutput::MidiInputIgnored {
+                reason: expected_reason.to_string(),
+            }]
+        );
+        assert_eq!(core.state().last_playback, None);
+        assert!(core.state().recorded_events.is_empty());
+    }
+}
+
+#[test]
 fn invalid_pad_and_velocity_are_ignored() {
     let mut core = MpcCore::new();
 
