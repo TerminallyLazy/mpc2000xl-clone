@@ -1,5 +1,8 @@
 use eframe::egui;
-use mpc_audio::{AudioRenderSettings, AudioRenderSummary, render_intent};
+use mpc_audio::{
+    AudioRenderSettings, AudioRenderSummary, CaptureAudioBackend, HostAudioEngine, HostAudioEvent,
+    HostAudioState, render_intent,
+};
 use mpc_core::{
     HardwareEvent, MachineOutput, Mode, MpcCore, MpcState, PadAssignmentChange, PadBank,
     PanelControl, ProgramPad, SamplePlaybackResolution,
@@ -23,6 +26,7 @@ fn main() -> eframe::Result<()> {
 
 struct MpcDesktopApp {
     core: MpcCore,
+    host_audio: HostAudioEngine<CaptureAudioBackend>,
     last_status: String,
     last_synthetic_render: Option<AudioRenderSummary>,
     last_synthetic_render_error: Option<String>,
@@ -32,6 +36,11 @@ impl Default for MpcDesktopApp {
     fn default() -> Self {
         Self {
             core: MpcCore::new(),
+            host_audio: HostAudioEngine::new(
+                CaptureAudioBackend::new(8),
+                AudioRenderSettings::preview(),
+            )
+            .expect("desktop host audio preview settings should satisfy guardrails"),
             last_status: "Ready".to_string(),
             last_synthetic_render: None,
             last_synthetic_render_error: None,
@@ -56,6 +65,7 @@ impl eframe::App for MpcDesktopApp {
             self.draw_sequence_status(ui);
             self.draw_program_status(ui);
             self.draw_audio_render_status(ui);
+            self.draw_host_audio_status(ui);
             ui.add_space(16.0);
             self.draw_pads(ui);
             ui.add_space(16.0);
@@ -133,21 +143,21 @@ impl MpcDesktopApp {
 
     fn dispatch_event(&mut self, event: HardwareEvent) {
         let outputs = self.core.dispatch(event);
-        let render_error = self.render_last_playback_intent(&outputs);
-        self.last_status =
-            render_error.unwrap_or_else(|| Self::status_from_outputs(&outputs, self.core.state()));
+        let render_or_host_error = self.handle_last_playback_intent(&outputs);
+        self.last_status = render_or_host_error
+            .unwrap_or_else(|| Self::status_from_outputs(&outputs, self.core.state()));
     }
 
-    fn render_last_playback_intent(&mut self, outputs: &[MachineOutput]) -> Option<String> {
+    fn handle_last_playback_intent(&mut self, outputs: &[MachineOutput]) -> Option<String> {
         if let Some(MachineOutput::SamplePlaybackIntent { intent }) = outputs
             .iter()
             .find(|output| matches!(output, MachineOutput::SamplePlaybackIntent { .. }))
         {
             match render_intent(intent, AudioRenderSettings::preview()) {
                 Ok(rendered) => {
-                    self.last_synthetic_render = Some(rendered.summary);
+                    self.last_synthetic_render = Some(rendered.summary.clone());
                     self.last_synthetic_render_error = None;
-                    None
+                    host_audio_error_message(&self.host_audio.play_rendered(rendered))
                 }
                 Err(error) => {
                     let message = format!("Synthetic render failed: {error}");
@@ -360,6 +370,21 @@ impl MpcDesktopApp {
         });
     }
 
+    fn draw_host_audio_status(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal_wrapped(|ui| {
+            let mut enabled = self.host_audio.is_enabled();
+            if ui.checkbox(&mut enabled, "Host audio").changed() {
+                self.host_audio.set_enabled(enabled);
+            }
+
+            let state = self.host_audio.state();
+            ui.separator();
+            ui.label(host_audio_state_text(&state));
+            ui.separator();
+            ui.label(last_host_audio_event_text(state.last_event.as_ref()));
+        });
+    }
+
     fn draw_pads(&mut self, ui: &mut egui::Ui) {
         let selected_program_pad = self.core.state().selected_program_pad;
         let program_mode = self.core.state().mode == Mode::Program;
@@ -486,5 +511,39 @@ fn last_synthetic_render_text(summary: Option<&AudioRenderSummary>, error: Optio
             summary.channel_balance
         ),
         (None, None) => "Synthetic render: none".to_string(),
+    }
+}
+
+fn host_audio_error_message(event: &HostAudioEvent) -> Option<String> {
+    match event {
+        HostAudioEvent::Failed { error, .. } => Some(format!("Host audio failed: {error}")),
+        HostAudioEvent::Ignored { .. } | HostAudioEvent::Enqueued { .. } => None,
+    }
+}
+
+fn host_audio_state_text(state: &HostAudioState) -> String {
+    format!(
+        "Host audio: {:?} backend {} queued {} played {}",
+        state.mode, state.backend_name, state.queued_render_count, state.played_render_count
+    )
+}
+
+fn last_host_audio_event_text(event: Option<&HostAudioEvent>) -> String {
+    match event {
+        Some(HostAudioEvent::Ignored { reason, .. }) => {
+            format!("Host audio event: ignored {reason:?}")
+        }
+        Some(HostAudioEvent::Enqueued { receipt, .. }) => format!(
+            "Host audio event: {} {} frames queued={} played={}",
+            receipt.summary.source_sample_name, receipt.frame_count, receipt.queued, receipt.played
+        ),
+        Some(HostAudioEvent::Failed { error, summary, .. }) => {
+            let sample = summary
+                .as_ref()
+                .map(|summary| summary.source_sample_name.as_str())
+                .unwrap_or("no render");
+            format!("Host audio event: failed {sample}: {error}")
+        }
+        None => "Host audio event: none".to_string(),
     }
 }

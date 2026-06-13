@@ -881,6 +881,173 @@
       "conflict_notes": [
         "PPQN and exact timing display are internal-spec pending manual, firmware, or hardware evidence."
       ]
+    },
+    {
+      "id": "audio.host.disabled-ignore",
+      "name": "Disabled host audio ignores playback without backend enqueue",
+      "area": "audio_host",
+      "state": "unit-backed-internal-spec",
+      "evidence": [
+        {
+          "source_id": "host-audio-plumbing-slice-plan",
+          "source_category": "internal_spec",
+          "type": "plan",
+          "status": "mapped",
+          "ref": "docs/superpowers/plans/2026-06-13-mpc2000xl-host-audio-plumbing.md#behavior-slice"
+        }
+      ],
+      "source_coverage": [
+        {
+          "source_category": "manual",
+          "source_id": "owner-manual",
+          "status": "investigation",
+          "ref": null,
+          "note": "Exact MPC2000XL host/device audio behavior and UI enable semantics are not mapped yet."
+        },
+        {
+          "source_category": "firmware",
+          "source_id": "mpc2000xl-os-local-reference",
+          "status": "investigation",
+          "ref": null,
+          "note": "No firmware trace has been captured for host output enable/disable behavior."
+        },
+        {
+          "source_category": "schematic",
+          "source_id": "operation-schematic",
+          "status": "investigation",
+          "ref": null,
+          "note": "No DAC, output jack, or device routing evidence is mapped for this plumbing slice."
+        },
+        {
+          "source_category": "internal_spec",
+          "source_id": "host-audio-plumbing-slice-plan",
+          "status": "mapped",
+          "ref": "docs/superpowers/plans/2026-06-13-mpc2000xl-host-audio-plumbing.md#source-and-evidence-status",
+          "note": "Disabled behavior is a repo-owned safety contract for the full app while exact device evidence is pending."
+        }
+      ],
+      "inputs": [
+        {
+          "channel": "host_audio",
+          "event": "sample_playback_intent_or_rendered_audio",
+          "enabled": false
+        }
+      ],
+      "expected_outputs": {
+        "host_audio_state": {
+          "mode": "disabled",
+          "queued_render_count": "unchanged",
+          "played_render_count": "unchanged",
+          "last_event": "HostAudioEvent::Ignored with reason disabled"
+        },
+        "backend": {
+          "enqueue": "not called",
+          "device": "not opened"
+        }
+      },
+      "tolerance": null,
+      "fixture_refs": [
+        "crates/mpc_audio/src/lib.rs",
+        "apps/desktop/src/main.rs"
+      ],
+      "conflict_notes": [
+        "This is an internal-spec/manual-investigation safety behavior and does not claim exact MPC2000XL audio output behavior."
+      ]
+    },
+    {
+      "id": "audio.host.capture-backend-enqueue",
+      "name": "Enabled host audio enqueues deterministic rendered audio through capture backend",
+      "area": "audio_host",
+      "state": "unit-backed-internal-spec",
+      "evidence": [
+        {
+          "source_id": "host-audio-plumbing-slice-plan",
+          "source_category": "internal_spec",
+          "type": "plan",
+          "status": "mapped",
+          "ref": "docs/superpowers/plans/2026-06-13-mpc2000xl-host-audio-plumbing.md#behavior-slice"
+        },
+        {
+          "source_id": "synthetic-audio-render-slice-plan",
+          "source_category": "internal_spec",
+          "type": "plan",
+          "status": "mapped",
+          "ref": "docs/superpowers/plans/2026-06-13-mpc2000xl-synthetic-audio-render.md#behavior-slice"
+        }
+      ],
+      "source_coverage": [
+        {
+          "source_category": "manual",
+          "source_id": "owner-manual",
+          "status": "investigation",
+          "ref": null,
+          "note": "Owner-manual mapping for exact audio output behavior remains pending."
+        },
+        {
+          "source_category": "firmware",
+          "source_id": "mpc2000xl-os-local-reference",
+          "status": "investigation",
+          "ref": null,
+          "note": "No firmware trace validates voice scheduling, DAC output, latency, or device routing yet."
+        },
+        {
+          "source_category": "schematic",
+          "source_id": "operation-schematic",
+          "status": "investigation",
+          "ref": null,
+          "note": "No hardware output path evidence is mapped to this deterministic capture backend."
+        },
+        {
+          "source_category": "internal_spec",
+          "source_id": "host-audio-plumbing-slice-plan",
+          "status": "mapped",
+          "ref": "docs/superpowers/plans/2026-06-13-mpc2000xl-host-audio-plumbing.md#device-abstraction",
+          "note": "Capture and null backends are deterministic test plumbing fed by the rights-safe renderer."
+        }
+      ],
+      "inputs": [
+        {
+          "channel": "pads",
+          "event": "strike_pad",
+          "output": "SamplePlaybackIntent"
+        },
+        {
+          "channel": "host_audio",
+          "event": "rendered_audio_enqueue",
+          "enabled": true
+        }
+      ],
+      "expected_outputs": {
+        "render": {
+          "source": "mpc_audio::render_intent",
+          "settings": "validated AudioRenderSettings",
+          "frame_memory": "bounded by MAX_RENDER_FRAMES"
+        },
+        "host_audio_state": {
+          "mode": "enabled",
+          "backend_name": "capture or null",
+          "queued_render_count": "increments on accepted enqueue",
+          "played_render_count": "increments when backend reports played",
+          "last_event": "HostAudioEvent::Enqueued or HostAudioEvent::Failed"
+        },
+        "backend": {
+          "device": "not opened for capture/null",
+          "stored_data": "render summaries and frame counts only",
+          "history": "bounded latest-capture history"
+        },
+        "desktop": {
+          "offline_render_summary": "remains visible",
+          "host_audio_status": "visible backend/mode/counter/event summary"
+        }
+      },
+      "tolerance": null,
+      "fixture_refs": [
+        "crates/mpc_audio/src/lib.rs",
+        "apps/desktop/src/main.rs"
+      ],
+      "conflict_notes": [
+        "This slice is internal-spec/manual-investigation plumbing toward the full app; exact audio/device evidence remains pending."
+      ]
     }
   ]
 }
