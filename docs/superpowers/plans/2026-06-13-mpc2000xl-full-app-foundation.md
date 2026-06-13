@@ -82,7 +82,7 @@ Create `.gitignore`:
 
 Create `README.md`:
 
-```markdown
+````markdown
 # MPC2000XL Clone
 
 This repository is the foundation for a full cross-platform desktop instrument modeled on the MPC2000XL workflow.
@@ -102,7 +102,7 @@ At the workspace-skeleton stage, this command is expected to fail until the work
 ```bash
 cargo metadata --no-deps
 ```
-```
+````
 
 - [ ] **Step 4: Verify workspace metadata is readable**
 
