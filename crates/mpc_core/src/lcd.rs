@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::events::{PadAssignment, Program, ProgramPad};
+use crate::events::{PadAssignment, Program, ProgramEditField, ProgramPad};
 use crate::state::MainScreenField;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -78,6 +78,7 @@ impl LcdFrame {
     pub fn program_screen(
         program: &Program,
         selected_pad: ProgramPad,
+        selected_field: ProgramEditField,
         assignment: Option<&PadAssignment>,
     ) -> Self {
         let pad_label = format!(
@@ -85,27 +86,51 @@ impl LcdFrame {
             selected_pad.bank.label(),
             selected_pad.pad_number
         );
+        let marker = |field| {
+            if selected_field == field { ">" } else { " " }
+        };
         let (assignment_line, sample_line, mix_line) = match assignment {
             Some(assignment) => (
-                format!("Pad {pad_label} -> {}", assignment.sample.name),
+                format!(
+                    "{}Pad {pad_label} -> {}",
+                    marker(ProgramEditField::Pad),
+                    assignment.sample.name
+                ),
                 format!("Sample {}", assignment.sample.id),
                 format!(
-                    "Level {:03} Pan {}",
+                    "{}Level {:03} {}Pan {} {}Tune {}",
+                    marker(ProgramEditField::Level),
                     assignment.level,
-                    pan_text(assignment.pan)
+                    marker(ProgramEditField::Pan),
+                    pan_text(assignment.pan),
+                    marker(ProgramEditField::Tune),
+                    tune_text(assignment.tune_cents)
                 ),
             ),
             None => (
-                format!("Pad {pad_label} -> unassigned"),
+                format!(
+                    "{}Pad {pad_label} -> unassigned",
+                    marker(ProgramEditField::Pad)
+                ),
                 "Sample none".to_string(),
-                "Level --- Pan --".to_string(),
+                format!(
+                    "{}Level --- {}Pan -- {}Tune ----",
+                    marker(ProgramEditField::Level),
+                    marker(ProgramEditField::Pan),
+                    marker(ProgramEditField::Tune)
+                ),
             ),
         };
 
         Self {
             title: "PROGRAM".to_string(),
             lines: [
-                format!("Program {:02} {}", program.index, program.name),
+                format!(
+                    "Program {:02} {} Edit {}",
+                    program.index,
+                    program.name,
+                    selected_field.label()
+                ),
                 assignment_line,
                 sample_line,
                 mix_line,
@@ -148,4 +173,8 @@ fn pan_text(pan: i8) -> String {
         std::cmp::Ordering::Equal => "C".to_string(),
         std::cmp::Ordering::Greater => format!("R{pan}"),
     }
+}
+
+fn tune_text(tune_cents: i16) -> String {
+    format!("{tune_cents:+04}")
 }

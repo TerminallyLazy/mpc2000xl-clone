@@ -150,6 +150,16 @@ impl MpcDesktopApp {
 
     fn draw_edit_controls(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
+            if ui.button("Cursor ^").clicked() {
+                self.dispatch_event(HardwareEvent::Press {
+                    control: PanelControl::CursorUp,
+                });
+            }
+            if ui.button("Cursor v").clicked() {
+                self.dispatch_event(HardwareEvent::Press {
+                    control: PanelControl::CursorDown,
+                });
+            }
             if ui.button("Cursor <").clicked() {
                 self.dispatch_event(HardwareEvent::Press {
                     control: PanelControl::CursorLeft,
@@ -423,6 +433,24 @@ impl MpcDesktopApp {
             };
         }
 
+        if let Some(MachineOutput::PadParameterChanged {
+            bank,
+            pad,
+            parameter,
+            value,
+            assignment,
+        }) = outputs
+            .iter()
+            .find(|output| matches!(output, MachineOutput::PadParameterChanged { .. }))
+        {
+            return format!(
+                "Program pad {bank:?}{pad:02} {} set to {} ({})",
+                parameter.label(),
+                value,
+                assignment.sample.name
+            );
+        }
+
         if let Some(MachineOutput::SequenceEventRecorded { event }) = outputs
             .iter()
             .find(|output| matches!(output, MachineOutput::SequenceEventRecorded { .. }))
@@ -469,13 +497,14 @@ impl MpcDesktopApp {
             .find(|output| matches!(output, MachineOutput::SamplePlaybackIntent { .. }))
         {
             return format!(
-                "Playback intent Trk {:02} Pgm {:02} {:?}{:02} {} velocity {}",
+                "Playback intent Trk {:02} Pgm {:02} {:?}{:02} {} velocity {} tune {}",
                 intent.selected_track,
                 intent.program_index,
                 intent.bank,
                 intent.pad_number,
                 intent.sample_name,
-                intent.velocity
+                intent.velocity,
+                tune_text(intent.tune_cents)
             );
         }
 
@@ -629,6 +658,11 @@ impl MpcDesktopApp {
             ui.separator();
             ui.label(format!("Selected pad: {}", program_pad_label(selected_pad)));
             ui.separator();
+            ui.label(format!(
+                "Edit field: {}",
+                state.selected_program_edit_field.label()
+            ));
+            ui.separator();
             ui.label(assignment_text);
             ui.separator();
             ui.label(last_playback_text);
@@ -719,8 +753,9 @@ fn main_screen_status(state: &MpcState) -> String {
             state.recorded_events.len()
         ),
         Mode::Program => format!(
-            "LCD updated: PROGRAM {}, {}",
+            "LCD updated: PROGRAM {} field {}, {}",
             program_pad_label(state.selected_program_pad),
+            state.selected_program_edit_field.label(),
             selected_assignment_text(state)
         ),
         mode => format!("LCD updated: {mode:?}"),
@@ -729,6 +764,10 @@ fn main_screen_status(state: &MpcState) -> String {
 
 fn tempo_text(tempo_bpm_x100: u32) -> String {
     format!("{}.{:02} BPM", tempo_bpm_x100 / 100, tempo_bpm_x100 % 100)
+}
+
+fn tune_text(tune_cents: i16) -> String {
+    format!("{tune_cents:+04}c")
 }
 
 fn assignment_action_text(action: PadAssignmentChange) -> &'static str {
@@ -751,8 +790,11 @@ fn selected_assignment_text(state: &MpcState) -> String {
         .find(|assignment| assignment.pad == selected_pad)
     {
         Some(assignment) => format!(
-            "Assignment: {} level {} pan {}",
-            assignment.sample.name, assignment.level, assignment.pan
+            "Assignment: {} level {} pan {} tune {}",
+            assignment.sample.name,
+            assignment.level,
+            assignment.pan,
+            tune_text(assignment.tune_cents)
         ),
         None => "Assignment: unassigned".to_string(),
     }
@@ -768,13 +810,14 @@ fn last_playback_text(state: &MpcState) -> String {
 fn playback_resolution_text(resolution: &SamplePlaybackResolution) -> String {
     match resolution {
         SamplePlaybackResolution::Intent { intent } => format!(
-            "Last playback: {} {} vel {}",
+            "Last playback: {} {} vel {} tune {}",
             program_pad_label(ProgramPad {
                 bank: intent.bank,
                 pad_number: intent.pad_number,
             }),
             intent.sample_name,
-            intent.velocity
+            intent.velocity,
+            tune_text(intent.tune_cents)
         ),
         SamplePlaybackResolution::Miss { miss } => format!(
             "Last playback: {} {:?}",
@@ -791,10 +834,11 @@ fn last_synthetic_render_text(summary: Option<&AudioRenderSummary>, error: Optio
     match (summary, error) {
         (_, Some(error)) => error.to_string(),
         (Some(summary), None) => format!(
-            "Synthetic render: {} {} frames @ {} Hz peak L{} R{} balance {:?}",
+            "Synthetic render: {} {} frames @ {} Hz tune {} peak L{} R{} balance {:?}",
             summary.source_sample_name,
             summary.frame_count,
             summary.sample_rate_hz,
+            tune_text(summary.tune_cents),
             summary.peak_left,
             summary.peak_right,
             summary.channel_balance
@@ -849,8 +893,12 @@ fn last_host_audio_event_text(event: Option<&HostAudioEvent>) -> String {
             format!("Host audio event: ignored {reason:?}")
         }
         Some(HostAudioEvent::Enqueued { receipt, .. }) => format!(
-            "Host audio event: {} {} frames queued={} played={}",
-            receipt.summary.source_sample_name, receipt.frame_count, receipt.queued, receipt.played
+            "Host audio event: {} {} frames tune {} queued={} played={}",
+            receipt.summary.source_sample_name,
+            receipt.frame_count,
+            tune_text(receipt.summary.tune_cents),
+            receipt.queued,
+            receipt.played
         ),
         Some(HostAudioEvent::Failed { error, summary, .. }) => {
             let sample = summary

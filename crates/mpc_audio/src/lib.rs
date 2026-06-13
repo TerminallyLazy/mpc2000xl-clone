@@ -162,6 +162,7 @@ pub struct AudioRenderSummary {
     pub velocity: u8,
     pub level: u8,
     pub pan: i8,
+    pub tune_cents: i16,
     pub peak_left: i16,
     pub peak_right: i16,
     pub peak_amplitude: i16,
@@ -701,7 +702,7 @@ pub fn render_intent(
     let mut peak_right = 0_i16;
 
     for frame_index in 0..settings.frame_count {
-        let wave = seeded_square_wave(seed, frame_index);
+        let wave = seeded_square_wave(seed, frame_index, intent.tune_cents);
         let mono = wave * mono_peak / 255;
         let left = clamp_i16(mono * left_gain / 100);
         let right = clamp_i16(mono * right_gain / 100);
@@ -726,6 +727,7 @@ pub fn render_intent(
         velocity: intent.velocity,
         level: intent.level,
         pan: intent.pan,
+        tune_cents: intent.tune_cents,
         peak_left,
         peak_right,
         peak_amplitude,
@@ -811,11 +813,16 @@ fn stereo_gains(pan: i8) -> (i32, i32) {
     (left, right)
 }
 
-fn seeded_square_wave(seed: u32, frame_index: usize) -> i32 {
-    let period = 12 + usize::try_from(seed % 53).expect("period seed fits usize");
+fn seeded_square_wave(seed: u32, frame_index: usize, tune_cents: i16) -> i32 {
+    let base_period = 12_i32 + i32::try_from(seed % 53).expect("period seed fits i32");
+    let semitone_offset = i32::from(tune_cents) / 100;
+    let period = usize::try_from((base_period - semitone_offset).clamp(4, 128))
+        .expect("tuned period fits usize");
     let duty = 1 + usize::try_from((seed >> 8) % (period as u32 - 1)).expect("duty fits usize");
-    let phase =
-        (frame_index + usize::try_from(seed >> 16).expect("phase seed fits usize")) % period;
+    let phase_seed = i64::from(seed >> 16) + i64::from(tune_cents);
+    let phase_offset =
+        usize::try_from(phase_seed.rem_euclid(period as i64)).expect("phase offset fits usize");
+    let phase = (frame_index + phase_offset) % period;
 
     if phase < duty { 255 } else { -255 }
 }
@@ -871,6 +878,21 @@ mod tests {
         assert_eq!(center.summary.channel_balance, ChannelBalance::Center);
         assert!(right.summary.peak_right > right.summary.peak_left);
         assert_eq!(right.summary.channel_balance, ChannelBalance::Right);
+    }
+
+    #[test]
+    fn tune_is_reported_and_changes_deterministic_frames() {
+        let settings = settings(44_100, 128);
+        let default_tune = render(&test_intent_with_tune(100, 100, 0, 0), settings);
+        let raised_tune = render(&test_intent_with_tune(100, 100, 0, 700), settings);
+
+        assert_eq!(default_tune.summary.tune_cents, 0);
+        assert_eq!(raised_tune.summary.tune_cents, 700);
+        assert_eq!(
+            default_tune.summary.peak_amplitude,
+            raised_tune.summary.peak_amplitude
+        );
+        assert_ne!(default_tune.frames, raised_tune.frames);
     }
 
     #[test]
@@ -1206,6 +1228,15 @@ mod tests {
     }
 
     fn test_intent(velocity: u8, level: u8, pan: i8) -> SamplePlaybackIntent {
+        test_intent_with_tune(velocity, level, pan, 0)
+    }
+
+    fn test_intent_with_tune(
+        velocity: u8,
+        level: u8,
+        pan: i8,
+        tune_cents: i16,
+    ) -> SamplePlaybackIntent {
         SamplePlaybackIntent {
             selected_track: 1,
             program_index: 1,
@@ -1217,6 +1248,7 @@ mod tests {
             velocity,
             level,
             pan,
+            tune_cents,
         }
     }
 

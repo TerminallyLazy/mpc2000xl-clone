@@ -36,6 +36,7 @@ This file tracks evidence sources without copying proprietary source pages, scan
 | sequence-playback-scheduling-slice-plan | internal_spec | plan | Deterministic recorded sequence playback scheduling foundation | `docs/superpowers/plans/2026-06-13-mpc2000xl-sequence-playback-scheduling.md` |
 | project-file-storage-slice-plan | internal_spec | plan | Rights-safe host-side JSON project file storage foundation | `docs/superpowers/plans/2026-06-13-mpc2000xl-project-file-storage.md` |
 | midi-note-input-slice-plan | internal_spec | plan | Deterministic MIDI note-on/note-off input mapping foundation | `docs/superpowers/plans/2026-06-13-mpc2000xl-midi-note-input.md` |
+| program-pad-parameter-editing-slice-plan | internal_spec | plan | PROGRAM pad Level/Pan/Tune editing and render propagation foundation | `docs/superpowers/plans/2026-06-13-mpc2000xl-program-pad-parameter-editing.md` |
 
 ## Legal Boundary
 

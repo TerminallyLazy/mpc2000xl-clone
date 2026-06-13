@@ -38,7 +38,8 @@
         "sample_name": "SYN-A01",
         "velocity": 100,
         "level": 100,
-        "pan": 0
+        "pan": 0,
+        "tune_cents": 0
       }
     }
   }

@@ -1449,6 +1449,113 @@
       "conflict_notes": [
         "Transport safety and validation behavior are internal-spec/manual-investigation guardrails pending exact MPC2000XL project-load evidence."
       ]
+    },
+    {
+      "id": "core.program.pad-parameter-edit-render",
+      "name": "PROGRAM pad Level Pan Tune edits propagate to playback and render metadata",
+      "area": "program",
+      "state": "fixture-backed-internal-spec",
+      "evidence": [
+        {
+          "source_id": "program-pad-parameter-editing-slice-plan",
+          "source_category": "internal_spec",
+          "type": "plan",
+          "status": "mapped",
+          "ref": "docs/superpowers/plans/2026-06-13-mpc2000xl-program-pad-parameter-editing.md#behavior-slice"
+        }
+      ],
+      "source_coverage": [
+        {
+          "source_category": "manual",
+          "source_id": "owner-manual",
+          "status": "investigation",
+          "ref": null,
+          "note": "Exact owner-manual PROGRAM parameter field flow, text, and ranges are not mapped yet."
+        },
+        {
+          "source_category": "firmware",
+          "source_id": "mpc2000xl-os-local-reference",
+          "status": "investigation",
+          "ref": null,
+          "note": "No firmware trace has been captured for PROGRAM Level, Pan, or Tune edit behavior."
+        },
+        {
+          "source_category": "vmpc",
+          "source_id": "vmpc-docs-public",
+          "status": "investigation",
+          "ref": null,
+          "note": "VMPC comparative PROGRAM parameter behavior remains pending docs/source/license review."
+        },
+        {
+          "source_category": "internal_spec",
+          "source_id": "program-pad-parameter-editing-slice-plan",
+          "status": "mapped",
+          "ref": "docs/superpowers/plans/2026-06-13-mpc2000xl-program-pad-parameter-editing.md#source-and-evidence-status",
+          "note": "Level, Pan, and Tune editing is currently an internal foundation contract with explicit reference-behavior gaps."
+        }
+      ],
+      "inputs": [
+        {
+          "channel": "front_panel",
+          "event": "press",
+          "control": "program"
+        },
+        {
+          "channel": "front_panel",
+          "event": "press",
+          "control": "cursor_up_or_down",
+          "effect": "cycle PROGRAM edit field"
+        },
+        {
+          "channel": "front_panel",
+          "event": "turn_data_wheel",
+          "selected_fields": [
+            "pad",
+            "level",
+            "pan",
+            "tune"
+          ]
+        },
+        {
+          "channel": "pads",
+          "event": "strike_pad",
+          "bank": "a",
+          "pad": "1..=16"
+        }
+      ],
+      "expected_outputs": {
+        "state": {
+          "selected_program_edit_field": "persisted in project machine metadata",
+          "assignment_level_range": "0..=127",
+          "assignment_pan_range": "-50..=50",
+          "assignment_tune_cents_range": "-1200..=1200"
+        },
+        "outputs": [
+          "PadParameterChanged for assigned Level/Pan/Tune edits",
+          "Ignored for unassigned Level/Pan/Tune edits",
+          "SamplePlaybackIntent carries level, pan, and tune_cents"
+        ],
+        "render": {
+          "summary": "AudioRenderSummary includes tune_cents",
+          "frames": "tune_cents changes deterministic generated frames",
+          "loaded_audio_byte_count": 0
+        },
+        "recording": {
+          "snapshot": "recorded SequenceEvent playback metadata preserves level, pan, and tune_cents after later assignment edits"
+        }
+      },
+      "tolerance": {
+        "tune_step_cents": 100,
+        "pitch_accuracy": "not claimed"
+      },
+      "fixture_refs": [
+        "crates/mpc_core/tests/core_flow.rs",
+        "crates/mpc_audio/src/lib.rs",
+        "crates/mpc_conformance/tests/fixtures/program_pad_parameter_edit_render.json"
+      ],
+      "conflict_notes": [
+        "Exact MPC2000XL PROGRAM screen behavior and audio pitch/interpolation behavior are evidence gaps; this is a rights-safe deterministic foundation."
+      ]
     }
   ]
 }

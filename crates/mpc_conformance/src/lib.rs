@@ -1,8 +1,8 @@
 use anyhow::{Context, Result, bail};
 use mpc_audio::{AudioRenderSettings, AudioSourceKind, ChannelBalance, render_intent};
 use mpc_core::{
-    HardwareEvent, MainScreenField, Mode, MpcCore, MpcState, PROJECT_SNAPSHOT_VERSION, ProgramPad,
-    SamplePlaybackResolution, SequenceEvent,
+    HardwareEvent, MainScreenField, Mode, MpcCore, MpcState, PROJECT_SNAPSHOT_VERSION,
+    ProgramEditField, ProgramPad, SamplePlaybackResolution, SequenceEvent,
 };
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -68,6 +68,8 @@ pub struct ExpectedState {
     #[serde(default)]
     pub selected_program_pad: Option<ProgramPad>,
     #[serde(default)]
+    pub selected_program_edit_field: Option<ProgramEditField>,
+    #[serde(default)]
     pub last_playback: Option<SamplePlaybackResolution>,
     #[serde(default)]
     pub last_recorded_sample_id: Option<String>,
@@ -89,6 +91,8 @@ pub struct ExpectedAudioRender {
     pub program_name: String,
     pub bank: mpc_core::PadBank,
     pub pad_number: u8,
+    #[serde(default)]
+    pub tune_cents: i16,
     pub peak_left: i16,
     pub peak_right: i16,
     pub peak_amplitude: i16,
@@ -355,6 +359,15 @@ fn validate_expected_state(
         }
     }
 
+    if let Some(selected_program_edit_field) = expected.selected_program_edit_field {
+        if state.selected_program_edit_field != selected_program_edit_field {
+            details.push(format!(
+                "{prefix}selected_program_edit_field mismatch: expected {:?}, got {:?}",
+                selected_program_edit_field, state.selected_program_edit_field
+            ));
+        }
+    }
+
     if let Some(last_playback) = &expected.last_playback {
         if state.last_playback.as_ref() != Some(last_playback) {
             details.push(format!(
@@ -484,6 +497,12 @@ fn validate_expected_audio_render(
     );
     push_mismatch(
         details,
+        "last_audio_render.tune_cents",
+        &expected.tune_cents,
+        &summary.tune_cents,
+    );
+    push_mismatch(
+        details,
         "last_audio_render.peak_left",
         &expected.peak_left,
         &summary.peak_left,
@@ -551,6 +570,7 @@ mod tests {
                 velocity: 100,
                 level: 100,
                 pan: 0,
+                tune_cents: 0,
             },
         };
         let expected = ExpectedAudioRender {
@@ -567,6 +587,7 @@ mod tests {
             program_name: "Program01".to_string(),
             bank: PadBank::A,
             pad_number: 1,
+            tune_cents: 0,
             peak_left: 0,
             peak_right: 0,
             peak_amplitude: 0,

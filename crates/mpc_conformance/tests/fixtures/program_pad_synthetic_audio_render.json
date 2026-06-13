@@ -35,7 +35,8 @@
         "sample_name": "SYN-A01",
         "velocity": 100,
         "level": 100,
-        "pan": 0
+        "pan": 0,
+        "tune_cents": 0
       }
     },
     "last_audio_render": {
@@ -52,6 +53,7 @@
       "program_name": "Program01",
       "bank": "a",
       "pad_number": 1,
+      "tune_cents": 0,
       "peak_left": 20315,
       "peak_right": 20315,
       "peak_amplitude": 20315,

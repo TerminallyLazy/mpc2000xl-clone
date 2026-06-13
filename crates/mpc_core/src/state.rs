@@ -5,8 +5,8 @@ use std::fmt;
 
 use crate::events::{
     HardwareEvent, MachineOutput, Mode, PadAssignment, PadAssignmentChange, PadBank, PanelControl,
-    PlaybackMissReason, Program, ProgramPad, SamplePlaybackIntent, SamplePlaybackMiss,
-    SamplePlaybackResolution, SequenceEvent, SyntheticSample,
+    PlaybackMissReason, Program, ProgramEditField, ProgramPad, SamplePlaybackIntent,
+    SamplePlaybackMiss, SamplePlaybackResolution, SequenceEvent, SyntheticSample,
 };
 use crate::lcd::LcdFrame;
 
@@ -34,9 +34,12 @@ const DEFAULT_PROGRAM_INDEX: u8 = 1;
 const DEFAULT_PROGRAM_NAME: &str = "Program01";
 const DEFAULT_PAD_LEVEL: u8 = 100;
 const DEFAULT_PAD_PAN: i8 = 0;
+const DEFAULT_PAD_TUNE_CENTS: i16 = 0;
 const MAX_PAD_LEVEL: u8 = 127;
 const MIN_PAD_PAN: i8 = -50;
 const MAX_PAD_PAN: i8 = 50;
+const MIN_PAD_TUNE_CENTS: i16 = -1200;
+const MAX_PAD_TUNE_CENTS: i16 = 1200;
 const MIDI_MIN_CHANNEL: u8 = 1;
 const MIDI_MAX_CHANNEL: u8 = 16;
 const MIDI_MAX_NOTE: u8 = 127;
@@ -106,6 +109,8 @@ pub struct ProjectMachineSnapshot {
     pub selected_main_field: MainScreenField,
     pub pad_bank: PadBank,
     pub selected_program_pad: ProgramPad,
+    #[serde(default)]
+    pub selected_program_edit_field: ProgramEditField,
     pub playhead_ticks: u64,
     pub playhead_tick_remainder: u64,
     pub event_count: u64,
@@ -194,6 +199,7 @@ pub struct MpcState {
     pub pad_bank: PadBank,
     pub current_program: Program,
     pub selected_program_pad: ProgramPad,
+    pub selected_program_edit_field: ProgramEditField,
     pub last_playback: Option<SamplePlaybackResolution>,
     pub playhead_ticks: u64,
     pub playhead_tick_remainder: u64,
@@ -242,6 +248,7 @@ impl Default for MpcState {
             pad_bank: PadBank::A,
             current_program,
             selected_program_pad,
+            selected_program_edit_field: ProgramEditField::Pad,
             last_playback: None,
             playhead_ticks: 0,
             playhead_tick_remainder: 0,
@@ -278,6 +285,7 @@ impl MpcCore {
                 selected_main_field: self.state.selected_main_field,
                 pad_bank: self.state.pad_bank,
                 selected_program_pad: self.state.selected_program_pad,
+                selected_program_edit_field: self.state.selected_program_edit_field,
                 playhead_ticks: self.state.playhead_ticks,
                 playhead_tick_remainder: self.state.playhead_tick_remainder,
                 event_count: self.state.event_count,
@@ -324,6 +332,7 @@ impl MpcCore {
             pad_assignments,
         };
         self.state.selected_program_pad = snapshot.machine.selected_program_pad;
+        self.state.selected_program_edit_field = snapshot.machine.selected_program_edit_field;
         self.state.last_playback = snapshot.machine.last_playback;
         self.state.playhead_ticks = snapshot.machine.playhead_ticks;
         self.state.playhead_tick_remainder = snapshot.machine.playhead_tick_remainder;
@@ -457,13 +466,13 @@ impl MpcCore {
             }
             PanelControl::CursorLeft => self.move_main_field_left(),
             PanelControl::CursorRight => self.move_main_field_right(),
+            PanelControl::CursorUp => self.move_program_edit_field_up(),
+            PanelControl::CursorDown => self.move_program_edit_field_down(),
             PanelControl::SoftKey(index) => self.handle_soft_key(index),
-            PanelControl::CursorUp | PanelControl::CursorDown | PanelControl::Numeric(_) => {
-                Self::ignored(format!(
-                    "{}.{control:?}_unimplemented",
-                    mode_reason(self.state.mode)
-                ))
-            }
+            PanelControl::Numeric(_) => Self::ignored(format!(
+                "{}.{control:?}_unimplemented",
+                mode_reason(self.state.mode)
+            )),
         }
     }
 
@@ -478,9 +487,7 @@ impl MpcCore {
 
     fn handle_data_wheel(&mut self, delta: i32) -> Vec<MachineOutput> {
         if self.state.mode == Mode::Program {
-            self.adjust_selected_program_pad(delta);
-            self.refresh_lcd();
-            return vec![MachineOutput::LcdChanged];
+            return self.adjust_selected_program_field(delta);
         }
 
         if self.state.mode != Mode::Main {
@@ -535,6 +542,34 @@ impl MpcCore {
         }
 
         self.state.selected_main_field = self.state.selected_main_field.next();
+        self.refresh_lcd();
+        vec![MachineOutput::LcdChanged]
+    }
+
+    fn move_program_edit_field_up(&mut self) -> Vec<MachineOutput> {
+        if self.state.mode != Mode::Program {
+            return Self::ignored(format!(
+                "{}.{:?}_unimplemented",
+                mode_reason(self.state.mode),
+                PanelControl::CursorUp
+            ));
+        }
+
+        self.state.selected_program_edit_field = self.state.selected_program_edit_field.previous();
+        self.refresh_lcd();
+        vec![MachineOutput::LcdChanged]
+    }
+
+    fn move_program_edit_field_down(&mut self) -> Vec<MachineOutput> {
+        if self.state.mode != Mode::Program {
+            return Self::ignored(format!(
+                "{}.{:?}_unimplemented",
+                mode_reason(self.state.mode),
+                PanelControl::CursorDown
+            ));
+        }
+
+        self.state.selected_program_edit_field = self.state.selected_program_edit_field.next();
         self.refresh_lcd();
         vec![MachineOutput::LcdChanged]
     }
@@ -627,6 +662,7 @@ impl MpcCore {
             Mode::Program => LcdFrame::program_screen(
                 &self.state.current_program,
                 self.state.selected_program_pad,
+                self.state.selected_program_edit_field,
                 self.assignment_for(self.state.selected_program_pad),
             ),
             Mode::Sample => LcdFrame::mode_screen("SAMPLE", "Sample record"),
@@ -794,9 +830,77 @@ impl MpcCore {
             .find(|assignment| assignment.pad == pad)
     }
 
+    fn assignment_for_mut(&mut self, pad: ProgramPad) -> Option<&mut PadAssignment> {
+        self.state
+            .current_program
+            .pad_assignments
+            .iter_mut()
+            .find(|assignment| assignment.pad == pad)
+    }
+
     fn adjust_selected_program_pad(&mut self, delta: i32) {
         let next = clamp_delta_u8(self.state.selected_program_pad.pad_number, delta, 1, 16);
         self.state.selected_program_pad.pad_number = next;
+    }
+
+    fn adjust_selected_program_field(&mut self, delta: i32) -> Vec<MachineOutput> {
+        match self.state.selected_program_edit_field {
+            ProgramEditField::Pad => {
+                self.adjust_selected_program_pad(delta);
+                self.refresh_lcd();
+                vec![MachineOutput::LcdChanged]
+            }
+            ProgramEditField::Level | ProgramEditField::Pan | ProgramEditField::Tune => {
+                self.adjust_selected_pad_parameter(delta)
+            }
+        }
+    }
+
+    fn adjust_selected_pad_parameter(&mut self, delta: i32) -> Vec<MachineOutput> {
+        let pad = self.state.selected_program_pad;
+        let parameter = self.state.selected_program_edit_field;
+        let Some(assignment) = self.assignment_for_mut(pad) else {
+            return Self::ignored(format!(
+                "program.{}.unassigned_{}{:02}",
+                parameter.label(),
+                pad.bank.label().to_ascii_lowercase(),
+                pad.pad_number
+            ));
+        };
+
+        let value = match parameter {
+            ProgramEditField::Level => {
+                assignment.level = clamp_delta_u8(assignment.level, delta, 0, MAX_PAD_LEVEL);
+                i16::from(assignment.level)
+            }
+            ProgramEditField::Pan => {
+                assignment.pan = clamp_delta_i8(assignment.pan, delta, MIN_PAD_PAN, MAX_PAD_PAN);
+                i16::from(assignment.pan)
+            }
+            ProgramEditField::Tune => {
+                assignment.tune_cents = clamp_delta_i16(
+                    assignment.tune_cents,
+                    delta.saturating_mul(100),
+                    MIN_PAD_TUNE_CENTS,
+                    MAX_PAD_TUNE_CENTS,
+                );
+                assignment.tune_cents
+            }
+            ProgramEditField::Pad => unreachable!("pad edits are handled before parameter edits"),
+        };
+        let assignment = assignment.clone();
+
+        self.refresh_lcd();
+        vec![
+            MachineOutput::PadParameterChanged {
+                bank: pad.bank,
+                pad: pad.pad_number,
+                parameter,
+                value,
+                assignment,
+            },
+            MachineOutput::LcdChanged,
+        ]
     }
 
     fn clear_selected_pad_assignment(&mut self) -> Vec<MachineOutput> {
@@ -864,6 +968,7 @@ impl MpcCore {
                     velocity,
                     level: assignment.level,
                     pan: assignment.pan,
+                    tune_cents: assignment.tune_cents,
                 },
             };
         }
@@ -921,6 +1026,7 @@ fn validate_machine_json_fields(value: &Value) -> Result<(), ProjectSnapshotErro
             "selected_main_field",
             "pad_bank",
             "selected_program_pad",
+            "selected_program_edit_field",
             "playhead_ticks",
             "playhead_tick_remainder",
             "event_count",
@@ -990,8 +1096,11 @@ fn validate_program_json_fields(value: &Value) -> Result<(), ProjectSnapshotErro
 }
 
 fn validate_assignment_json_fields(field: &str, value: &Value) -> Result<(), ProjectSnapshotError> {
-    let Some(assignment) =
-        reject_unknown_json_fields(field, value, &["pad", "sample", "level", "pan"])?
+    let Some(assignment) = reject_unknown_json_fields(
+        field,
+        value,
+        &["pad", "sample", "level", "pan", "tune_cents"],
+    )?
     else {
         return Ok(());
     };
@@ -1084,6 +1193,7 @@ fn validate_playback_intent_json_fields(
             "velocity",
             "level",
             "pan",
+            "tune_cents",
         ],
     )?;
     Ok(())
@@ -1271,6 +1381,12 @@ fn validate_assignment(
         assignment.pan,
         MIN_PAD_PAN,
         MAX_PAD_PAN,
+    )?;
+    validate_range_i16(
+        &format!("{field}.tune_cents"),
+        assignment.tune_cents,
+        MIN_PAD_TUNE_CENTS,
+        MAX_PAD_TUNE_CENTS,
     )
 }
 
@@ -1357,6 +1473,12 @@ fn validate_playback_intent(
         intent.pan,
         MIN_PAD_PAN,
         MAX_PAD_PAN,
+    )?;
+    validate_range_i16(
+        &format!("{field}.tune_cents"),
+        intent.tune_cents,
+        MIN_PAD_TUNE_CENTS,
+        MAX_PAD_TUNE_CENTS,
     )
 }
 
@@ -1506,6 +1628,21 @@ fn validate_range_i8(field: &str, value: i8, min: i8, max: i8) -> Result<(), Pro
     Ok(())
 }
 
+fn validate_range_i16(
+    field: &str,
+    value: i16,
+    min: i16,
+    max: i16,
+) -> Result<(), ProjectSnapshotError> {
+    if value < min || value > max {
+        return Err(invalid_value(
+            field,
+            format!("must be in range {min}..={max}"),
+        ));
+    }
+    Ok(())
+}
+
 fn invalid_value(field: &str, message: impl Into<String>) -> ProjectSnapshotError {
     ProjectSnapshotError::InvalidValue {
         field: field.to_string(),
@@ -1540,6 +1677,7 @@ fn generated_assignment(pad: ProgramPad) -> PadAssignment {
         sample: generated_sample(pad),
         level: DEFAULT_PAD_LEVEL,
         pan: DEFAULT_PAD_PAN,
+        tune_cents: DEFAULT_PAD_TUNE_CENTS,
     }
 }
 
@@ -1560,6 +1698,14 @@ fn clamp_delta_u8(current: u8, delta: i32, min: u8, max: u8) -> u8 {
 
 fn clamp_delta_u16(current: u16, delta: i32, min: u16, max: u16) -> u16 {
     (i64::from(current) + i64::from(delta)).clamp(i64::from(min), i64::from(max)) as u16
+}
+
+fn clamp_delta_i8(current: i8, delta: i32, min: i8, max: i8) -> i8 {
+    (i64::from(current) + i64::from(delta)).clamp(i64::from(min), i64::from(max)) as i8
+}
+
+fn clamp_delta_i16(current: i16, delta: i32, min: i16, max: i16) -> i16 {
+    (i64::from(current) + i64::from(delta)).clamp(i64::from(min), i64::from(max)) as i16
 }
 
 fn mode_reason(mode: Mode) -> &'static str {

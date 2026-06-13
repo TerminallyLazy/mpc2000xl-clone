@@ -4,8 +4,8 @@ pub mod state;
 
 pub use events::{
     HardwareEvent, MachineOutput, Mode, PadAssignment, PadAssignmentChange, PadBank, PanelControl,
-    PlaybackMissReason, Program, ProgramPad, SamplePlaybackIntent, SamplePlaybackMiss,
-    SamplePlaybackResolution, SequenceEvent, SyntheticSample,
+    PlaybackMissReason, Program, ProgramEditField, ProgramPad, SamplePlaybackIntent,
+    SamplePlaybackMiss, SamplePlaybackResolution, SequenceEvent, SyntheticSample,
 };
 pub use lcd::LcdFrame;
 pub use state::{

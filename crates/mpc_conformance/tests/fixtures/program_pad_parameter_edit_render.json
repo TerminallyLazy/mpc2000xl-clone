@@ -1,25 +1,52 @@
 {
-  "id": "midi.note-on-36.a01-synthetic-render",
-  "name": "MIDI note-on 36 maps to A01 synthetic sample playback metadata",
+  "id": "core.program.pad-parameter-edit-render",
+  "name": "PROGRAM pad Level Pan Tune edits propagate to playback and render metadata",
   "source_refs": [
-    "docs/superpowers/plans/2026-06-13-mpc2000xl-midi-note-input.md#source-and-evidence-status",
-    "docs/superpowers/plans/2026-06-13-mpc2000xl-program-pad-assignment.md#source-and-evidence-status",
+    "docs/superpowers/plans/2026-06-13-mpc2000xl-program-pad-parameter-editing.md#source-and-evidence-status",
     "docs/superpowers/plans/2026-06-13-mpc2000xl-synthetic-audio-render.md#source-and-evidence-status"
   ],
   "events": [
     {
-      "type": "midi_note_on",
-      "channel": 1,
-      "note": 36,
+      "type": "press",
+      "control": "program"
+    },
+    {
+      "type": "press",
+      "control": "cursor_down"
+    },
+    {
+      "type": "turn_data_wheel",
+      "delta": -20
+    },
+    {
+      "type": "press",
+      "control": "cursor_down"
+    },
+    {
+      "type": "turn_data_wheel",
+      "delta": 25
+    },
+    {
+      "type": "press",
+      "control": "cursor_down"
+    },
+    {
+      "type": "turn_data_wheel",
+      "delta": 5
+    },
+    {
+      "type": "strike_pad",
+      "bank": "a",
+      "pad": 1,
       "velocity": 100
     }
   ],
   "expect": {
-    "mode": "main",
-    "lcd_title": "MAIN",
+    "mode": "program",
+    "lcd_title": "PROGRAM",
     "playing": false,
     "recording": false,
-    "event_count": 1,
+    "event_count": 8,
     "selected_track": 1,
     "current_program_index": 1,
     "current_program_name": "Program01",
@@ -28,6 +55,7 @@
       "bank": "a",
       "pad_number": 1
     },
+    "selected_program_edit_field": "tune",
     "last_playback": {
       "type": "intent",
       "intent": {
@@ -39,9 +67,9 @@
         "sample_id": "synthetic_a_01",
         "sample_name": "SYN-A01",
         "velocity": 100,
-        "level": 100,
-        "pan": 0,
-        "tune_cents": 0
+        "level": 80,
+        "pan": 25,
+        "tune_cents": 500
       }
     },
     "last_audio_render": {
@@ -58,11 +86,11 @@
       "program_name": "Program01",
       "bank": "a",
       "pad_number": 1,
-      "tune_cents": 0,
-      "peak_left": 20315,
-      "peak_right": 20315,
-      "peak_amplitude": 20315,
-      "channel_balance": "center",
+      "tune_cents": 500,
+      "peak_left": 12189,
+      "peak_right": 16252,
+      "peak_amplitude": 16252,
+      "channel_balance": "right",
       "source_kind": "rights_safe_generated",
       "loaded_audio_byte_count": 0
     }

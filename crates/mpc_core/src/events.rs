@@ -51,6 +51,8 @@ pub struct PadAssignment {
     pub sample: SyntheticSample,
     pub level: u8,
     pub pan: i8,
+    #[serde(default)]
+    pub tune_cents: i16,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -72,6 +74,8 @@ pub struct SamplePlaybackIntent {
     pub velocity: u8,
     pub level: u8,
     pub pan: i8,
+    #[serde(default)]
+    pub tune_cents: i16,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -103,6 +107,50 @@ pub enum SamplePlaybackResolution {
 pub enum PadAssignmentChange {
     Cleared,
     Restored,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProgramEditField {
+    Pad,
+    Level,
+    Pan,
+    Tune,
+}
+
+impl Default for ProgramEditField {
+    fn default() -> Self {
+        Self::Pad
+    }
+}
+
+impl ProgramEditField {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Pad => "pad",
+            Self::Level => "level",
+            Self::Pan => "pan",
+            Self::Tune => "tune",
+        }
+    }
+
+    pub fn previous(self) -> Self {
+        match self {
+            Self::Pad => Self::Tune,
+            Self::Level => Self::Pad,
+            Self::Pan => Self::Level,
+            Self::Tune => Self::Pan,
+        }
+    }
+
+    pub fn next(self) -> Self {
+        match self {
+            Self::Pad => Self::Level,
+            Self::Level => Self::Pan,
+            Self::Pan => Self::Tune,
+            Self::Tune => Self::Pad,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -208,6 +256,13 @@ pub enum MachineOutput {
         pad: u8,
         action: PadAssignmentChange,
         assignment: Option<PadAssignment>,
+    },
+    PadParameterChanged {
+        bank: PadBank,
+        pad: u8,
+        parameter: ProgramEditField,
+        value: i16,
+        assignment: PadAssignment,
     },
     SequenceEventRecorded {
         event: SequenceEvent,

@@ -60,7 +60,8 @@
         "sample_name": "SYN-A06",
         "velocity": 72,
         "level": 100,
-        "pan": 0
+        "pan": 0,
+        "tune_cents": 0
       }
     }
   },
@@ -103,7 +104,8 @@
           "sample_name": "SYN-A06",
           "velocity": 72,
           "level": 100,
-          "pan": 0
+          "pan": 0,
+          "tune_cents": 0
         }
       },
       "last_audio_render": {
@@ -120,6 +122,7 @@
         "program_name": "Program01",
         "bank": "a",
         "pad_number": 6,
+        "tune_cents": 0,
         "peak_left": 14627,
         "peak_right": 14627,
         "peak_amplitude": 14627,

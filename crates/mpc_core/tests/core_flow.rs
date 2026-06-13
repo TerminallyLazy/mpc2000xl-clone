@@ -1,7 +1,7 @@
 use mpc_core::{
     HardwareEvent, INTERNAL_PPQN, MachineOutput, MainScreenField, Mode, MpcCore,
     PROJECT_SNAPSHOT_VERSION, PadAssignmentChange, PadBank, PanelControl, PlaybackMissReason,
-    ProgramPad, ProjectSnapshot, ProjectSnapshotError, SamplePlaybackIntent,
+    ProgramEditField, ProgramPad, ProjectSnapshot, ProjectSnapshotError, SamplePlaybackIntent,
     SamplePlaybackResolution, SequenceEvent,
 };
 
@@ -29,6 +29,10 @@ fn core_starts_on_main_screen() {
         }
     );
     assert_eq!(core.state().last_playback, None);
+    assert_eq!(
+        core.state().selected_program_edit_field,
+        ProgramEditField::Pad
+    );
     assert!(!core.state().playing);
 }
 
@@ -112,6 +116,7 @@ fn default_program_assigns_bank_a_to_synthetic_samples() {
         assert_eq!(assignment.sample.name, format!("SYN-A{pad_number:02}"));
         assert_eq!(assignment.level, 100);
         assert_eq!(assignment.pan, 0);
+        assert_eq!(assignment.tune_cents, 0);
     }
 }
 
@@ -146,6 +151,7 @@ fn assigned_pad_strike_emits_sample_playback_intent() {
                 && intent.program_name == "Program01"
                 && intent.level == 100
                 && intent.pan == 0
+                && intent.tune_cents == 0
     )));
     assert!(matches!(
         &core.state().last_playback,
@@ -702,6 +708,7 @@ fn program_mode_soft_key_reassign_restores_generated_assignment() {
             && assignment.sample.name == "SYN-A07"
             && assignment.level == 100
             && assignment.pan == 0
+            && assignment.tune_cents == 0
     )));
     assert!(core.state().lcd.lines[1].contains("SYN-A07"));
 }
@@ -737,6 +744,363 @@ fn program_mode_pad_strike_selects_pad_and_triggers_assignment() {
             .any(|output| matches!(output, MachineOutput::LcdChanged))
     );
     assert!(core.state().lcd.lines[1].contains("SYN-A09"));
+}
+
+#[test]
+fn program_parameter_cursor_up_down_cycles_edit_field_and_lcd_reflects_it() {
+    let mut core = MpcCore::new();
+
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::Program,
+    });
+    assert_eq!(
+        core.state().selected_program_edit_field,
+        ProgramEditField::Pad
+    );
+    assert!(core.state().lcd.lines[0].contains("Edit pad"));
+    assert!(core.state().lcd.lines[1].starts_with(">Pad"));
+
+    let level_outputs = core.dispatch(HardwareEvent::Press {
+        control: PanelControl::CursorDown,
+    });
+    assert_eq!(level_outputs, vec![MachineOutput::LcdChanged]);
+    assert_eq!(
+        core.state().selected_program_edit_field,
+        ProgramEditField::Level
+    );
+    assert!(core.state().lcd.lines[3].contains(">Level"));
+
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::CursorDown,
+    });
+    assert_eq!(
+        core.state().selected_program_edit_field,
+        ProgramEditField::Pan
+    );
+    assert!(core.state().lcd.lines[3].contains(">Pan"));
+
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::CursorDown,
+    });
+    assert_eq!(
+        core.state().selected_program_edit_field,
+        ProgramEditField::Tune
+    );
+    assert!(core.state().lcd.lines[3].contains(">Tune"));
+
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::CursorDown,
+    });
+    assert_eq!(
+        core.state().selected_program_edit_field,
+        ProgramEditField::Pad
+    );
+
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::CursorUp,
+    });
+    assert_eq!(
+        core.state().selected_program_edit_field,
+        ProgramEditField::Tune
+    );
+}
+
+#[test]
+fn program_parameter_data_wheel_edits_level_pan_tune_with_clamping() {
+    let mut core = MpcCore::new();
+    let pad = ProgramPad {
+        bank: PadBank::A,
+        pad_number: 1,
+    };
+
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::Program,
+    });
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::CursorDown,
+    });
+
+    let level_outputs = core.dispatch(HardwareEvent::TurnDataWheel { delta: 40 });
+    assert!(matches!(
+        level_outputs.as_slice(),
+        [
+            MachineOutput::PadParameterChanged {
+                parameter: ProgramEditField::Level,
+                value: 127,
+                ..
+            },
+            MachineOutput::LcdChanged,
+        ]
+    ));
+    assert_eq!(
+        assignment_for_pad(&core, pad)
+            .expect("selected pad should be assigned")
+            .level,
+        127
+    );
+    core.dispatch(HardwareEvent::TurnDataWheel { delta: -200 });
+    assert_eq!(
+        assignment_for_pad(&core, pad)
+            .expect("selected pad should be assigned")
+            .level,
+        0
+    );
+
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::CursorDown,
+    });
+    core.dispatch(HardwareEvent::TurnDataWheel { delta: 80 });
+    assert_eq!(
+        assignment_for_pad(&core, pad)
+            .expect("selected pad should be assigned")
+            .pan,
+        50
+    );
+    core.dispatch(HardwareEvent::TurnDataWheel { delta: -200 });
+    assert_eq!(
+        assignment_for_pad(&core, pad)
+            .expect("selected pad should be assigned")
+            .pan,
+        -50
+    );
+
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::CursorDown,
+    });
+    let tune_outputs = core.dispatch(HardwareEvent::TurnDataWheel { delta: 20 });
+    assert!(matches!(
+        tune_outputs.as_slice(),
+        [
+            MachineOutput::PadParameterChanged {
+                parameter: ProgramEditField::Tune,
+                value: 1200,
+                ..
+            },
+            MachineOutput::LcdChanged,
+        ]
+    ));
+    assert_eq!(
+        assignment_for_pad(&core, pad)
+            .expect("selected pad should be assigned")
+            .tune_cents,
+        1200
+    );
+    core.dispatch(HardwareEvent::TurnDataWheel { delta: -30 });
+    assert_eq!(
+        assignment_for_pad(&core, pad)
+            .expect("selected pad should be assigned")
+            .tune_cents,
+        -1200
+    );
+}
+
+#[test]
+fn program_parameter_unassigned_pad_edit_returns_structured_ignore_without_assignment() {
+    let mut core = MpcCore::new();
+    let pad = ProgramPad {
+        bank: PadBank::A,
+        pad_number: 1,
+    };
+
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::Program,
+    });
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::SoftKey(1),
+    });
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::CursorDown,
+    });
+    let outputs = core.dispatch(HardwareEvent::TurnDataWheel { delta: 7 });
+
+    assert_eq!(
+        outputs,
+        vec![MachineOutput::Ignored {
+            reason: "program.level.unassigned_a01".to_string(),
+        }]
+    );
+    assert!(assignment_for_pad(&core, pad).is_none());
+}
+
+#[test]
+fn program_parameter_pad_strike_playback_intent_carries_edited_values() {
+    let mut core = MpcCore::new();
+
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::Program,
+    });
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::CursorDown,
+    });
+    core.dispatch(HardwareEvent::TurnDataWheel { delta: 7 });
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::CursorDown,
+    });
+    core.dispatch(HardwareEvent::TurnDataWheel { delta: -12 });
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::CursorDown,
+    });
+    core.dispatch(HardwareEvent::TurnDataWheel { delta: 3 });
+
+    let outputs = core.dispatch(HardwareEvent::StrikePad {
+        bank: PadBank::A,
+        pad: 1,
+        velocity: 88,
+    });
+    let intent = playback_intents(&outputs)
+        .into_iter()
+        .next()
+        .expect("assigned pad should emit playback intent");
+
+    assert_eq!(intent.level, 107);
+    assert_eq!(intent.pan, -12);
+    assert_eq!(intent.tune_cents, 300);
+}
+
+#[test]
+fn program_parameter_recording_snapshots_edited_values_and_replays_stored_metadata() {
+    let mut core = MpcCore::new();
+    let pad = ProgramPad {
+        bank: PadBank::A,
+        pad_number: 2,
+    };
+
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::Program,
+    });
+    core.dispatch(HardwareEvent::StrikePad {
+        bank: PadBank::A,
+        pad: 2,
+        velocity: 90,
+    });
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::CursorDown,
+    });
+    core.dispatch(HardwareEvent::TurnDataWheel { delta: -10 });
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::CursorDown,
+    });
+    core.dispatch(HardwareEvent::TurnDataWheel { delta: -7 });
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::CursorDown,
+    });
+    core.dispatch(HardwareEvent::TurnDataWheel { delta: 5 });
+
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::Rec,
+    });
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::Play,
+    });
+    core.dispatch(HardwareEvent::Tick { micros: 500_000 });
+    core.dispatch(HardwareEvent::StrikePad {
+        bank: PadBank::A,
+        pad: 2,
+        velocity: 80,
+    });
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::Stop,
+    });
+
+    core.dispatch(HardwareEvent::TurnDataWheel { delta: -10 });
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::CursorUp,
+    });
+    core.dispatch(HardwareEvent::TurnDataWheel { delta: 20 });
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::CursorUp,
+    });
+    core.dispatch(HardwareEvent::TurnDataWheel { delta: 30 });
+
+    let recorded_playback = core.state().recorded_events[0]
+        .playback
+        .as_ref()
+        .expect("recorded assigned pad should snapshot playback");
+    assert_eq!(recorded_playback.level, 90);
+    assert_eq!(recorded_playback.pan, -7);
+    assert_eq!(recorded_playback.tune_cents, 500);
+    let current_assignment = assignment_for_pad(&core, pad).expect("pad should remain assigned");
+    assert_eq!(current_assignment.level, 120);
+    assert_eq!(current_assignment.pan, 13);
+    assert_eq!(current_assignment.tune_cents, -500);
+
+    let mut snapshot = core.export_project_snapshot();
+    reset_snapshot_playhead(&mut snapshot, 0);
+    let mut restored = restore_snapshot(snapshot);
+
+    restored.dispatch(HardwareEvent::Press {
+        control: PanelControl::Play,
+    });
+    let outputs = restored.dispatch(HardwareEvent::Tick { micros: 500_000 });
+    let intents = playback_intents(&outputs);
+
+    assert_eq!(intents.len(), 1);
+    assert_eq!(intents[0].level, 90);
+    assert_eq!(intents[0].pan, -7);
+    assert_eq!(intents[0].tune_cents, 500);
+}
+
+#[test]
+fn program_parameter_project_snapshot_round_trip_preserves_tune_and_edit_field() {
+    let mut core = MpcCore::new();
+    let pad = ProgramPad {
+        bank: PadBank::A,
+        pad_number: 1,
+    };
+
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::Program,
+    });
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::CursorDown,
+    });
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::CursorDown,
+    });
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::CursorDown,
+    });
+    core.dispatch(HardwareEvent::TurnDataWheel { delta: 4 });
+
+    let json = core.to_project_json().expect("snapshot should encode");
+    assert!(json.contains(r#""selected_program_edit_field": "tune""#));
+    assert!(json.contains(r#""tune_cents": 400"#));
+
+    let mut restored = MpcCore::new();
+    restored
+        .restore_project_json(&json)
+        .expect("snapshot should restore");
+
+    assert_eq!(
+        restored.state().selected_program_edit_field,
+        ProgramEditField::Tune
+    );
+    assert_eq!(
+        assignment_for_pad(&restored, pad)
+            .expect("pad should remain assigned")
+            .tune_cents,
+        400
+    );
+    assert!(restored.state().lcd.lines[0].contains("Edit tune"));
+    assert!(restored.state().lcd.lines[3].contains(">Tune +400"));
+}
+
+#[test]
+fn program_parameter_project_snapshot_rejects_invalid_tune() {
+    let core = MpcCore::new();
+    let mut snapshot = core.export_project_snapshot();
+    snapshot.program.pad_assignments[0].tune_cents = 1201;
+    let mut restored = MpcCore::new();
+
+    let error = restored
+        .restore_project_snapshot(snapshot)
+        .expect_err("assignment tune outside foundation range should be rejected");
+
+    assert_invalid_project_field(
+        error,
+        "program.pad_assignments[0].tune_cents",
+        "-1200..=1200",
+    );
 }
 
 #[test]
@@ -1484,6 +1848,14 @@ fn playback_intents(outputs: &[MachineOutput]) -> Vec<&SamplePlaybackIntent> {
             _ => None,
         })
         .collect()
+}
+
+fn assignment_for_pad(core: &MpcCore, pad: ProgramPad) -> Option<&mpc_core::PadAssignment> {
+    core.state()
+        .current_program
+        .pad_assignments
+        .iter()
+        .find(|assignment| assignment.pad == pad)
 }
 
 fn recorded_project_snapshot() -> ProjectSnapshot {
