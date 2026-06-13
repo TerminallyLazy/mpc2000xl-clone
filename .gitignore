@@ -1,0 +1,22 @@
+/target/
+/.superpowers/
+/.DS_Store
+*.log
+
+# User-supplied firmware, manuals, samples, and local reference captures stay out of git.
+/local-assets/
+/reference-assets/
+/firmware/
+/captures/
+*.bin
+*.rom
+*.img
+*.iso
+*.pdf
+*.jpg
+*.jpeg
+*.png
+*.wav
+*.aif
+*.aiff
+*.snd
