@@ -179,6 +179,8 @@ pub enum PanelControl {
     Stop,
     Rec,
     Overdub,
+    LocateStart,
+    ToggleLoop,
     CursorUp,
     CursorDown,
     CursorLeft,
@@ -229,6 +231,12 @@ pub enum MachineOutput {
     TransportChanged {
         playing: bool,
         recording: bool,
+    },
+    PlayheadLocated {
+        tick: u64,
+    },
+    LoopChanged {
+        enabled: bool,
     },
     PadTriggered {
         bank: PadBank,

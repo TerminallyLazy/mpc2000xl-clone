@@ -54,6 +54,10 @@ pub struct ExpectedState {
     #[serde(default)]
     pub bar_count: Option<u16>,
     #[serde(default)]
+    pub loop_enabled: Option<bool>,
+    #[serde(default)]
+    pub sequence_length_ticks: Option<u64>,
+    #[serde(default)]
     pub recorded_event_count: Option<usize>,
     #[serde(default)]
     pub playhead_ticks: Option<u64>,
@@ -289,6 +293,25 @@ fn validate_expected_state(
             details.push(format!(
                 "{prefix}bar_count mismatch: expected {}, got {}",
                 bar_count, state.bar_count
+            ));
+        }
+    }
+
+    if let Some(loop_enabled) = expected.loop_enabled {
+        if state.loop_enabled != loop_enabled {
+            details.push(format!(
+                "{prefix}loop_enabled mismatch: expected {}, got {}",
+                loop_enabled, state.loop_enabled
+            ));
+        }
+    }
+
+    if let Some(sequence_length_ticks) = expected.sequence_length_ticks {
+        if state.sequence_length_ticks() != sequence_length_ticks {
+            details.push(format!(
+                "{prefix}sequence_length_ticks mismatch: expected {}, got {}",
+                sequence_length_ticks,
+                state.sequence_length_ticks()
             ));
         }
     }

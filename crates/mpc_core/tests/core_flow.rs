@@ -2,7 +2,7 @@ use mpc_core::{
     HardwareEvent, INTERNAL_PPQN, MachineOutput, MainScreenField, Mode, MpcCore,
     PROJECT_SNAPSHOT_VERSION, PadAssignmentChange, PadBank, PanelControl, PlaybackMissReason,
     ProgramEditField, ProgramPad, ProjectSnapshot, ProjectSnapshotError, SamplePlaybackIntent,
-    SamplePlaybackResolution, SequenceEvent,
+    SamplePlaybackResolution, SequenceEvent, sequence_length_ticks_for_bars,
 };
 
 #[test]
@@ -275,7 +275,11 @@ fn tick_advances_playhead_only_while_playing() {
     assert!(core.state().lcd.lines[3].contains("T000096"));
 
     core.dispatch(HardwareEvent::Tick { micros: u64::MAX });
-    assert!(core.state().playhead_ticks > u64::from(INTERNAL_PPQN));
+    assert_eq!(
+        core.state().playhead_ticks,
+        core.state().sequence_length_ticks()
+    );
+    assert!(!core.state().playing);
 
     let after_large_tick = core.state().playhead_ticks;
     core.dispatch(HardwareEvent::Press {
@@ -283,6 +287,221 @@ fn tick_advances_playhead_only_while_playing() {
     });
     core.dispatch(HardwareEvent::Tick { micros: 500_000 });
     assert_eq!(core.state().playhead_ticks, after_large_tick);
+}
+
+#[test]
+fn sequence_loop_locate_start_resets_playhead_and_remainder_while_stopped_or_playing() {
+    let mut core = MpcCore::new();
+
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::Play,
+    });
+    core.dispatch(HardwareEvent::Tick { micros: 500_000 });
+    core.dispatch(HardwareEvent::Tick { micros: 1 });
+    assert_eq!(core.state().playhead_ticks, u64::from(INTERNAL_PPQN));
+    assert!(core.state().playhead_tick_remainder > 0);
+
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::Stop,
+    });
+    let stopped_outputs = core.dispatch(HardwareEvent::Press {
+        control: PanelControl::LocateStart,
+    });
+    assert_eq!(core.state().playhead_ticks, 0);
+    assert_eq!(core.state().playhead_tick_remainder, 0);
+    assert!(!core.state().playing);
+    assert_eq!(
+        stopped_outputs,
+        vec![
+            MachineOutput::PlayheadLocated { tick: 0 },
+            MachineOutput::LcdChanged,
+        ]
+    );
+
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::Play,
+    });
+    core.dispatch(HardwareEvent::Tick { micros: 500_000 });
+    core.dispatch(HardwareEvent::Tick { micros: 1 });
+    let playing_outputs = core.dispatch(HardwareEvent::Press {
+        control: PanelControl::LocateStart,
+    });
+
+    assert!(core.state().playing);
+    assert_eq!(core.state().playhead_ticks, 0);
+    assert_eq!(core.state().playhead_tick_remainder, 0);
+    assert_eq!(
+        playing_outputs,
+        vec![
+            MachineOutput::PlayheadLocated { tick: 0 },
+            MachineOutput::LcdChanged,
+        ]
+    );
+}
+
+#[test]
+fn sequence_loop_disabled_clamps_at_sequence_end_and_stops() {
+    let mut core = MpcCore::new();
+    let sequence_length_ticks = sequence_length_ticks_for_bars(1);
+
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::Play,
+    });
+    let outputs = core.dispatch(HardwareEvent::Tick { micros: 2_000_000 });
+
+    assert_eq!(core.state().playhead_ticks, sequence_length_ticks);
+    assert_eq!(core.state().playhead_tick_remainder, 0);
+    assert!(!core.state().playing);
+    assert!(!core.state().recording);
+    assert!(outputs.iter().any(|output| matches!(
+        output,
+        MachineOutput::TransportChanged {
+            playing: false,
+            recording: false
+        }
+    )));
+    assert!(outputs.contains(&MachineOutput::LcdChanged));
+}
+
+#[test]
+fn sequence_loop_enabled_wraps_and_schedules_events_on_both_sides_of_boundary() {
+    let mut snapshot =
+        snapshot_with_recorded_assigned_events(&[(0, 1, 81), (360, 2, 82), (48, 3, 83)]);
+    snapshot.sequence.loop_enabled = true;
+    reset_snapshot_playhead(&mut snapshot, 350);
+    let mut core = restore_snapshot(snapshot);
+
+    assert_eq!(core.state().sequence_length_ticks(), 384);
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::Play,
+    });
+    let outputs = core.dispatch(HardwareEvent::Tick { micros: 500_000 });
+
+    let played_pads = outputs
+        .iter()
+        .filter_map(|output| match output {
+            MachineOutput::SequenceEventPlayed { event } => Some(event.pad_number),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let scheduled_sample_ids = playback_intents(&outputs)
+        .iter()
+        .map(|intent| intent.sample_id.as_str())
+        .collect::<Vec<_>>();
+
+    assert_eq!(core.state().playhead_ticks, 62);
+    assert!(core.state().playing);
+    assert_eq!(played_pads, vec![2, 1, 3]);
+    assert_eq!(
+        scheduled_sample_ids,
+        vec!["synthetic_a_02", "synthetic_a_01", "synthetic_a_03"]
+    );
+    assert!(matches!(
+        &core.state().last_playback,
+        Some(SamplePlaybackResolution::Intent { intent })
+            if intent.sample_id == "synthetic_a_03" && intent.velocity == 83
+    ));
+}
+
+#[test]
+fn sequence_loop_does_not_fire_tick_zero_event_on_ordinary_play_from_start() {
+    let mut snapshot = snapshot_with_recorded_assigned_events(&[(0, 1, 81), (48, 3, 83)]);
+    snapshot.sequence.loop_enabled = true;
+    reset_snapshot_playhead(&mut snapshot, 0);
+    let mut core = restore_snapshot(snapshot);
+
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::Play,
+    });
+    let outputs = core.dispatch(HardwareEvent::Tick { micros: 250_000 });
+
+    let played_pads = outputs
+        .iter()
+        .filter_map(|output| match output {
+            MachineOutput::SequenceEventPlayed { event } => Some(event.pad_number),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(core.state().playhead_ticks, 48);
+    assert_eq!(played_pads, vec![3]);
+}
+
+#[test]
+fn sequence_loop_length_follows_bar_count_edits() {
+    let mut core = MpcCore::new();
+
+    assert_eq!(core.state().sequence_length_ticks(), 384);
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::CursorLeft,
+    });
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::CursorLeft,
+    });
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::CursorLeft,
+    });
+    core.dispatch(HardwareEvent::TurnDataWheel { delta: 2 });
+    assert_eq!(core.state().bar_count, 3);
+    assert_eq!(core.state().sequence_length_ticks(), 1_152);
+
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::Play,
+    });
+    core.dispatch(HardwareEvent::Tick { micros: 2_000_000 });
+    assert_eq!(core.state().playhead_ticks, 384);
+    assert!(core.state().playing);
+
+    core.dispatch(HardwareEvent::Tick { micros: 4_000_000 });
+    assert_eq!(core.state().playhead_ticks, 1_152);
+    assert!(!core.state().playing);
+}
+
+#[test]
+fn sequence_loop_project_snapshot_round_trip_preserves_loop_enabled() {
+    let mut core = MpcCore::new();
+
+    let outputs = core.dispatch(HardwareEvent::Press {
+        control: PanelControl::ToggleLoop,
+    });
+    assert_eq!(
+        outputs,
+        vec![
+            MachineOutput::LoopChanged { enabled: true },
+            MachineOutput::LcdChanged,
+        ]
+    );
+    assert!(core.state().loop_enabled);
+
+    let json = core.to_project_json().expect("snapshot should encode");
+    assert!(json.contains(r#""loop_enabled": true"#));
+
+    let mut restored = MpcCore::new();
+    restored
+        .restore_project_json(&json)
+        .expect("snapshot should restore");
+    assert!(restored.state().loop_enabled);
+    assert!(!restored.state().playing);
+}
+
+#[test]
+fn sequence_loop_missing_snapshot_field_defaults_to_disabled() {
+    let core = MpcCore::new();
+    let mut value = serde_json::to_value(core.export_project_snapshot())
+        .expect("snapshot should encode as JSON value");
+    value
+        .pointer_mut("/sequence")
+        .expect("sequence object should exist")
+        .as_object_mut()
+        .expect("sequence should be an object")
+        .remove("loop_enabled");
+    let json = serde_json::to_string(&value).expect("snapshot should encode");
+
+    let mut restored = MpcCore::new();
+    restored
+        .restore_project_json(&json)
+        .expect("older snapshot without loop_enabled should restore");
+
+    assert!(!restored.state().loop_enabled);
 }
 
 #[test]
@@ -1825,6 +2044,40 @@ fn snapshot_with_recorded_assigned_events_at_tick(events: &[(u8, u8)]) -> Projec
     let mut snapshot = core.export_project_snapshot();
     reset_snapshot_playhead(&mut snapshot, 0);
     snapshot
+}
+
+fn snapshot_with_recorded_assigned_events(events: &[(u64, u8, u8)]) -> ProjectSnapshot {
+    let core = MpcCore::new();
+    let mut snapshot = core.export_project_snapshot();
+    snapshot.sequence.recorded_events = events
+        .iter()
+        .map(|(tick, pad, velocity)| SequenceEvent {
+            selected_track: 1,
+            pad_bank: PadBank::A,
+            pad_number: *pad,
+            velocity: *velocity,
+            tick: *tick,
+            playback: Some(sample_playback_intent_for_pad(*pad, *velocity)),
+        })
+        .collect();
+    snapshot.machine.event_count = snapshot.sequence.recorded_events.len() as u64;
+    snapshot
+}
+
+fn sample_playback_intent_for_pad(pad: u8, velocity: u8) -> SamplePlaybackIntent {
+    SamplePlaybackIntent {
+        selected_track: 1,
+        program_index: 1,
+        program_name: "Program01".to_string(),
+        bank: PadBank::A,
+        pad_number: pad,
+        sample_id: format!("synthetic_a_{pad:02}"),
+        sample_name: format!("SYN-A{pad:02}"),
+        velocity,
+        level: 100,
+        pan: 0,
+        tune_cents: 0,
+    }
 }
 
 fn reset_snapshot_playhead(snapshot: &mut ProjectSnapshot, playhead_ticks: u64) {

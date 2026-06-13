@@ -472,6 +472,23 @@ impl MpcDesktopApp {
             );
         }
 
+        if let Some(MachineOutput::PlayheadLocated { tick }) = outputs
+            .iter()
+            .find(|output| matches!(output, MachineOutput::PlayheadLocated { .. }))
+        {
+            return format!("Located playhead to tick {tick}");
+        }
+
+        if let Some(MachineOutput::LoopChanged { enabled }) = outputs
+            .iter()
+            .find(|output| matches!(output, MachineOutput::LoopChanged { .. }))
+        {
+            return format!(
+                "Sequence loop {}",
+                if *enabled { "enabled" } else { "disabled" }
+            );
+        }
+
         if let Some(MachineOutput::SequenceEventPlayed { event }) = outputs
             .iter()
             .find(|output| matches!(output, MachineOutput::SequenceEventPlayed { .. }))
@@ -575,6 +592,21 @@ impl MpcDesktopApp {
                     control: PanelControl::Overdub,
                 });
             }
+            if ui.button("LOCATE START").clicked() {
+                self.dispatch_event(HardwareEvent::Press {
+                    control: PanelControl::LocateStart,
+                });
+            }
+            let loop_label = if self.core.state().loop_enabled {
+                "LOOP ON"
+            } else {
+                "LOOP OFF"
+            };
+            if ui.button(loop_label).clicked() {
+                self.dispatch_event(HardwareEvent::Press {
+                    control: PanelControl::ToggleLoop,
+                });
+            }
             if ui.button("TICK +100ms").clicked() {
                 self.dispatch_event(HardwareEvent::Tick { micros: 100_000 });
             }
@@ -634,6 +666,12 @@ impl MpcDesktopApp {
             ui.label(format!(
                 "Transport: playing={} recording={}",
                 state.playing, state.recording
+            ));
+            ui.separator();
+            ui.label(format!(
+                "Loop: {} length {} ticks",
+                if state.loop_enabled { "on" } else { "off" },
+                state.sequence_length_ticks()
             ));
             ui.separator();
             ui.label(format!("Playhead: {} ticks", state.playhead_ticks));
@@ -742,13 +780,15 @@ impl MpcDesktopApp {
 fn main_screen_status(state: &MpcState) -> String {
     match state.mode {
         Mode::Main => format!(
-            "LCD updated: {} focus, Seq {:02}, Trk {:02}, {}, Tempo {}, Bars {:03}, Tick {}, Events {}",
+            "LCD updated: {} focus, Seq {:02}, Trk {:02}, {}, Tempo {}, Bars {:03}, Loop {}, Len {}, Tick {}, Events {}",
             state.selected_main_field.label(),
             state.sequence_index,
             state.selected_track,
             state.current_program.name,
             tempo_text(state.tempo_bpm_x100),
             state.bar_count,
+            if state.loop_enabled { "on" } else { "off" },
+            state.sequence_length_ticks(),
             state.playhead_ticks,
             state.recorded_events.len()
         ),

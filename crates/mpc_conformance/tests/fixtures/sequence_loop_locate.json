@@ -1,0 +1,128 @@
+{
+  "id": "core.sequence.loop-locate",
+  "name": "Sequence loop and locate foundation wrap recorded playback deterministically",
+  "source_refs": [
+    "docs/superpowers/plans/2026-06-13-mpc2000xl-sequence-loop-locate.md#source-and-evidence-status",
+    "docs/superpowers/plans/2026-06-13-mpc2000xl-sequence-playback-scheduling.md#source-and-evidence-status"
+  ],
+  "events": [
+    {
+      "type": "press",
+      "control": "toggle_loop"
+    },
+    {
+      "type": "press",
+      "control": "overdub"
+    },
+    {
+      "type": "strike_pad",
+      "bank": "a",
+      "pad": 1,
+      "velocity": 81
+    },
+    {
+      "type": "tick",
+      "micros": 1875000
+    },
+    {
+      "type": "strike_pad",
+      "bank": "a",
+      "pad": 2,
+      "velocity": 82
+    },
+    {
+      "type": "press",
+      "control": "stop"
+    },
+    {
+      "type": "press",
+      "control": "locate_start"
+    }
+  ],
+  "expect": {
+    "mode": "main",
+    "lcd_title": "MAIN",
+    "playing": false,
+    "recording": false,
+    "event_count": 7,
+    "selected_track": 1,
+    "bar_count": 1,
+    "loop_enabled": true,
+    "sequence_length_ticks": 384,
+    "recorded_event_count": 2,
+    "playhead_ticks": 0,
+    "current_program_index": 1,
+    "current_program_name": "Program01",
+    "pad_assignment_count": 16,
+    "last_recorded_sample_id": "synthetic_a_02",
+    "last_recorded_sample_name": "SYN-A02",
+    "last_recorded_event": {
+      "selected_track": 1,
+      "pad_bank": "a",
+      "pad_number": 2,
+      "velocity": 82,
+      "tick": 360,
+      "playback": {
+        "selected_track": 1,
+        "program_index": 1,
+        "program_name": "Program01",
+        "bank": "a",
+        "pad_number": 2,
+        "sample_id": "synthetic_a_02",
+        "sample_name": "SYN-A02",
+        "velocity": 82,
+        "level": 100,
+        "pan": 0,
+        "tune_cents": 0
+      }
+    }
+  },
+  "project_round_trip": {
+    "expect_snapshot_version": 1,
+    "restore_playhead_ticks": 350,
+    "restore_playhead_tick_remainder": 0,
+    "clear_last_playback_before_restore": true,
+    "post_restore_events": [
+      {
+        "type": "press",
+        "control": "play"
+      },
+      {
+        "type": "tick",
+        "micros": 500000
+      }
+    ],
+    "expect": {
+      "mode": "main",
+      "lcd_title": "MAIN",
+      "playing": true,
+      "recording": false,
+      "event_count": 9,
+      "selected_track": 1,
+      "bar_count": 1,
+      "loop_enabled": true,
+      "sequence_length_ticks": 384,
+      "recorded_event_count": 2,
+      "playhead_ticks": 62,
+      "current_program_index": 1,
+      "current_program_name": "Program01",
+      "pad_assignment_count": 16,
+      "last_playback": {
+        "type": "intent",
+        "intent": {
+          "selected_track": 1,
+          "program_index": 1,
+          "program_name": "Program01",
+          "bank": "a",
+          "pad_number": 1,
+          "sample_id": "synthetic_a_01",
+          "sample_name": "SYN-A01",
+          "velocity": 81,
+          "level": 100,
+          "pan": 0,
+          "tune_cents": 0
+        }
+      }
+    }
+  }
+}

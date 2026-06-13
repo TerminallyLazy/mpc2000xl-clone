@@ -15,6 +15,7 @@ use crate::lcd::LcdFrame;
 /// The exact MPC2000XL timing source mapping is still pending reference
 /// evidence, so sequence recording uses a deterministic 96 PPQN basis for now.
 pub const INTERNAL_PPQN: u32 = 96;
+pub const FOUNDATION_BEATS_PER_BAR: u32 = 4;
 pub const PROJECT_SNAPSHOT_VERSION: u16 = 1;
 
 const PROJECT_SNAPSHOT_KIND: &str = "mpc2000xl_clone_project";
@@ -125,6 +126,8 @@ pub struct ProjectSequenceSnapshot {
     pub tempo_bpm_x100: u32,
     pub selected_track: u8,
     pub bar_count: u16,
+    #[serde(default)]
+    pub loop_enabled: bool,
     pub recorded_events: Vec<SequenceEvent>,
 }
 
@@ -193,6 +196,7 @@ pub struct MpcState {
     pub tempo_bpm_x100: u32,
     pub playing: bool,
     pub recording: bool,
+    pub loop_enabled: bool,
     pub selected_track: u8,
     pub bar_count: u16,
     pub selected_main_field: MainScreenField,
@@ -232,7 +236,9 @@ impl Default for MpcState {
                 tempo_bpm_x100,
                 false,
                 false,
+                false,
                 bar_count,
+                sequence_length_ticks_for_bars(bar_count),
                 selected_main_field,
                 0,
                 0,
@@ -242,6 +248,7 @@ impl Default for MpcState {
             tempo_bpm_x100,
             playing: false,
             recording: false,
+            loop_enabled: false,
             selected_track,
             bar_count,
             selected_main_field,
@@ -255,6 +262,12 @@ impl Default for MpcState {
             recorded_events: Vec::new(),
             event_count: 0,
         }
+    }
+}
+
+impl MpcState {
+    pub fn sequence_length_ticks(&self) -> u64 {
+        sequence_length_ticks_for_bars(self.bar_count)
     }
 }
 
@@ -297,6 +310,7 @@ impl MpcCore {
                 tempo_bpm_x100: self.state.tempo_bpm_x100,
                 selected_track: self.state.selected_track,
                 bar_count: self.state.bar_count,
+                loop_enabled: self.state.loop_enabled,
                 recorded_events: self.state.recorded_events.clone(),
             },
             program: ProjectProgramSnapshot {
@@ -322,6 +336,7 @@ impl MpcCore {
         self.state.tempo_bpm_x100 = snapshot.sequence.tempo_bpm_x100;
         self.state.playing = false;
         self.state.recording = false;
+        self.state.loop_enabled = snapshot.sequence.loop_enabled;
         self.state.selected_track = snapshot.sequence.selected_track;
         self.state.bar_count = snapshot.sequence.bar_count;
         self.state.selected_main_field = snapshot.machine.selected_main_field;
@@ -464,6 +479,8 @@ impl MpcCore {
                     MachineOutput::LcdChanged,
                 ]
             }
+            PanelControl::LocateStart => self.locate_start(),
+            PanelControl::ToggleLoop => self.toggle_loop(),
             PanelControl::CursorLeft => self.move_main_field_left(),
             PanelControl::CursorRight => self.move_main_field_right(),
             PanelControl::CursorUp => self.move_program_edit_field_up(),
@@ -481,6 +498,27 @@ impl MpcCore {
         self.refresh_lcd();
         vec![
             MachineOutput::ModeChanged { mode },
+            MachineOutput::LcdChanged,
+        ]
+    }
+
+    fn locate_start(&mut self) -> Vec<MachineOutput> {
+        self.state.playhead_ticks = 0;
+        self.state.playhead_tick_remainder = 0;
+        self.refresh_lcd();
+        vec![
+            MachineOutput::PlayheadLocated { tick: 0 },
+            MachineOutput::LcdChanged,
+        ]
+    }
+
+    fn toggle_loop(&mut self) -> Vec<MachineOutput> {
+        self.state.loop_enabled = !self.state.loop_enabled;
+        self.refresh_lcd();
+        vec![
+            MachineOutput::LoopChanged {
+                enabled: self.state.loop_enabled,
+            },
             MachineOutput::LcdChanged,
         ]
     }
@@ -654,7 +692,9 @@ impl MpcCore {
                 self.state.tempo_bpm_x100,
                 self.state.playing,
                 self.state.recording,
+                self.state.loop_enabled,
                 self.state.bar_count,
+                self.state.sequence_length_ticks(),
                 self.state.selected_main_field,
                 self.state.playhead_ticks,
                 self.state.recorded_events.len(),
@@ -773,6 +813,7 @@ impl MpcCore {
 
         let previous_lcd = self.state.lcd.clone();
         let previous_playhead_ticks = self.state.playhead_ticks;
+        let sequence_length_ticks = self.state.sequence_length_ticks();
         let numerator = u128::from(micros)
             .saturating_mul(u128::from(self.state.tempo_bpm_x100))
             .saturating_mul(u128::from(INTERNAL_PPQN))
@@ -780,29 +821,49 @@ impl MpcCore {
         let tick_delta = numerator / TICK_DENOMINATOR;
         let remainder = numerator % TICK_DENOMINATOR;
         let tick_delta = u64::try_from(tick_delta).unwrap_or(u64::MAX);
-        self.state.playhead_ticks = self.state.playhead_ticks.saturating_add(tick_delta);
-        self.state.playhead_tick_remainder = if self.state.playhead_ticks == u64::MAX {
-            0
-        } else {
-            remainder as u64
-        };
+        let scheduled_events;
+        let mut transport_stopped = false;
 
-        let scheduled_events = if previous_playhead_ticks < self.state.playhead_ticks {
-            self.state
-                .recorded_events
-                .iter()
-                .filter(|event| {
-                    previous_playhead_ticks < event.tick && event.tick <= self.state.playhead_ticks
-                })
-                .filter_map(|event| {
-                    event
-                        .playback
-                        .as_ref()
-                        .map(|intent| (event.clone(), intent.clone()))
-                })
-                .collect::<Vec<_>>()
+        if tick_delta == 0 {
+            self.state.playhead_tick_remainder = remainder as u64;
+            scheduled_events = Vec::new();
+        } else if self.state.loop_enabled {
+            let previous_loop_tick = previous_playhead_ticks % sequence_length_ticks;
+            let total_loop_ticks =
+                u128::from(previous_loop_tick).saturating_add(u128::from(tick_delta));
+            let looped = total_loop_ticks >= u128::from(sequence_length_ticks);
+            let next_loop_tick = (total_loop_ticks % u128::from(sequence_length_ticks)) as u64;
+
+            self.state.playhead_ticks = next_loop_tick;
+            self.state.playhead_tick_remainder = remainder as u64;
+            scheduled_events = self.scheduled_loop_events(
+                previous_loop_tick,
+                next_loop_tick,
+                sequence_length_ticks,
+                looped,
+            );
         } else {
-            Vec::new()
+            let target_playhead_ticks = previous_playhead_ticks.saturating_add(tick_delta);
+            let next_playhead_ticks = target_playhead_ticks.min(sequence_length_ticks);
+
+            self.state.playhead_ticks = next_playhead_ticks;
+            self.state.playhead_tick_remainder = if target_playhead_ticks >= sequence_length_ticks {
+                0
+            } else {
+                remainder as u64
+            };
+            scheduled_events = self.scheduled_events_between(
+                previous_playhead_ticks,
+                next_playhead_ticks,
+                sequence_length_ticks,
+                false,
+            );
+
+            if target_playhead_ticks >= sequence_length_ticks {
+                self.state.playing = false;
+                self.state.recording = false;
+                transport_stopped = true;
+            }
         };
 
         let mut outputs = Vec::new();
@@ -813,6 +874,12 @@ impl MpcCore {
             });
             self.state.last_playback = Some(SamplePlaybackResolution::Intent { intent });
         }
+        if transport_stopped {
+            outputs.push(MachineOutput::TransportChanged {
+                playing: false,
+                recording: false,
+            });
+        }
 
         self.refresh_lcd();
         if self.state.lcd != previous_lcd {
@@ -820,6 +887,60 @@ impl MpcCore {
         }
 
         outputs
+    }
+
+    fn scheduled_loop_events(
+        &self,
+        previous_tick: u64,
+        next_tick: u64,
+        sequence_length_ticks: u64,
+        looped: bool,
+    ) -> Vec<(SequenceEvent, SamplePlaybackIntent)> {
+        if looped {
+            let mut scheduled = self.scheduled_events_between(
+                previous_tick,
+                sequence_length_ticks,
+                sequence_length_ticks,
+                false,
+            );
+            scheduled.extend(self.scheduled_events_between(
+                0,
+                next_tick,
+                sequence_length_ticks,
+                true,
+            ));
+            scheduled
+        } else {
+            self.scheduled_events_between(previous_tick, next_tick, sequence_length_ticks, false)
+        }
+    }
+
+    fn scheduled_events_between(
+        &self,
+        previous_tick: u64,
+        next_tick: u64,
+        sequence_length_ticks: u64,
+        include_tick_zero: bool,
+    ) -> Vec<(SequenceEvent, SamplePlaybackIntent)> {
+        if next_tick < previous_tick {
+            return Vec::new();
+        }
+
+        self.state
+            .recorded_events
+            .iter()
+            .filter(|event| event.tick <= sequence_length_ticks)
+            .filter(|event| {
+                (include_tick_zero && event.tick == 0)
+                    || (previous_tick < event.tick && event.tick <= next_tick)
+            })
+            .filter_map(|event| {
+                event
+                    .playback
+                    .as_ref()
+                    .map(|intent| (event.clone(), intent.clone()))
+            })
+            .collect()
     }
 
     fn assignment_for(&self, pad: ProgramPad) -> Option<&PadAssignment> {
@@ -1057,6 +1178,7 @@ fn validate_sequence_json_fields(value: &Value) -> Result<(), ProjectSnapshotErr
             "tempo_bpm_x100",
             "selected_track",
             "bar_count",
+            "loop_enabled",
             "recorded_events",
         ],
     )?
@@ -1652,6 +1774,12 @@ fn invalid_value(field: &str, message: impl Into<String>) -> ProjectSnapshotErro
 
 fn sequence_name_for(index: u8) -> String {
     format!("Sequence{index:02}")
+}
+
+pub fn sequence_length_ticks_for_bars(bar_count: u16) -> u64 {
+    u64::from(bar_count.max(MIN_BAR_COUNT))
+        .saturating_mul(u64::from(INTERNAL_PPQN))
+        .saturating_mul(u64::from(FOUNDATION_BEATS_PER_BAR))
 }
 
 fn default_program() -> Program {

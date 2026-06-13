@@ -959,7 +959,104 @@
         "crates/mpc_conformance/tests/fixtures/sequence_playback_scheduled_recorded_event.json"
       ],
       "conflict_notes": [
-        "Looping, exact bar/beat/tick display, timing correction, and latency remain unmapped pending manual, firmware, or hardware evidence."
+        "Looping now has a bounded internal-spec foundation in core.sequence.loop-locate; exact bar/beat/tick display, timing correction, multi-cycle loop catch-up, and latency remain unmapped pending manual, firmware, or hardware evidence."
+      ]
+    },
+    {
+      "id": "core.sequence.loop-locate",
+      "name": "Sequence locate start and bounded loop wrap playback",
+      "area": "sequencer",
+      "state": "fixture-backed-internal-spec",
+      "evidence": [
+        {
+          "source_id": "sequence-loop-locate-slice-plan",
+          "source_category": "internal_spec",
+          "type": "plan",
+          "status": "mapped",
+          "ref": "docs/superpowers/plans/2026-06-13-mpc2000xl-sequence-loop-locate.md#behavior-slice"
+        },
+        {
+          "source_id": "sequence-playback-scheduling-slice-plan",
+          "source_category": "internal_spec",
+          "type": "plan",
+          "status": "mapped",
+          "ref": "docs/superpowers/plans/2026-06-13-mpc2000xl-sequence-playback-scheduling.md#behavior-slice"
+        }
+      ],
+      "source_coverage": [
+        {
+          "source_category": "manual",
+          "source_id": "owner-manual",
+          "status": "investigation",
+          "ref": null,
+          "note": "Exact owner-manual mapping for LOCATE, sequence loop state, and end-of-sequence transport policy is pending."
+        },
+        {
+          "source_category": "firmware",
+          "source_id": "mpc2000xl-os-local-reference",
+          "status": "investigation",
+          "ref": null,
+          "note": "No firmware or hardware trace has validated loop boundary scheduling, tick-zero replay, or stopped-at-end behavior."
+        },
+        {
+          "source_category": "jjos",
+          "source_id": "jjos-unverified-boundary",
+          "status": "conflict-note",
+          "ref": "docs/superpowers/specs/2026-06-13-mpc2000xl-full-app-product-design.md#jj-os-evidence-boundary",
+          "note": "JJ-OS for MPC2000XL remains unverified and is not used as acceptance evidence for this slice."
+        },
+        {
+          "source_category": "internal_spec",
+          "source_id": "sequence-loop-locate-slice-plan",
+          "status": "mapped",
+          "ref": "docs/superpowers/plans/2026-06-13-mpc2000xl-sequence-loop-locate.md#source-and-evidence-status",
+          "note": "Current locate and loop behavior is deterministic foundation behavior, not final MPC2000XL reference accuracy."
+        }
+      ],
+      "inputs": [
+        {
+          "channel": "front_panel",
+          "event": "press",
+          "control": "locate_start"
+        },
+        {
+          "channel": "front_panel",
+          "event": "press",
+          "control": "toggle_loop"
+        },
+        {
+          "channel": "clock",
+          "event": "tick",
+          "micros": "u64"
+        }
+      ],
+      "expected_outputs": {
+        "state": {
+          "locate_start": "playhead_ticks and playhead_tick_remainder reset to 0 without changing play/record flags",
+          "sequence_length_ticks": "bar_count * INTERNAL_PPQN * 4",
+          "loop_disabled": "crossing sequence end clamps to sequence length and stops transport",
+          "loop_enabled": "crossing sequence end wraps to start and keeps transport playing",
+          "tick_zero": "recorded tick 0 events schedule only at loop boundary, not ordinary playback from tick 0",
+          "persistence": "loop_enabled round-trips in sequence snapshots and defaults false when missing"
+        },
+        "outputs": [
+          "PlayheadLocated for locate start",
+          "LoopChanged for loop toggle",
+          "TransportChanged when non-loop playback stops at sequence end",
+          "SequenceEventPlayed and SamplePlaybackIntent for stored playback metadata across loop boundary"
+        ],
+        "desktop": {
+          "controls": "LOCATE START and LOOP toggle near transport",
+          "status": "loop state, sequence length, and playhead ticks visible"
+        }
+      },
+      "tolerance": null,
+      "fixture_refs": [
+        "crates/mpc_core/tests/core_flow.rs",
+        "crates/mpc_conformance/tests/fixtures/sequence_loop_locate.json"
+      ],
+      "conflict_notes": [
+        "This is internal-spec 4/4 loop behavior. Exact MPC2000XL or JJ-OS loop policy, multi-cycle host tick catch-up, bar/beat/tick display, timing correction, and overdub merge semantics remain unmapped."
       ]
     },
     {

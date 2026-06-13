@@ -19,7 +19,9 @@ impl LcdFrame {
         tempo_bpm_x100: u32,
         playing: bool,
         recording: bool,
+        loop_enabled: bool,
         bar_count: u16,
+        sequence_length_ticks: u64,
         selected_field: MainScreenField,
         playhead_ticks: u64,
         recorded_event_count: usize,
@@ -31,6 +33,7 @@ impl LcdFrame {
             (false, true) => "ARM",
             (false, false) => "STOP",
         };
+        let loop_text = if loop_enabled { "LP" } else { "--" };
         let marker = |field| {
             if selected_field == field { ">" } else { " " }
         };
@@ -51,14 +54,15 @@ impl LcdFrame {
                     program_name
                 ),
                 format!(
-                    "{}Tempo {:>6} BPM {status}",
+                    "{}Tempo {:>6} BPM {status} {loop_text}",
                     marker(MainScreenField::Tempo),
                     tempo
                 ),
                 format!(
-                    "{}Bars {:03} T{:06} E{:03} {}",
+                    "{}Bars {:03} L{:06} T{:06} E{:03} {}",
                     marker(MainScreenField::Bars),
                     bar_count,
+                    sequence_length_ticks.min(999_999),
                     playhead_ticks.min(999_999),
                     recorded_event_count.min(999),
                     selected_field.label(),
