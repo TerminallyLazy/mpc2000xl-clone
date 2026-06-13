@@ -1,7 +1,7 @@
 use mpc_core::{
     HardwareEvent, INTERNAL_PPQN, MachineOutput, MainScreenField, Mode, MpcCore,
     PROJECT_SNAPSHOT_VERSION, PadAssignmentChange, PadBank, PanelControl, PlaybackMissReason,
-    ProgramPad, ProjectSnapshotError, SamplePlaybackResolution, SequenceEvent,
+    ProgramPad, ProjectSnapshot, ProjectSnapshotError, SamplePlaybackResolution, SequenceEvent,
 };
 
 #[test]
@@ -836,6 +836,109 @@ fn project_snapshot_rejects_duplicate_pad_assignments() {
 }
 
 #[test]
+fn project_snapshot_json_rejects_unknown_fields_at_persisted_boundaries() {
+    let cases = [
+        ("root", "", "audio_bytes", "audio_bytes"),
+        ("machine", "/machine", "playing", "machine.playing"),
+        (
+            "machine playback",
+            "/machine/last_playback",
+            "file_path",
+            "machine.last_playback.file_path",
+        ),
+        (
+            "sequence",
+            "/sequence",
+            "sample_file_contents",
+            "sequence.sample_file_contents",
+        ),
+        ("program", "/program", "file_path", "program.file_path"),
+        (
+            "assignment",
+            "/program/pad_assignments/0",
+            "audio_bytes",
+            "program.pad_assignments[0].audio_bytes",
+        ),
+        (
+            "sample",
+            "/program/pad_assignments/0/sample",
+            "sample_file_contents",
+            "program.pad_assignments[0].sample.sample_file_contents",
+        ),
+        (
+            "recorded event",
+            "/sequence/recorded_events/0",
+            "playing",
+            "sequence.recorded_events[0].playing",
+        ),
+        (
+            "recorded playback",
+            "/sequence/recorded_events/0/playback",
+            "file_path",
+            "sequence.recorded_events[0].playback.file_path",
+        ),
+    ];
+
+    for (label, pointer, extra_field, expected_field) in cases {
+        let mut value = recorded_project_snapshot_json_value();
+        insert_extra_json_field(&mut value, pointer, extra_field);
+        let json = serde_json::to_string(&value).expect("mutated JSON should encode");
+
+        let error = MpcCore::from_project_json(&json)
+            .expect_err(&format!("{label} extra field should be rejected"));
+
+        assert_invalid_project_field(error, expected_field, "unknown field");
+    }
+}
+
+#[test]
+fn project_snapshot_rejects_event_count_less_than_recorded_events() {
+    let mut snapshot = recorded_project_snapshot();
+    snapshot.machine.last_playback = None;
+    snapshot.machine.event_count = snapshot.sequence.recorded_events.len() as u64 - 1;
+    let mut restored = MpcCore::new();
+
+    let error = restored
+        .restore_project_snapshot(snapshot)
+        .expect_err("event_count below recorded_events length should be rejected");
+
+    assert_invalid_project_field(error, "machine.event_count", "recorded_events.len");
+}
+
+#[test]
+fn project_snapshot_rejects_last_playback_without_events() {
+    let mut core = MpcCore::new();
+    core.dispatch(HardwareEvent::StrikePad {
+        bank: PadBank::A,
+        pad: 1,
+        velocity: 100,
+    });
+    let mut snapshot = core.export_project_snapshot();
+    snapshot.machine.event_count = 0;
+    let mut restored = MpcCore::new();
+
+    let error = restored
+        .restore_project_snapshot(snapshot)
+        .expect_err("last_playback with zero event_count should be rejected");
+
+    assert_invalid_project_field(error, "machine.last_playback", "event_count > 0");
+}
+
+#[test]
+fn project_snapshot_rejects_saturated_playhead_with_remainder() {
+    let mut snapshot = MpcCore::new().export_project_snapshot();
+    snapshot.machine.playhead_ticks = u64::MAX;
+    snapshot.machine.playhead_tick_remainder = 1;
+    let mut restored = MpcCore::new();
+
+    let error = restored
+        .restore_project_snapshot(snapshot)
+        .expect_err("saturated playhead must not retain a tick remainder");
+
+    assert_invalid_project_field(error, "machine.playhead_tick_remainder", "must be 0");
+}
+
+#[test]
 fn project_snapshot_restore_refreshes_lcd() {
     let mut core = MpcCore::new();
     core.dispatch(HardwareEvent::Press {
@@ -897,4 +1000,56 @@ fn hardware_event_serializes_with_snake_case_tags() {
         json,
         r#"{"type":"strike_pad","bank":"d","pad":16,"velocity":127}"#
     );
+}
+
+fn recorded_project_snapshot() -> ProjectSnapshot {
+    let mut core = MpcCore::new();
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::Rec,
+    });
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::Play,
+    });
+    core.dispatch(HardwareEvent::StrikePad {
+        bank: PadBank::A,
+        pad: 1,
+        velocity: 100,
+    });
+    core.export_project_snapshot()
+}
+
+fn recorded_project_snapshot_json_value() -> serde_json::Value {
+    let json = serde_json::to_string(&recorded_project_snapshot()).expect("snapshot should encode");
+    serde_json::from_str(&json).expect("snapshot JSON should parse as value")
+}
+
+fn insert_extra_json_field(value: &mut serde_json::Value, pointer: &str, field: &str) {
+    let target = if pointer.is_empty() {
+        value
+    } else {
+        value
+            .pointer_mut(pointer)
+            .unwrap_or_else(|| panic!("snapshot JSON pointer should exist: {pointer}"))
+    };
+    let object = target
+        .as_object_mut()
+        .unwrap_or_else(|| panic!("snapshot JSON pointer should be an object: {pointer}"));
+    object.insert(field.to_string(), serde_json::json!("must be rejected"));
+}
+
+fn assert_invalid_project_field(
+    error: ProjectSnapshotError,
+    expected_field: &str,
+    expected_message: &str,
+) {
+    match error {
+        ProjectSnapshotError::InvalidValue { field, message } => {
+            assert_eq!(field, expected_field);
+            assert!(
+                message.contains(expected_message),
+                "expected message {message:?} to contain {expected_message:?}"
+            );
+        }
+        error => panic!("expected InvalidValue for {expected_field}, got {error:?}"),
+    }
 }

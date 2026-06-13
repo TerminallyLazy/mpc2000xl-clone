@@ -15,6 +15,7 @@ Implemented behavior:
 - `MpcCore::restore_project_snapshot` validates the snapshot, restores state, and refreshes LCD.
 - `MpcCore::to_project_json`, `MpcCore::from_project_json`, and `MpcCore::restore_project_json` provide JSON helpers with typed errors.
 - Restore intentionally leaves transport stopped and disarmed because transport persistence is not safely modeled in this slice.
+- Snapshot JSON import rejects unknown fields at root, machine, sequence, program, assignment, sample, recorded-event, and playback boundaries before typed restore.
 - Conformance fixtures can optionally export/restore a project snapshot and then assert restored state after optional post-restore events.
 - Desktop exposes in-memory `Save Snapshot` and `Load Last Snapshot` controls that retain only the latest JSON string in app state and display snapshot status, size, and version.
 
@@ -40,11 +41,13 @@ Not persisted:
 
 Restore rejects invalid metadata instead of silently clamping:
 
+- Unknown JSON fields, including rights-unsafe audio payloads, file contents, filesystem paths, and transport state fields.
 - Unsupported snapshot versions.
 - Unexpected snapshot kind or rights boundary.
 - Out-of-range sequence index, selected track, tempo, bar count, pad numbers, velocities, program index, level, pan, or playhead remainder.
 - Empty sequence, program, sample id, or sample name fields.
 - Duplicate pad assignment collisions.
+- Internally impossible metadata: fewer dispatched events than recorded sequence events, last playback metadata without any dispatched event, or a saturated playhead retaining fractional tick remainder.
 - Recorded events whose playback metadata does not match the recorded track, pad, and velocity.
 - Recorded event ticks beyond the restored playhead.
 
@@ -87,6 +90,8 @@ Focused checks added or extended:
 - Unsupported snapshot version is rejected.
 - Invalid assignment pad is rejected.
 - Duplicate assignment pads are rejected.
+- Unknown snapshot JSON fields are rejected at each persisted object boundary.
+- Internally impossible cross-field metadata is rejected before restore.
 - Restore refreshes LCD.
 - Restored projects can still emit sample playback intents.
 - Conformance fixture records an assigned pad, exports/restores the snapshot, then confirms recorded metadata and post-restore playback intent survive.

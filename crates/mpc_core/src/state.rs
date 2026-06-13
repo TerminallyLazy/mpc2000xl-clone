@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value};
 use std::collections::BTreeSet;
 use std::fmt;
 
@@ -83,6 +84,7 @@ impl MainScreenField {
 /// assets, firmware data, manuals, service scans, or transport armed/playing
 /// state. Restoring a snapshot always leaves transport stopped and disarmed.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ProjectSnapshot {
     pub kind: String,
     pub version: u16,
@@ -93,6 +95,7 @@ pub struct ProjectSnapshot {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ProjectMachineSnapshot {
     pub mode: Mode,
     pub selected_main_field: MainScreenField,
@@ -105,6 +108,7 @@ pub struct ProjectMachineSnapshot {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ProjectSequenceSnapshot {
     pub index: u8,
     pub name: String,
@@ -115,6 +119,7 @@ pub struct ProjectSequenceSnapshot {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ProjectProgramSnapshot {
     pub index: u8,
     pub name: String,
@@ -333,8 +338,13 @@ impl MpcCore {
     }
 
     pub fn from_project_json(json: &str) -> Result<ProjectSnapshot, ProjectSnapshotError> {
-        let snapshot =
+        let value: Value =
             serde_json::from_str(json).map_err(|error| ProjectSnapshotError::JsonDecode {
+                message: error.to_string(),
+            })?;
+        validate_project_snapshot_json_fields(&value)?;
+        let snapshot =
+            serde_json::from_value(value).map_err(|error| ProjectSnapshotError::JsonDecode {
                 message: error.to_string(),
             })?;
         validate_project_snapshot(&snapshot)?;
@@ -793,6 +803,275 @@ impl MpcCore {
     }
 }
 
+fn validate_project_snapshot_json_fields(value: &Value) -> Result<(), ProjectSnapshotError> {
+    let Some(root) = reject_unknown_json_fields(
+        "",
+        value,
+        &[
+            "kind",
+            "version",
+            "rights_boundary",
+            "machine",
+            "sequence",
+            "program",
+        ],
+    )?
+    else {
+        return Ok(());
+    };
+
+    if let Some(machine) = root.get("machine") {
+        validate_machine_json_fields(machine)?;
+    }
+    if let Some(sequence) = root.get("sequence") {
+        validate_sequence_json_fields(sequence)?;
+    }
+    if let Some(program) = root.get("program") {
+        validate_program_json_fields(program)?;
+    }
+
+    Ok(())
+}
+
+fn validate_machine_json_fields(value: &Value) -> Result<(), ProjectSnapshotError> {
+    let Some(machine) = reject_unknown_json_fields(
+        "machine",
+        value,
+        &[
+            "mode",
+            "selected_main_field",
+            "pad_bank",
+            "selected_program_pad",
+            "playhead_ticks",
+            "playhead_tick_remainder",
+            "event_count",
+            "last_playback",
+        ],
+    )?
+    else {
+        return Ok(());
+    };
+
+    if let Some(selected_program_pad) = machine.get("selected_program_pad") {
+        validate_program_pad_json_fields("machine.selected_program_pad", selected_program_pad)?;
+    }
+    if let Some(last_playback) = machine.get("last_playback") {
+        validate_playback_resolution_json_fields("machine.last_playback", last_playback)?;
+    }
+
+    Ok(())
+}
+
+fn validate_sequence_json_fields(value: &Value) -> Result<(), ProjectSnapshotError> {
+    let Some(sequence) = reject_unknown_json_fields(
+        "sequence",
+        value,
+        &[
+            "index",
+            "name",
+            "tempo_bpm_x100",
+            "selected_track",
+            "bar_count",
+            "recorded_events",
+        ],
+    )?
+    else {
+        return Ok(());
+    };
+
+    if let Some(recorded_events) = sequence.get("recorded_events").and_then(Value::as_array) {
+        for (index, event) in recorded_events.iter().enumerate() {
+            validate_sequence_event_json_fields(
+                &format!("sequence.recorded_events[{index}]"),
+                event,
+            )?;
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_program_json_fields(value: &Value) -> Result<(), ProjectSnapshotError> {
+    let Some(program) =
+        reject_unknown_json_fields("program", value, &["index", "name", "pad_assignments"])?
+    else {
+        return Ok(());
+    };
+
+    if let Some(pad_assignments) = program.get("pad_assignments").and_then(Value::as_array) {
+        for (index, assignment) in pad_assignments.iter().enumerate() {
+            validate_assignment_json_fields(
+                &format!("program.pad_assignments[{index}]"),
+                assignment,
+            )?;
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_assignment_json_fields(field: &str, value: &Value) -> Result<(), ProjectSnapshotError> {
+    let Some(assignment) =
+        reject_unknown_json_fields(field, value, &["pad", "sample", "level", "pan"])?
+    else {
+        return Ok(());
+    };
+
+    if let Some(pad) = assignment.get("pad") {
+        validate_program_pad_json_fields(&format!("{field}.pad"), pad)?;
+    }
+    if let Some(sample) = assignment.get("sample") {
+        validate_sample_json_fields(&format!("{field}.sample"), sample)?;
+    }
+
+    Ok(())
+}
+
+fn validate_sample_json_fields(field: &str, value: &Value) -> Result<(), ProjectSnapshotError> {
+    reject_unknown_json_fields(field, value, &["id", "name"])?;
+    Ok(())
+}
+
+fn validate_sequence_event_json_fields(
+    field: &str,
+    value: &Value,
+) -> Result<(), ProjectSnapshotError> {
+    let Some(event) = reject_unknown_json_fields(
+        field,
+        value,
+        &[
+            "selected_track",
+            "pad_bank",
+            "pad_number",
+            "velocity",
+            "tick",
+            "playback",
+        ],
+    )?
+    else {
+        return Ok(());
+    };
+
+    if let Some(playback) = event.get("playback") {
+        validate_playback_intent_json_fields(&format!("{field}.playback"), playback)?;
+    }
+
+    Ok(())
+}
+
+fn validate_playback_resolution_json_fields(
+    field: &str,
+    value: &Value,
+) -> Result<(), ProjectSnapshotError> {
+    if value.is_null() {
+        return Ok(());
+    }
+
+    let Some(playback) = value.as_object() else {
+        return Ok(());
+    };
+    let allowed_fields = match playback.get("type").and_then(Value::as_str) {
+        Some("intent") => &["type", "intent"][..],
+        Some("miss") => &["type", "miss"][..],
+        _ => &["type", "intent", "miss"][..],
+    };
+    reject_unknown_keys(field, playback, allowed_fields)?;
+
+    if let Some(intent) = playback.get("intent") {
+        validate_playback_intent_json_fields(&format!("{field}.intent"), intent)?;
+    }
+    if let Some(miss) = playback.get("miss") {
+        validate_playback_miss_json_fields(&format!("{field}.miss"), miss)?;
+    }
+
+    Ok(())
+}
+
+fn validate_playback_intent_json_fields(
+    field: &str,
+    value: &Value,
+) -> Result<(), ProjectSnapshotError> {
+    reject_unknown_json_fields(
+        field,
+        value,
+        &[
+            "selected_track",
+            "program_index",
+            "program_name",
+            "bank",
+            "pad_number",
+            "sample_id",
+            "sample_name",
+            "velocity",
+            "level",
+            "pan",
+        ],
+    )?;
+    Ok(())
+}
+
+fn validate_playback_miss_json_fields(
+    field: &str,
+    value: &Value,
+) -> Result<(), ProjectSnapshotError> {
+    reject_unknown_json_fields(
+        field,
+        value,
+        &[
+            "selected_track",
+            "program_index",
+            "program_name",
+            "bank",
+            "pad_number",
+            "velocity",
+            "reason",
+        ],
+    )?;
+    Ok(())
+}
+
+fn validate_program_pad_json_fields(
+    field: &str,
+    value: &Value,
+) -> Result<(), ProjectSnapshotError> {
+    reject_unknown_json_fields(field, value, &["bank", "pad_number"])?;
+    Ok(())
+}
+
+fn reject_unknown_json_fields<'a>(
+    field: &str,
+    value: &'a Value,
+    allowed: &[&str],
+) -> Result<Option<&'a Map<String, Value>>, ProjectSnapshotError> {
+    let Some(object) = value.as_object() else {
+        return Ok(None);
+    };
+    reject_unknown_keys(field, object, allowed)?;
+    Ok(Some(object))
+}
+
+fn reject_unknown_keys(
+    field: &str,
+    object: &Map<String, Value>,
+    allowed: &[&str],
+) -> Result<(), ProjectSnapshotError> {
+    for key in object.keys() {
+        if !allowed.contains(&key.as_str()) {
+            return Err(unknown_json_field(field, key));
+        }
+    }
+    Ok(())
+}
+
+fn unknown_json_field(parent: &str, field: &str) -> ProjectSnapshotError {
+    let field = if parent.is_empty() {
+        field.to_string()
+    } else {
+        format!("{parent}.{field}")
+    };
+    invalid_value(&field, "unknown field is not allowed")
+}
+
 fn validate_project_snapshot(snapshot: &ProjectSnapshot) -> Result<(), ProjectSnapshotError> {
     if snapshot.kind != PROJECT_SNAPSHOT_KIND {
         return Err(ProjectSnapshotError::InvalidKind {
@@ -849,6 +1128,28 @@ fn validate_project_snapshot(snapshot: &ProjectSnapshot) -> Result<(), ProjectSn
         snapshot.machine.selected_program_pad,
     )?;
     validate_playhead_remainder(snapshot.machine.playhead_tick_remainder)?;
+    if snapshot.machine.playhead_ticks == u64::MAX && snapshot.machine.playhead_tick_remainder != 0
+    {
+        return Err(invalid_value(
+            "machine.playhead_tick_remainder",
+            "must be 0 when machine.playhead_ticks is u64::MAX",
+        ));
+    }
+
+    let recorded_event_count =
+        u64::try_from(snapshot.sequence.recorded_events.len()).unwrap_or(u64::MAX);
+    if snapshot.machine.event_count < recorded_event_count {
+        return Err(invalid_value(
+            "machine.event_count",
+            format!("must be >= sequence.recorded_events.len() {recorded_event_count}"),
+        ));
+    }
+    if snapshot.machine.last_playback.is_some() && snapshot.machine.event_count == 0 {
+        return Err(invalid_value(
+            "machine.last_playback",
+            "requires machine.event_count > 0",
+        ));
+    }
 
     validate_playback_resolution(
         "machine.last_playback",
