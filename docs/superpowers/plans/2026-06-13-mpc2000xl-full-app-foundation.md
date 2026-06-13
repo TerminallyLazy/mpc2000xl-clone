@@ -1396,7 +1396,7 @@ Review fix history:
 **Files:**
 - Create: `scripts/verify.sh`
 
-- [ ] **Step 1: Create verification script**
+- [x] **Step 1: Create verification script**
 
 Create `scripts/verify.sh`:
 
@@ -1404,13 +1404,18 @@ Create `scripts/verify.sh`:
 #!/usr/bin/env bash
 set -euo pipefail
 
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+repo_root="$(cd -- "${script_dir}/.." && pwd)"
+
+cd "$repo_root"
+
 cargo fmt --all --check
 cargo test --workspace
 cargo check -p mpc_desktop
 python3 tools/check_assets.py
 ```
 
-- [ ] **Step 2: Make script executable**
+- [x] **Step 2: Make script executable**
 
 Run:
 
@@ -1420,7 +1425,7 @@ chmod +x scripts/verify.sh
 
 Expected: command exits 0.
 
-- [ ] **Step 3: Run full verification**
+- [x] **Step 3: Run full verification**
 
 Run:
 
@@ -1430,12 +1435,16 @@ Run:
 
 Expected: formatting check PASS, workspace tests PASS, desktop check PASS, asset guard PASS.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add scripts/verify.sh
 git commit -m "chore: add repository verification script"
 ```
+
+Implementation history:
+
+- 2026-06-13: Task 7 added an executable root verification script that resolves the repository root from `scripts/verify.sh`, changes to that root, and runs `cargo fmt --all --check`, `cargo test --workspace`, `cargo check -p mpc_desktop`, and `python3 tools/check_assets.py` in fail-fast order.
 
 ---
 
