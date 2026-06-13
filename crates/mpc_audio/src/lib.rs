@@ -14,6 +14,9 @@ pub const MAX_SAMPLE_RATE_HZ: u32 = 192_000;
 /// maximum accepted sample rate so malformed fixtures cannot request OOM-sized
 /// allocations.
 pub const MAX_RENDER_FRAMES: usize = MAX_SAMPLE_RATE_HZ as usize;
+/// Deterministic capture backends store render summaries only, but construction
+/// still clamps requested history to avoid unchecked upfront allocation.
+pub const MAX_CAPTURE_AUDIO_BACKEND_CAPTURES: usize = 1_024;
 const PCM_MAX: i32 = i16::MAX as i32;
 const MAX_VELOCITY: i32 = 127;
 const MAX_LEVEL: i32 = 127;
@@ -196,6 +199,12 @@ pub struct HostAudioRenderReceipt {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HostAudioPlaybackReport {
+    pub event: HostAudioEvent,
+    pub render_summary: Option<AudioRenderSummary>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum HostAudioEvent {
     Ignored {
@@ -228,6 +237,7 @@ pub struct HostAudioState {
 pub enum HostAudioError {
     Render { error: AudioRenderError },
     InvalidRenderedAudio { error: InvalidRenderedAudioError },
+    InvalidBackendReceipt { error: InvalidBackendReceiptError },
     Backend { error: HostAudioBackendError },
 }
 
@@ -238,6 +248,10 @@ impl HostAudioError {
 
     fn invalid_rendered_audio(error: InvalidRenderedAudioError) -> Self {
         Self::InvalidRenderedAudio { error }
+    }
+
+    fn invalid_backend_receipt(error: InvalidBackendReceiptError) -> Self {
+        Self::InvalidBackendReceipt { error }
     }
 
     fn backend(error: HostAudioBackendError) -> Self {
@@ -251,6 +265,9 @@ impl std::fmt::Display for HostAudioError {
             Self::Render { error } => write!(formatter, "render failed: {error}"),
             Self::InvalidRenderedAudio { error } => {
                 write!(formatter, "invalid rendered audio: {error}")
+            }
+            Self::InvalidBackendReceipt { error } => {
+                write!(formatter, "invalid backend receipt: {error}")
             }
             Self::Backend { error } => write!(formatter, "backend failed: {error}"),
         }
@@ -285,6 +302,35 @@ impl std::fmt::Display for InvalidRenderedAudioError {
 }
 
 impl std::error::Error for InvalidRenderedAudioError {}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum InvalidBackendReceiptError {
+    PlayedWithoutQueued,
+    FrameCountMismatch {
+        receipt_frame_count: usize,
+        rendered_frame_count: usize,
+    },
+}
+
+impl std::fmt::Display for InvalidBackendReceiptError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::PlayedWithoutQueued => {
+                write!(formatter, "played receipts must also be queued")
+            }
+            Self::FrameCountMismatch {
+                receipt_frame_count,
+                rendered_frame_count,
+            } => write!(
+                formatter,
+                "receipt frame count {receipt_frame_count} must match rendered frame count {rendered_frame_count}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for InvalidBackendReceiptError {}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -322,18 +368,38 @@ impl std::error::Error for HostAudioBackendError {}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct HostAudioBackendReceipt {
-    pub frame_count: usize,
-    pub queued: bool,
-    pub played: bool,
+    frame_count: usize,
+    queued: bool,
+    played: bool,
 }
 
 impl HostAudioBackendReceipt {
+    pub fn queued(frame_count: usize) -> Self {
+        Self {
+            frame_count,
+            queued: true,
+            played: false,
+        }
+    }
+
     pub fn queued_and_played(frame_count: usize) -> Self {
         Self {
             frame_count,
             queued: true,
             played: true,
         }
+    }
+
+    pub fn frame_count(&self) -> usize {
+        self.frame_count
+    }
+
+    pub fn is_queued(&self) -> bool {
+        self.queued
+    }
+
+    pub fn is_played(&self) -> bool {
+        self.played
     }
 }
 
@@ -403,6 +469,7 @@ impl CaptureAudioBackend {
     }
 
     pub fn named(backend_name: impl Into<String>, max_captures: usize) -> Self {
+        let max_captures = max_captures.min(MAX_CAPTURE_AUDIO_BACKEND_CAPTURES);
         Self {
             backend_name: backend_name.into(),
             max_captures,
@@ -526,13 +593,29 @@ where
     }
 
     pub fn play_intent(&mut self, intent: &SamplePlaybackIntent) -> HostAudioEvent {
-        if self.mode == HostAudioMode::Disabled {
-            return self.record_ignored();
-        }
+        self.play_intent_with_render_summary(intent).event
+    }
 
+    pub fn play_intent_with_render_summary(
+        &mut self,
+        intent: &SamplePlaybackIntent,
+    ) -> HostAudioPlaybackReport {
         match render_intent(intent, self.render_settings) {
-            Ok(rendered) => self.play_rendered(rendered),
-            Err(error) => self.record_failed(HostAudioError::render(error), None),
+            Ok(rendered) => {
+                let render_summary = Some(rendered.summary.clone());
+                let event = self.play_rendered(rendered);
+                HostAudioPlaybackReport {
+                    event,
+                    render_summary,
+                }
+            }
+            Err(error) => {
+                let event = self.record_failed(HostAudioError::render(error), None);
+                HostAudioPlaybackReport {
+                    event,
+                    render_summary: None,
+                }
+            }
         }
     }
 
@@ -548,18 +631,22 @@ where
         let summary = rendered.summary.clone();
         match self.backend.enqueue_render(&rendered) {
             Ok(backend_receipt) => {
-                if backend_receipt.queued {
+                if let Err(error) = validate_backend_receipt(&backend_receipt, &rendered) {
+                    return self.record_failed(error, Some(summary));
+                }
+
+                if backend_receipt.is_queued() {
                     self.queued_render_count = self.queued_render_count.saturating_add(1);
                 }
-                if backend_receipt.played {
+                if backend_receipt.is_played() {
                     self.played_render_count = self.played_render_count.saturating_add(1);
                 }
 
                 self.record_enqueued(HostAudioRenderReceipt {
                     summary,
-                    frame_count: backend_receipt.frame_count,
-                    queued: backend_receipt.queued,
-                    played: backend_receipt.played,
+                    frame_count: backend_receipt.frame_count(),
+                    queued: backend_receipt.is_queued(),
+                    played: backend_receipt.is_played(),
                 })
             }
             Err(error) => self.record_failed(HostAudioError::backend(error), Some(summary)),
@@ -668,6 +755,28 @@ fn validate_rendered_audio(rendered: &RenderedAudio) -> Result<(), HostAudioErro
                 settings_frame_count: rendered.settings.frame_count,
                 summary_frame_count: rendered.summary.frame_count,
                 actual_frame_count: rendered.frames.len(),
+            },
+        ));
+    }
+
+    Ok(())
+}
+
+fn validate_backend_receipt(
+    receipt: &HostAudioBackendReceipt,
+    rendered: &RenderedAudio,
+) -> Result<(), HostAudioError> {
+    if receipt.played && !receipt.queued {
+        return Err(HostAudioError::invalid_backend_receipt(
+            InvalidBackendReceiptError::PlayedWithoutQueued,
+        ));
+    }
+
+    if receipt.frame_count != rendered.frames.len() {
+        return Err(HostAudioError::invalid_backend_receipt(
+            InvalidBackendReceiptError::FrameCountMismatch {
+                receipt_frame_count: receipt.frame_count,
+                rendered_frame_count: rendered.frames.len(),
             },
         ));
     }
@@ -830,6 +939,52 @@ mod tests {
     }
 
     #[test]
+    fn capture_backend_clamps_oversized_history_capacity_before_allocation() {
+        let backend = CaptureAudioBackend::named("oversized", usize::MAX);
+
+        assert_eq!(backend.max_captures(), MAX_CAPTURE_AUDIO_BACKEND_CAPTURES);
+        assert_eq!(
+            backend.captured_renders().capacity(),
+            MAX_CAPTURE_AUDIO_BACKEND_CAPTURES
+        );
+    }
+
+    #[test]
+    fn host_audio_backend_receipt_constructors_expose_valid_states() {
+        let queued = HostAudioBackendReceipt::queued(12);
+        assert_eq!(queued.frame_count(), 12);
+        assert!(queued.is_queued());
+        assert!(!queued.is_played());
+
+        let played = HostAudioBackendReceipt::queued_and_played(34);
+        assert_eq!(played.frame_count(), 34);
+        assert!(played.is_queued());
+        assert!(played.is_played());
+    }
+
+    #[test]
+    fn host_audio_playback_report_exposes_engine_render_summary_when_disabled() {
+        let mut engine = HostAudioEngine::new(CaptureAudioBackend::new(4), settings(32_000, 24))
+            .expect("host audio settings should be valid");
+
+        let report = engine.play_intent_with_render_summary(&test_intent(100, 100, 0));
+
+        assert_eq!(
+            report.event,
+            HostAudioEvent::Ignored {
+                backend_name: "capture".to_string(),
+                reason: HostAudioIgnoreReason::Disabled,
+            }
+        );
+        let summary = report
+            .render_summary
+            .expect("engine should expose render summary for UI");
+        assert_eq!(summary.sample_rate_hz, 32_000);
+        assert_eq!(summary.frame_count, 24);
+        assert_eq!(engine.backend().captured_renders().len(), 0);
+    }
+
+    #[test]
     fn enabled_host_audio_enqueues_and_captures_render_summary() {
         let mut engine =
             HostAudioEngine::enabled(CaptureAudioBackend::new(4), settings(44_100, 64))
@@ -987,6 +1142,60 @@ mod tests {
         assert_eq!(engine.backend().captured_renders().len(), 0);
     }
 
+    #[test]
+    fn host_audio_rejects_played_without_queued_backend_receipt() {
+        let receipt = HostAudioBackendReceipt {
+            frame_count: 64,
+            queued: false,
+            played: true,
+        };
+        let mut engine =
+            HostAudioEngine::enabled(ReceiptAudioBackend::new(receipt), settings(44_100, 64))
+                .expect("host audio settings should be valid");
+
+        let event = engine.play_intent(&test_intent(100, 100, 0));
+
+        assert!(matches!(
+            event,
+            HostAudioEvent::Failed {
+                error: HostAudioError::InvalidBackendReceipt {
+                    error: InvalidBackendReceiptError::PlayedWithoutQueued
+                },
+                ..
+            }
+        ));
+        let state = engine.state();
+        assert_eq!(state.queued_render_count, 0);
+        assert_eq!(state.played_render_count, 0);
+    }
+
+    #[test]
+    fn host_audio_rejects_backend_receipt_frame_count_mismatch() {
+        let mut engine = HostAudioEngine::enabled(
+            ReceiptAudioBackend::new(HostAudioBackendReceipt::queued_and_played(65)),
+            settings(44_100, 64),
+        )
+        .expect("host audio settings should be valid");
+
+        let event = engine.play_intent(&test_intent(100, 100, 0));
+
+        assert!(matches!(
+            event,
+            HostAudioEvent::Failed {
+                error: HostAudioError::InvalidBackendReceipt {
+                    error: InvalidBackendReceiptError::FrameCountMismatch {
+                        receipt_frame_count: 65,
+                        rendered_frame_count: 64,
+                    }
+                },
+                ..
+            }
+        ));
+        let state = engine.state();
+        assert_eq!(state.queued_render_count, 0);
+        assert_eq!(state.played_render_count, 0);
+    }
+
     fn settings(sample_rate_hz: u32, frame_count: usize) -> AudioRenderSettings {
         AudioRenderSettings::new(sample_rate_hz, frame_count)
             .expect("test settings should satisfy audio render guardrails")
@@ -1027,6 +1236,30 @@ mod tests {
                 self.backend_name(),
                 "injected test failure",
             ))
+        }
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    struct ReceiptAudioBackend {
+        receipt: HostAudioBackendReceipt,
+    }
+
+    impl ReceiptAudioBackend {
+        fn new(receipt: HostAudioBackendReceipt) -> Self {
+            Self { receipt }
+        }
+    }
+
+    impl HostAudioBackend for ReceiptAudioBackend {
+        fn backend_name(&self) -> &str {
+            "receipt-test"
+        }
+
+        fn enqueue_render(
+            &mut self,
+            _rendered: &RenderedAudio,
+        ) -> Result<HostAudioBackendReceipt, HostAudioBackendError> {
+            Ok(self.receipt)
         }
     }
 }

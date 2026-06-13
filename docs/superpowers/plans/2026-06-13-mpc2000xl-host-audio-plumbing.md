@@ -8,19 +8,21 @@ Implemented behavior:
 
 - `mpc_audio` exposes typed host-audio API values: `HostAudioEngine`, `HostAudioBackend`, `HostAudioState`, `HostAudioEvent`, `HostAudioError`, deterministic backends, and receipt/error structs.
 - `HostAudioEngine` can consume either a `SamplePlaybackIntent` or an already-rendered `RenderedAudio`.
-- Playback intent handling is fed by the existing deterministic `mpc_audio::render_intent` renderer and reuses `AudioRenderSettings` validation.
+- Playback intent handling is fed by the existing deterministic `mpc_audio::render_intent` renderer through the host engine and reuses engine-owned `AudioRenderSettings` validation.
+- `HostAudioEngine::play_intent_with_render_summary` returns a typed playback report so UI callers can show render summaries without selecting render settings or calling the renderer directly.
 - Host audio has an explicit enabled/disabled mode.
 - Disabled host audio returns a structured `HostAudioEvent::Ignored` result and does not enqueue to the backend.
 - Enabled host audio validates render settings and render/frame-count consistency before calling the backend.
+- Backend receipts are constructor-driven and validated before success counters increment, including played-without-queued and frame-count mismatch rejection.
 - Host state reports backend name, render settings, queued render count, played render count, and the last typed event, including success or failure status.
 - `NullAudioBackend` and `CaptureAudioBackend` are deterministic and do not open real audio hardware.
-- `CaptureAudioBackend` stores bounded latest render summaries and frame counts, not full audio frames.
+- `CaptureAudioBackend` clamps requested history to `MAX_CAPTURE_AUDIO_BACKEND_CAPTURES` and stores bounded latest render summaries and frame counts, not full audio frames.
 - Backend failures propagate through `HostAudioEvent::Failed` without panicking or incrementing success counters.
-- The desktop app includes a host-audio enable checkbox, visible backend/mode/counter/event summary, and routes sample playback through the host engine while keeping the offline synthetic render summary visible.
+- The desktop app includes a host-audio enable checkbox, visible backend/mode/counter/event summary, and routes sample playback intents through the host engine while keeping the offline synthetic render summary visible.
 
 ## Device Abstraction
 
-The host layer is intentionally behind `HostAudioBackend`. The backend receives a validated `RenderedAudio` reference and returns a typed receipt with queued/played status. The engine owns state counters and event recording; the backend owns only the output/capture behavior.
+The host layer is intentionally behind `HostAudioBackend`. The backend receives a validated `RenderedAudio` reference and returns a typed receipt with queued/played status. The engine validates backend receipt invariants, owns state counters and event recording, and records invalid receipts as host failures before incrementing counters; the backend owns only the output/capture behavior.
 
 Current backends:
 
@@ -46,6 +48,9 @@ Focused unit tests cover:
 - State counters across multiple playbacks.
 - Null backend playback without device setup.
 - Invalid rendered audio rejection before backend enqueue.
+- Oversized capture-history requests clamp before allocation.
+- Invalid backend receipts fail without incrementing success counters.
+- Engine-owned intent playback exposes render summaries for desktop UI without direct desktop render orchestration.
 
 ## Source And Evidence Status
 

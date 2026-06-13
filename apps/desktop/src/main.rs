@@ -1,7 +1,7 @@
 use eframe::egui;
 use mpc_audio::{
-    AudioRenderSettings, AudioRenderSummary, CaptureAudioBackend, HostAudioEngine, HostAudioEvent,
-    HostAudioState, render_intent,
+    AudioRenderSettings, AudioRenderSummary, CaptureAudioBackend, HostAudioEngine, HostAudioError,
+    HostAudioEvent, HostAudioState,
 };
 use mpc_core::{
     HardwareEvent, MachineOutput, Mode, MpcCore, MpcState, PadAssignmentChange, PadBank,
@@ -153,19 +153,21 @@ impl MpcDesktopApp {
             .iter()
             .find(|output| matches!(output, MachineOutput::SamplePlaybackIntent { .. }))
         {
-            match render_intent(intent, AudioRenderSettings::preview()) {
-                Ok(rendered) => {
-                    self.last_synthetic_render = Some(rendered.summary.clone());
-                    self.last_synthetic_render_error = None;
-                    host_audio_error_message(&self.host_audio.play_rendered(rendered))
-                }
-                Err(error) => {
-                    let message = format!("Synthetic render failed: {error}");
-                    self.last_synthetic_render = None;
-                    self.last_synthetic_render_error = Some(message.clone());
-                    Some(message)
-                }
+            let report = self.host_audio.play_intent_with_render_summary(intent);
+            self.last_synthetic_render = report.render_summary;
+            self.last_synthetic_render_error = None;
+
+            if let HostAudioEvent::Failed {
+                error: HostAudioError::Render { error },
+                ..
+            } = &report.event
+            {
+                let message = format!("Synthetic render failed: {error}");
+                self.last_synthetic_render_error = Some(message.clone());
+                return Some(message);
             }
+
+            host_audio_error_message(&report.event)
         } else {
             None
         }
