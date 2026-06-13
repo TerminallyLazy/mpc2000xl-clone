@@ -4,10 +4,10 @@ use std::collections::BTreeSet;
 use std::fmt;
 
 use crate::events::{
-    HardwareEvent, MachineOutput, Mode, PadAssignment, PadAssignmentChange, PadBank, PanelControl,
-    PlaybackMissReason, Program, ProgramEditField, ProgramPad, SampleCatalogEntry,
-    SamplePlaybackIntent, SamplePlaybackMiss, SamplePlaybackResolution, SequenceEvent,
-    SyntheticSample,
+    HardwareEvent, MachineOutput, MidiSettingsField, Mode, PadAssignment, PadAssignmentChange,
+    PadBank, PanelControl, PlaybackMissReason, Program, ProgramEditField, ProgramPad,
+    SampleCatalogEntry, SamplePlaybackIntent, SamplePlaybackMiss, SamplePlaybackResolution,
+    SequenceEvent, SyntheticSample,
 };
 use crate::lcd::LcdFrame;
 
@@ -47,8 +47,9 @@ const MAX_PAD_TUNE_CENTS: i16 = 1200;
 const MIDI_MIN_CHANNEL: u8 = 1;
 const MIDI_MAX_CHANNEL: u8 = 16;
 const MIDI_MAX_NOTE: u8 = 127;
-const MIDI_MIN_MAPPED_NOTE: u8 = 36;
-const MIDI_MAX_MAPPED_NOTE: u8 = 51;
+const DEFAULT_MIDI_BASE_NOTE: u8 = 36;
+const MAX_MIDI_BASE_NOTE: u8 = 112;
+const MIDI_MAPPED_PAD_COUNT: u8 = 16;
 const PAD_BANKS: [PadBank; 4] = [PadBank::A, PadBank::B, PadBank::C, PadBank::D];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -118,6 +119,12 @@ pub struct ProjectMachineSnapshot {
     pub selected_program_edit_field: ProgramEditField,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub selected_sample_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub midi_input_channel: Option<u8>,
+    #[serde(default = "default_midi_base_note")]
+    pub midi_base_note: u8,
+    #[serde(default)]
+    pub selected_midi_settings_field: MidiSettingsField,
     pub playhead_ticks: u64,
     pub playhead_tick_remainder: u64,
     pub event_count: u64,
@@ -211,6 +218,9 @@ pub struct MpcState {
     pub selected_program_pad: ProgramPad,
     pub selected_program_edit_field: ProgramEditField,
     pub selected_sample_id: Option<String>,
+    pub midi_input_channel: Option<u8>,
+    pub midi_base_note: u8,
+    pub selected_midi_settings_field: MidiSettingsField,
     pub last_playback: Option<SamplePlaybackResolution>,
     pub playhead_ticks: u64,
     pub playhead_tick_remainder: u64,
@@ -265,6 +275,9 @@ impl Default for MpcState {
             selected_program_pad,
             selected_program_edit_field: ProgramEditField::Pad,
             selected_sample_id,
+            midi_input_channel: None,
+            midi_base_note: DEFAULT_MIDI_BASE_NOTE,
+            selected_midi_settings_field: MidiSettingsField::InputChannel,
             last_playback: None,
             playhead_ticks: 0,
             playhead_tick_remainder: 0,
@@ -318,6 +331,9 @@ impl MpcCore {
                 selected_program_pad: self.state.selected_program_pad,
                 selected_program_edit_field: self.state.selected_program_edit_field,
                 selected_sample_id: self.state.selected_sample_id.clone(),
+                midi_input_channel: self.state.midi_input_channel,
+                midi_base_note: self.state.midi_base_note,
+                selected_midi_settings_field: self.state.selected_midi_settings_field,
                 playhead_ticks: self.state.playhead_ticks,
                 playhead_tick_remainder: self.state.playhead_tick_remainder,
                 event_count: self.state.event_count,
@@ -371,6 +387,9 @@ impl MpcCore {
             &self.state.current_program,
             snapshot.machine.selected_sample_id.as_deref(),
         );
+        self.state.midi_input_channel = snapshot.machine.midi_input_channel;
+        self.state.midi_base_note = snapshot.machine.midi_base_note;
+        self.state.selected_midi_settings_field = snapshot.machine.selected_midi_settings_field;
         self.state.last_playback = snapshot.machine.last_playback;
         self.state.playhead_ticks = snapshot.machine.playhead_ticks;
         self.state.playhead_tick_remainder = snapshot.machine.playhead_tick_remainder;
@@ -568,6 +587,10 @@ impl MpcCore {
             return self.adjust_selected_program_field(delta);
         }
 
+        if self.state.mode == Mode::Midi {
+            return self.adjust_midi_settings(delta);
+        }
+
         if matches!(self.state.mode, Mode::Sample | Mode::Trim) {
             return self.adjust_selected_sample(delta);
         }
@@ -597,6 +620,20 @@ impl MpcCore {
             return vec![MachineOutput::LcdChanged];
         }
 
+        if self.state.mode == Mode::Midi {
+            self.state.selected_midi_settings_field =
+                self.state.selected_midi_settings_field.previous();
+            self.refresh_lcd();
+            return vec![
+                MachineOutput::MidiSettingsChanged {
+                    input_channel: self.state.midi_input_channel,
+                    base_note: self.state.midi_base_note,
+                    selected_field: self.state.selected_midi_settings_field,
+                },
+                MachineOutput::LcdChanged,
+            ];
+        }
+
         if self.state.mode != Mode::Main {
             return Self::ignored(format!(
                 "{}.cursor_left_unmapped",
@@ -614,6 +651,20 @@ impl MpcCore {
             self.adjust_selected_program_pad(1);
             self.refresh_lcd();
             return vec![MachineOutput::LcdChanged];
+        }
+
+        if self.state.mode == Mode::Midi {
+            self.state.selected_midi_settings_field =
+                self.state.selected_midi_settings_field.next();
+            self.refresh_lcd();
+            return vec![
+                MachineOutput::MidiSettingsChanged {
+                    input_channel: self.state.midi_input_channel,
+                    base_note: self.state.midi_base_note,
+                    selected_field: self.state.selected_midi_settings_field,
+                },
+                MachineOutput::LcdChanged,
+            ];
         }
 
         if self.state.mode != Mode::Main {
@@ -767,6 +818,29 @@ impl MpcCore {
             clamp_delta_u16(self.state.bar_count, delta, MIN_BAR_COUNT, MAX_BAR_COUNT);
     }
 
+    fn adjust_midi_settings(&mut self, delta: i32) -> Vec<MachineOutput> {
+        match self.state.selected_midi_settings_field {
+            MidiSettingsField::InputChannel => {
+                self.state.midi_input_channel =
+                    clamp_delta_midi_input_channel(self.state.midi_input_channel, delta);
+            }
+            MidiSettingsField::BaseNote => {
+                self.state.midi_base_note =
+                    clamp_delta_u8(self.state.midi_base_note, delta, 0, MAX_MIDI_BASE_NOTE);
+            }
+        }
+
+        self.refresh_lcd();
+        vec![
+            MachineOutput::MidiSettingsChanged {
+                input_channel: self.state.midi_input_channel,
+                base_note: self.state.midi_base_note,
+                selected_field: self.state.selected_midi_settings_field,
+            },
+            MachineOutput::LcdChanged,
+        ]
+    }
+
     fn refresh_lcd(&mut self) {
         if matches!(self.state.mode, Mode::Sample | Mode::Trim) {
             self.ensure_selected_sample_selection();
@@ -803,7 +877,11 @@ impl MpcCore {
                 LcdFrame::trim_screen(selected_sample.as_ref())
             }
             Mode::Song => LcdFrame::mode_screen("SONG", "Song mode"),
-            Mode::Midi => LcdFrame::mode_screen("MIDI", "MIDI sync/settings"),
+            Mode::Midi => LcdFrame::midi_screen(
+                self.state.midi_input_channel,
+                self.state.midi_base_note,
+                self.state.selected_midi_settings_field,
+            ),
             Mode::Disk => LcdFrame::mode_screen("DISK", "Virtual disk"),
             Mode::Setup => LcdFrame::mode_screen("SETUP", "System settings"),
         };
@@ -897,9 +975,19 @@ impl MpcCore {
             return Self::midi_ignored(reason);
         }
 
-        let Some(pad) = midi_note_to_bank_a_pad(note) else {
+        if let Some(input_channel) = self.state.midi_input_channel {
+            if channel != input_channel {
+                return Self::midi_ignored(format!(
+                    "midi channel {channel} ignored; input channel is {input_channel}"
+                ));
+            }
+        }
+
+        let Some(pad) = midi_note_to_bank_a_pad(note, self.state.midi_base_note) else {
+            let range_end = midi_mapped_range_end(self.state.midi_base_note);
             return Self::midi_ignored(format!(
-                "midi note {note} is not mapped in this slice; mapped range is 36..=51"
+                "midi note {note} is not mapped in this slice; mapped range is {}..={range_end}",
+                self.state.midi_base_note
             ));
         };
 
@@ -1279,6 +1367,9 @@ fn validate_machine_json_fields(value: &Value) -> Result<(), ProjectSnapshotErro
             "selected_program_pad",
             "selected_program_edit_field",
             "selected_sample_id",
+            "midi_input_channel",
+            "midi_base_note",
+            "selected_midi_settings_field",
             "playhead_ticks",
             "playhead_tick_remainder",
             "event_count",
@@ -1572,6 +1663,20 @@ fn validate_project_snapshot(snapshot: &ProjectSnapshot) -> Result<(), ProjectSn
     if let Some(selected_sample_id) = &snapshot.machine.selected_sample_id {
         validate_non_empty("machine.selected_sample_id", selected_sample_id)?;
     }
+    if let Some(midi_input_channel) = snapshot.machine.midi_input_channel {
+        validate_range_u8(
+            "machine.midi_input_channel",
+            midi_input_channel,
+            MIDI_MIN_CHANNEL,
+            MIDI_MAX_CHANNEL,
+        )?;
+    }
+    validate_range_u8(
+        "machine.midi_base_note",
+        snapshot.machine.midi_base_note,
+        0,
+        MAX_MIDI_BASE_NOTE,
+    )?;
     validate_playhead_remainder(snapshot.machine.playhead_tick_remainder)?;
     if snapshot.machine.playhead_ticks == u64::MAX && snapshot.machine.playhead_tick_remainder != 0
     {
@@ -1809,12 +1914,29 @@ fn validate_midi_note_off(channel: u8, note: u8, velocity: u8) -> Option<String>
         })
 }
 
-fn midi_note_to_bank_a_pad(note: u8) -> Option<u8> {
-    if (MIDI_MIN_MAPPED_NOTE..=MIDI_MAX_MAPPED_NOTE).contains(&note) {
-        Some(note - 35)
+fn midi_note_to_bank_a_pad(note: u8, base_note: u8) -> Option<u8> {
+    let range_end = midi_mapped_range_end(base_note);
+    if (base_note..=range_end).contains(&note) {
+        Some(note.saturating_sub(base_note).saturating_add(1))
     } else {
         None
     }
+}
+
+fn midi_mapped_range_end(base_note: u8) -> u8 {
+    base_note.saturating_add(MIDI_MAPPED_PAD_COUNT.saturating_sub(1))
+}
+
+fn clamp_delta_midi_input_channel(current: Option<u8>, delta: i32) -> Option<u8> {
+    let current = current.unwrap_or(0);
+    match clamp_delta_u8(current, delta, 0, MIDI_MAX_CHANNEL) {
+        0 => None,
+        channel => Some(channel),
+    }
+}
+
+fn default_midi_base_note() -> u8 {
+    DEFAULT_MIDI_BASE_NOTE
 }
 
 fn validate_playhead_remainder(remainder: u64) -> Result<(), ProjectSnapshotError> {

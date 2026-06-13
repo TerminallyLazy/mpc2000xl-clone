@@ -4,8 +4,8 @@ use mpc_audio::{
     HostAudioEvent, HostAudioState,
 };
 use mpc_core::{
-    HardwareEvent, MachineOutput, Mode, MpcCore, MpcState, PadAssignmentChange, PadBank,
-    PanelControl, ProgramPad, SampleCatalogEntry, SamplePlaybackResolution,
+    HardwareEvent, MachineOutput, MidiSettingsField, Mode, MpcCore, MpcState, PadAssignmentChange,
+    PadBank, PanelControl, ProgramPad, SampleCatalogEntry, SamplePlaybackResolution,
 };
 use mpc_storage::{
     DEFAULT_PROJECT_FILE_PATH, load_project_file_with_report,
@@ -383,6 +383,27 @@ impl MpcDesktopApp {
     }
 
     fn status_from_outputs(outputs: &[MachineOutput], state: &MpcState) -> String {
+        if let Some(MachineOutput::MidiSettingsChanged {
+            input_channel,
+            base_note,
+            selected_field,
+        }) = outputs
+            .iter()
+            .find(|output| matches!(output, MachineOutput::MidiSettingsChanged { .. }))
+        {
+            let selected_value = match selected_field {
+                MidiSettingsField::InputChannel => midi_input_channel_text(*input_channel),
+                MidiSettingsField::BaseNote => base_note.to_string(),
+            };
+            return format!(
+                "MIDI settings {}={} base {} range {}",
+                selected_field.label(),
+                selected_value,
+                base_note,
+                midi_note_range_text(*base_note)
+            );
+        }
+
         if let Some(MachineOutput::MidiInputIgnored { reason }) = outputs
             .iter()
             .find(|output| matches!(output, MachineOutput::MidiInputIgnored { .. }))
@@ -650,6 +671,19 @@ impl MpcDesktopApp {
     }
 
     fn draw_midi_controls(&mut self, ui: &mut egui::Ui) {
+        let state = self.core.state();
+        let midi_mode = state.mode == Mode::Midi;
+        let midi_input_channel = state.midi_input_channel;
+        let midi_base_note = state.midi_base_note;
+        let selected_midi_settings_field = state.selected_midi_settings_field;
+        let top_note = midi_base_note.saturating_add(15);
+        let fifth_note = midi_base_note.saturating_add(4);
+        let ignored_note = if midi_base_note > 0 {
+            midi_base_note - 1
+        } else {
+            top_note.saturating_add(1)
+        };
+
         ui.horizontal_wrapped(|ui| {
             ui.label("MIDI sim");
             ui.add(egui::Slider::new(&mut self.midi_channel, 1..=16).text("Ch"));
@@ -672,17 +706,56 @@ impl MpcDesktopApp {
             }
 
             ui.separator();
-            if ui.button("36 -> A01").clicked() {
-                self.send_midi_note_on(36);
+            if ui.button(format!("{midi_base_note} -> A01")).clicked() {
+                self.send_midi_note_on(midi_base_note);
             }
-            if ui.button("40 -> A05").clicked() {
-                self.send_midi_note_on(40);
+            if ui.button(format!("{fifth_note} -> A05")).clicked() {
+                self.send_midi_note_on(fifth_note);
             }
-            if ui.button("51 -> A16").clicked() {
-                self.send_midi_note_on(51);
+            if ui.button(format!("{top_note} -> A16")).clicked() {
+                self.send_midi_note_on(top_note);
             }
-            if ui.button("35 ignored").clicked() {
-                self.send_midi_note_on(35);
+            if ui.button(format!("{ignored_note} ignored")).clicked() {
+                self.send_midi_note_on(ignored_note);
+            }
+        });
+
+        ui.horizontal_wrapped(|ui| {
+            ui.label(format!(
+                "MIDI settings: input {} base {} range {} field {} host I/O off",
+                midi_input_channel_text(midi_input_channel),
+                midi_base_note,
+                midi_note_range_text(midi_base_note),
+                selected_midi_settings_field.label()
+            ));
+            ui.separator();
+            if ui
+                .add_enabled(midi_mode, egui::Button::new("Setting <"))
+                .clicked()
+            {
+                self.dispatch_event(HardwareEvent::Press {
+                    control: PanelControl::CursorLeft,
+                });
+            }
+            if ui
+                .add_enabled(midi_mode, egui::Button::new("Setting >"))
+                .clicked()
+            {
+                self.dispatch_event(HardwareEvent::Press {
+                    control: PanelControl::CursorRight,
+                });
+            }
+            if ui
+                .add_enabled(midi_mode, egui::Button::new("Value -"))
+                .clicked()
+            {
+                self.dispatch_event(HardwareEvent::TurnDataWheel { delta: -1 });
+            }
+            if ui
+                .add_enabled(midi_mode, egui::Button::new("Value +"))
+                .clicked()
+            {
+                self.dispatch_event(HardwareEvent::TurnDataWheel { delta: 1 });
             }
         });
     }
@@ -905,6 +978,12 @@ fn main_screen_status(state: &MpcState) -> String {
             state.mode,
             selected_sample_text(state.selected_sample().as_ref())
         ),
+        Mode::Midi => format!(
+            "LCD updated: MIDI input {} base {} range {}",
+            midi_input_channel_text(state.midi_input_channel),
+            state.midi_base_note,
+            midi_note_range_text(state.midi_base_note)
+        ),
         mode => format!("LCD updated: {mode:?}"),
     }
 }
@@ -959,6 +1038,17 @@ fn selected_sample_text(selected_sample: Option<&SampleCatalogEntry>) -> String 
         ),
         None => "Sample: empty catalog".to_string(),
     }
+}
+
+fn midi_input_channel_text(input_channel: Option<u8>) -> String {
+    match input_channel {
+        Some(channel) => format!("Ch {channel:02}"),
+        None => "Omni".to_string(),
+    }
+}
+
+fn midi_note_range_text(base_note: u8) -> String {
+    format!("{}..={}", base_note, base_note.saturating_add(15))
 }
 
 fn last_playback_text(state: &MpcState) -> String {

@@ -164,6 +164,42 @@ impl ProgramEditField {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MidiSettingsField {
+    InputChannel,
+    BaseNote,
+}
+
+impl Default for MidiSettingsField {
+    fn default() -> Self {
+        Self::InputChannel
+    }
+}
+
+impl MidiSettingsField {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::InputChannel => "input_channel",
+            Self::BaseNote => "base_note",
+        }
+    }
+
+    pub fn previous(self) -> Self {
+        match self {
+            Self::InputChannel => Self::BaseNote,
+            Self::BaseNote => Self::InputChannel,
+        }
+    }
+
+    pub fn next(self) -> Self {
+        match self {
+            Self::InputChannel => Self::BaseNote,
+            Self::BaseNote => Self::InputChannel,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SequenceEvent {
     pub selected_track: u8,
@@ -279,6 +315,11 @@ pub enum MachineOutput {
     },
     MidiInputIgnored {
         reason: String,
+    },
+    MidiSettingsChanged {
+        input_channel: Option<u8>,
+        base_note: u8,
+        selected_field: MidiSettingsField,
     },
     PadAssignmentChanged {
         bank: PadBank,

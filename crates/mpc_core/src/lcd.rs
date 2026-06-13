@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 
-use crate::events::{PadAssignment, Program, ProgramEditField, ProgramPad, SampleCatalogEntry};
+use crate::events::{
+    MidiSettingsField, PadAssignment, Program, ProgramEditField, ProgramPad, SampleCatalogEntry,
+};
 use crate::state::MainScreenField;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -241,6 +243,45 @@ impl LcdFrame {
             },
         }
     }
+
+    pub fn midi_screen(
+        input_channel: Option<u8>,
+        base_note: u8,
+        selected_field: MidiSettingsField,
+    ) -> Self {
+        let marker = |field| {
+            if selected_field == field { ">" } else { " " }
+        };
+        let range_end = base_note.saturating_add(15);
+
+        Self {
+            title: "MIDI".to_string(),
+            lines: [
+                format!(
+                    "{}Input {}",
+                    marker(MidiSettingsField::InputChannel),
+                    midi_input_channel_text(input_channel)
+                ),
+                format!(
+                    "{}Base {:03} Range {:03}-{:03}",
+                    marker(MidiSettingsField::BaseNote),
+                    base_note,
+                    base_note,
+                    range_end
+                ),
+                "Host MIDI I/O: off".to_string(),
+                format!("Sim note-on only  Edit {}", selected_field.label()),
+            ],
+            soft_keys: [
+                "F1".to_string(),
+                "F2".to_string(),
+                "F3".to_string(),
+                "F4".to_string(),
+                "F5".to_string(),
+                "F6".to_string(),
+            ],
+        }
+    }
 }
 
 fn sample_soft_keys() -> [String; 6] {
@@ -263,6 +304,13 @@ fn trim_soft_keys() -> [String; 6] {
         "F5".to_string(),
         "Sample".to_string(),
     ]
+}
+
+fn midi_input_channel_text(input_channel: Option<u8>) -> String {
+    match input_channel {
+        Some(channel) => format!("Ch {channel:02}"),
+        None => "Omni".to_string(),
+    }
 }
 
 fn pad_label(pad: ProgramPad) -> String {

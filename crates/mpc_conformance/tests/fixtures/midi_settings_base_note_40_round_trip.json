@@ -1,0 +1,112 @@
+{
+  "id": "midi.settings.base-note-40.round-trip",
+  "name": "MIDI settings mode changes base note to 40 and maps note 40 to A01",
+  "source_refs": [
+    "docs/superpowers/plans/2026-06-13-mpc2000xl-midi-settings-mode.md#behavior-slice",
+    "docs/superpowers/plans/2026-06-13-mpc2000xl-midi-note-input.md#source-and-evidence-status"
+  ],
+  "events": [
+    {
+      "type": "press",
+      "control": "midi"
+    },
+    {
+      "type": "press",
+      "control": "cursor_right"
+    },
+    {
+      "type": "turn_data_wheel",
+      "delta": 4
+    },
+    {
+      "type": "midi_note_on",
+      "channel": 12,
+      "note": 40,
+      "velocity": 96
+    }
+  ],
+  "expect": {
+    "mode": "midi",
+    "lcd_title": "MIDI",
+    "playing": false,
+    "recording": false,
+    "event_count": 4,
+    "selected_track": 1,
+    "pad_bank": "a",
+    "current_program_index": 1,
+    "current_program_name": "Program01",
+    "pad_assignment_count": 64,
+    "selected_program_pad": {
+      "bank": "a",
+      "pad_number": 1
+    },
+    "midi_input_channel": "omni",
+    "selected_midi_settings_field": "base_note",
+    "midi_base_note": 40,
+    "midi_mapped_note_range": [
+      40,
+      55
+    ],
+    "midi_host_io_enabled": false,
+    "last_playback": {
+      "type": "intent",
+      "intent": {
+        "selected_track": 1,
+        "program_index": 1,
+        "program_name": "Program01",
+        "bank": "a",
+        "pad_number": 1,
+        "sample_id": "synthetic_a_01",
+        "sample_name": "SYN-A01",
+        "velocity": 96,
+        "level": 100,
+        "pan": 0,
+        "tune_cents": 0
+      }
+    }
+  },
+  "project_round_trip": {
+    "clear_last_playback_before_restore": false,
+    "expect_snapshot_version": 1,
+    "expect": {
+      "mode": "midi",
+      "lcd_title": "MIDI",
+      "playing": false,
+      "recording": false,
+      "event_count": 4,
+      "selected_track": 1,
+      "pad_bank": "a",
+      "current_program_index": 1,
+      "current_program_name": "Program01",
+      "pad_assignment_count": 64,
+      "selected_program_pad": {
+        "bank": "a",
+        "pad_number": 1
+      },
+      "midi_input_channel": "omni",
+      "selected_midi_settings_field": "base_note",
+      "midi_base_note": 40,
+      "midi_mapped_note_range": [
+        40,
+        55
+      ],
+      "midi_host_io_enabled": false,
+      "last_playback": {
+        "type": "intent",
+        "intent": {
+          "selected_track": 1,
+          "program_index": 1,
+          "program_name": "Program01",
+          "bank": "a",
+          "pad_number": 1,
+          "sample_id": "synthetic_a_01",
+          "sample_name": "SYN-A01",
+          "velocity": 96,
+          "level": 100,
+          "pan": 0,
+          "tune_cents": 0
+        }
+      }
+    }
+  }
+}

@@ -1076,7 +1076,7 @@
     },
     {
       "id": "core.midi.note-input-mapping",
-      "name": "MIDI note-on maps notes 36..=51 to bank A pads",
+      "name": "MIDI note-on maps the default 36..=51 range to bank A pads",
       "area": "midi_input",
       "state": "fixture-backed-internal-spec",
       "evidence": [
@@ -1130,7 +1130,7 @@
           "channel": "midi_simulation",
           "event": "midi_note_on",
           "midi_channel": "1..=16",
-          "note": "36..=51",
+          "note": "default 36..=51; configurable by MIDI settings base note",
           "velocity": "1..=127"
         },
         {
@@ -1143,7 +1143,7 @@
       ],
       "expected_outputs": {
         "mapping": {
-          "notes_36_to_51": "bank A pads 1..=16 using pad = note - 35",
+          "notes_36_to_51": "default bank A pads 1..=16 using pad = note - 35; MIDI settings can move this 16-note window",
           "outside_range": "MidiInputIgnored with deterministic reason",
           "invalid_fields": "MidiInputIgnored with deterministic reason",
           "note_off": "no playback and no sequence recording"
@@ -1166,6 +1166,111 @@
       ],
       "conflict_notes": [
         "This is an internal-spec/manual-investigation MIDI foundation and does not include host MIDI I/O, firmware behavior claims, JJ-OS behavior, hardware captures, or proprietary MIDI/audio assets."
+      ]
+    },
+    {
+      "id": "core.midi.settings-mode",
+      "name": "MIDI mode edits simulated note input channel and base note",
+      "area": "midi_input",
+      "state": "fixture-backed-internal-spec",
+      "evidence": [
+        {
+          "source_id": "midi-settings-mode-slice-plan",
+          "source_category": "internal_spec",
+          "type": "plan",
+          "status": "mapped",
+          "ref": "docs/superpowers/plans/2026-06-13-mpc2000xl-midi-settings-mode.md#behavior-slice"
+        },
+        {
+          "source_id": "midi-note-input-slice-plan",
+          "source_category": "internal_spec",
+          "type": "plan",
+          "status": "mapped",
+          "ref": "docs/superpowers/plans/2026-06-13-mpc2000xl-midi-note-input.md#behavior-slice"
+        }
+      ],
+      "source_coverage": [
+        {
+          "source_category": "manual",
+          "source_id": "owner-manual",
+          "status": "investigation",
+          "ref": null,
+          "note": "Exact MPC2000XL MIDI settings screen copy, channel policy, and base-note/pad mapping policy are pending."
+        },
+        {
+          "source_category": "firmware",
+          "source_id": "mpc2000xl-os-local-reference",
+          "status": "investigation",
+          "ref": null,
+          "note": "No user-supplied firmware or hardware MIDI trace has validated settings edit behavior or channel filtering."
+        },
+        {
+          "source_category": "jjos",
+          "source_id": "jjos-unverified-boundary",
+          "status": "unverified",
+          "ref": null,
+          "note": "JJ-OS parity is not claimed for this MIDI settings foundation."
+        },
+        {
+          "source_category": "internal_spec",
+          "source_id": "midi-settings-mode-slice-plan",
+          "status": "mapped",
+          "ref": "docs/superpowers/plans/2026-06-13-mpc2000xl-midi-settings-mode.md#source-and-evidence-status",
+          "note": "Current MIDI settings affect simulated note input only and do not enable host MIDI device I/O."
+        }
+      ],
+      "inputs": [
+        {
+          "channel": "front_panel",
+          "event": "press",
+          "control": "midi"
+        },
+        {
+          "channel": "front_panel",
+          "event": "press",
+          "control": "cursor_left|cursor_right",
+          "mode": "midi"
+        },
+        {
+          "channel": "front_panel",
+          "event": "turn_data_wheel",
+          "mode": "midi",
+          "selected_field": "input_channel|base_note"
+        },
+        {
+          "channel": "midi_simulation",
+          "event": "midi_note_on",
+          "policy": "input channel filter then base-note range mapping"
+        }
+      ],
+      "expected_outputs": {
+        "state": {
+          "input_channel": "default Omni, or channel 1..=16",
+          "base_note": "default 36, clamped 0..=112",
+          "mapped_note_range": "base_note..=base_note+15 maps to bank A pads 1..=16",
+          "snapshot": "machine-level MIDI settings persist with current-reader serde defaults for missing fields; older-binary forward compatibility for new v1 fields is deferred to the formal snapshot migration/versioning slice"
+        },
+        "lcd": {
+          "midi": "input channel, base note, mapped note range, selected settings field, and Host MIDI I/O off"
+        },
+        "outputs": [
+          "MidiSettingsChanged plus LcdChanged for MIDI settings edits",
+          "MidiInputIgnored for valid note-on events blocked by selected input channel",
+          "MidiNoteMapped for valid note-on events accepted by Omni or matching selected input channel"
+        ],
+        "desktop": {
+          "status": "input channel, base note, mapped note range, selected field, and host I/O off",
+          "controls": "MIDI-mode setting/value buttons route through cursor/data-wheel events near MIDI sim"
+        }
+      },
+      "tolerance": null,
+      "fixture_refs": [
+        "crates/mpc_core/tests/core_flow.rs",
+        "crates/mpc_conformance/tests/fixtures/midi_settings_base_note_40_round_trip.json"
+      ],
+      "conflict_notes": [
+        "This is internal-spec MIDI settings behavior for simulated note input only.",
+        "Host MIDI device I/O, MIDI clock, MIDI sync, MIDI thru/output, raw MIDI event persistence, exact MPC2000XL screen parity, and JJ-OS parity remain unmapped."
       ]
     },
     {
@@ -1715,8 +1820,8 @@
         {
           "channel": "midi_simulation",
           "event": "midi_note_on",
-          "note": "36..=51",
-          "limitation": "always maps to bank A in this slice"
+          "note": "default 36..=51; configurable by MIDI settings base note",
+          "limitation": "always maps to bank A until active MIDI bank policy is verified"
         }
       ],
       "expected_outputs": {

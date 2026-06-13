@@ -1,10 +1,13 @@
 use anyhow::{Context, Result, bail};
 use mpc_audio::{AudioRenderSettings, AudioSourceKind, ChannelBalance, render_intent};
 use mpc_core::{
-    HardwareEvent, MainScreenField, Mode, MpcCore, MpcState, PROJECT_SNAPSHOT_VERSION, PadBank,
-    ProgramEditField, ProgramPad, SamplePlaybackResolution, SequenceEvent,
+    HardwareEvent, MainScreenField, MidiSettingsField, Mode, MpcCore, MpcState,
+    PROJECT_SNAPSHOT_VERSION, PadBank, ProgramEditField, ProgramPad, SamplePlaybackResolution,
+    SequenceEvent,
 };
-use serde::{Deserialize, Serialize};
+use serde::de::{self, Visitor};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use std::fmt;
 use std::fs;
 use std::path::Path;
 
@@ -32,6 +35,161 @@ pub struct ProjectRoundTripExpectation {
     pub expect: ExpectedState,
     #[serde(default)]
     pub expect_snapshot_version: Option<u16>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExpectedMidiInputChannel {
+    Omni,
+    Channel(u8),
+}
+
+impl ExpectedMidiInputChannel {
+    fn state_value(self) -> Option<u8> {
+        match self {
+            Self::Omni => None,
+            Self::Channel(channel) => Some(channel),
+        }
+    }
+}
+
+impl Serialize for ExpectedMidiInputChannel {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        match self {
+            Self::Omni => serializer.serialize_str("omni"),
+            Self::Channel(channel) => serializer.serialize_u8(*channel),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for ExpectedMidiInputChannel {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_any(ExpectedMidiInputChannelVisitor)
+    }
+}
+
+struct ExpectedMidiInputChannelVisitor;
+
+impl<'de> Visitor<'de> for ExpectedMidiInputChannelVisitor {
+    type Value = ExpectedMidiInputChannel;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(r#"the string "omni" or a MIDI input channel number 1..=16"#)
+    }
+
+    fn visit_str<E>(self, value: &str) -> std::result::Result<Self::Value, E>
+    where
+        E: de::Error,
+    {
+        if value.eq_ignore_ascii_case("omni") {
+            Ok(ExpectedMidiInputChannel::Omni)
+        } else {
+            Err(E::custom(format!(
+                r#"invalid MIDI input channel "{value}", expected "omni" or 1..=16"#
+            )))
+        }
+    }
+
+    fn visit_string<E>(self, value: String) -> std::result::Result<Self::Value, E>
+    where
+        E: de::Error,
+    {
+        self.visit_str(&value)
+    }
+
+    fn visit_u64<E>(self, value: u64) -> std::result::Result<Self::Value, E>
+    where
+        E: de::Error,
+    {
+        channel_from_u64(value).map_err(E::custom)
+    }
+
+    fn visit_i64<E>(self, value: i64) -> std::result::Result<Self::Value, E>
+    where
+        E: de::Error,
+    {
+        let value = u64::try_from(value).map_err(E::custom)?;
+        channel_from_u64(value).map_err(E::custom)
+    }
+}
+
+fn deserialize_optional_expected_midi_input_channel<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Option<ExpectedMidiInputChannel>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    deserializer.deserialize_any(OptionalExpectedMidiInputChannelVisitor)
+}
+
+struct OptionalExpectedMidiInputChannelVisitor;
+
+impl<'de> Visitor<'de> for OptionalExpectedMidiInputChannelVisitor {
+    type Value = Option<ExpectedMidiInputChannel>;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(
+            r#"an omitted field, the string "omni", or a MIDI input channel number 1..=16"#,
+        )
+    }
+
+    fn visit_unit<E>(self) -> std::result::Result<Self::Value, E>
+    where
+        E: de::Error,
+    {
+        Err(E::custom(
+            r#"midi_input_channel must be omitted to skip validation or set to "omni"/1..=16"#,
+        ))
+    }
+
+    fn visit_none<E>(self) -> std::result::Result<Self::Value, E>
+    where
+        E: de::Error,
+    {
+        self.visit_unit()
+    }
+
+    fn visit_str<E>(self, value: &str) -> std::result::Result<Self::Value, E>
+    where
+        E: de::Error,
+    {
+        ExpectedMidiInputChannelVisitor.visit_str(value).map(Some)
+    }
+
+    fn visit_string<E>(self, value: String) -> std::result::Result<Self::Value, E>
+    where
+        E: de::Error,
+    {
+        self.visit_str(&value)
+    }
+
+    fn visit_u64<E>(self, value: u64) -> std::result::Result<Self::Value, E>
+    where
+        E: de::Error,
+    {
+        ExpectedMidiInputChannelVisitor.visit_u64(value).map(Some)
+    }
+
+    fn visit_i64<E>(self, value: i64) -> std::result::Result<Self::Value, E>
+    where
+        E: de::Error,
+    {
+        ExpectedMidiInputChannelVisitor.visit_i64(value).map(Some)
+    }
+}
+
+fn channel_from_u64(value: u64) -> std::result::Result<ExpectedMidiInputChannel, &'static str> {
+    let channel = u8::try_from(value).map_err(|_| "MIDI input channel must be 1..=16")?;
+    if (1..=16).contains(&channel) {
+        Ok(ExpectedMidiInputChannel::Channel(channel))
+    } else {
+        Err("MIDI input channel must be 1..=16")
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -77,6 +235,19 @@ pub struct ExpectedState {
     pub selected_program_edit_field: Option<ProgramEditField>,
     #[serde(default)]
     pub selected_sample_index: Option<usize>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional_expected_midi_input_channel"
+    )]
+    pub midi_input_channel: Option<ExpectedMidiInputChannel>,
+    #[serde(default)]
+    pub midi_base_note: Option<u8>,
+    #[serde(default)]
+    pub selected_midi_settings_field: Option<MidiSettingsField>,
+    #[serde(default)]
+    pub midi_mapped_note_range: Option<[u8; 2]>,
+    #[serde(default)]
+    pub midi_host_io_enabled: Option<bool>,
     #[serde(default)]
     pub sample_catalog_count: Option<usize>,
     #[serde(default)]
@@ -410,6 +581,64 @@ fn validate_expected_state(
         }
     }
 
+    if let Some(midi_input_channel) = expected.midi_input_channel {
+        let expected_channel = midi_input_channel.state_value();
+        if state.midi_input_channel != expected_channel {
+            details.push(format!(
+                "{prefix}midi_input_channel mismatch: expected {:?}, got {:?}",
+                expected_channel, state.midi_input_channel
+            ));
+        }
+    }
+
+    if let Some(midi_base_note) = expected.midi_base_note {
+        if state.midi_base_note != midi_base_note {
+            details.push(format!(
+                "{prefix}midi_base_note mismatch: expected {}, got {}",
+                midi_base_note, state.midi_base_note
+            ));
+        }
+    }
+
+    if let Some(selected_midi_settings_field) = expected.selected_midi_settings_field {
+        if state.selected_midi_settings_field != selected_midi_settings_field {
+            details.push(format!(
+                "{prefix}selected_midi_settings_field mismatch: expected {:?}, got {:?}",
+                selected_midi_settings_field, state.selected_midi_settings_field
+            ));
+        }
+    }
+
+    if let Some([expected_start, expected_end]) = expected.midi_mapped_note_range {
+        let actual_start = state.midi_base_note;
+        let actual_end = state.midi_base_note.saturating_add(15);
+        if [actual_start, actual_end] != [expected_start, expected_end] {
+            details.push(format!(
+                "{prefix}midi_mapped_note_range mismatch: expected {:?}, got {:?}",
+                [expected_start, expected_end],
+                [actual_start, actual_end]
+            ));
+        }
+    }
+
+    if let Some(midi_host_io_enabled) = expected.midi_host_io_enabled {
+        if midi_host_io_enabled {
+            details.push(format!(
+                "{prefix}midi_host_io_enabled mismatch: expected false foundation host MIDI I/O, got true expectation"
+            ));
+        } else if !state
+            .lcd
+            .lines
+            .iter()
+            .any(|line| line == "Host MIDI I/O: off")
+        {
+            details.push(format!(
+                "{prefix}midi_host_io_enabled mismatch: expected LCD line \"Host MIDI I/O: off\", got {:?}",
+                state.lcd.lines
+            ));
+        }
+    }
+
     let selected_sample = state.selected_sample();
     if let Some(selected_sample_index) = expected.selected_sample_index {
         let actual = selected_sample.as_ref().map(|entry| entry.index);
@@ -695,6 +924,48 @@ mod tests {
                 "last_audio_render render error: frame count {frame_count} exceeds maximum {}",
                 mpc_audio::MAX_RENDER_FRAMES
             )]
+        );
+    }
+
+    #[test]
+    fn expected_state_rejects_null_midi_input_channel_expectation() {
+        let error = serde_json::from_str::<ExpectedState>(
+            r#"{
+                "mode": "main",
+                "lcd_title": "MAIN",
+                "playing": false,
+                "recording": false,
+                "event_count": 0,
+                "midi_input_channel": null
+            }"#,
+        )
+        .expect_err("explicit null must not silently skip MIDI input channel validation");
+
+        assert!(
+            error
+                .to_string()
+                .contains("midi_input_channel must be omitted to skip validation"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn expected_state_parses_omni_midi_input_channel_as_explicit_expectation() {
+        let expected = serde_json::from_str::<ExpectedState>(
+            r#"{
+                "mode": "main",
+                "lcd_title": "MAIN",
+                "playing": false,
+                "recording": false,
+                "event_count": 0,
+                "midi_input_channel": "omni"
+            }"#,
+        )
+        .expect("explicit omni should parse as a MIDI input channel expectation");
+
+        assert_eq!(
+            expected.midi_input_channel,
+            Some(ExpectedMidiInputChannel::Omni)
         );
     }
 }

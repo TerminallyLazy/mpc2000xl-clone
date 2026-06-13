@@ -1,5 +1,5 @@
 use mpc_core::{
-    HardwareEvent, INTERNAL_PPQN, MachineOutput, MainScreenField, Mode, MpcCore,
+    HardwareEvent, INTERNAL_PPQN, MachineOutput, MainScreenField, MidiSettingsField, Mode, MpcCore,
     PROJECT_SNAPSHOT_VERSION, PadAssignment, PadAssignmentChange, PadBank, PanelControl,
     PlaybackMissReason, ProgramEditField, ProgramPad, ProjectSnapshot, ProjectSnapshotError,
     SamplePlaybackIntent, SamplePlaybackResolution, SequenceEvent, SyntheticSample,
@@ -2131,6 +2131,13 @@ fn midi_note_36_maps_to_pad_a01_and_reuses_playback_intent() {
     let mut physical_core = MpcCore::new();
     let mut midi_core = MpcCore::new();
 
+    assert_eq!(midi_core.state().midi_input_channel, None);
+    assert_eq!(midi_core.state().midi_base_note, 36);
+    assert_eq!(
+        midi_core.state().selected_midi_settings_field,
+        MidiSettingsField::InputChannel
+    );
+
     let physical_outputs = physical_core.dispatch(HardwareEvent::StrikePad {
         bank: PadBank::A,
         pad: 1,
@@ -2439,6 +2446,257 @@ fn midi_invalid_channel_note_and_velocity_are_ignored_deterministically() {
         assert_eq!(core.state().last_playback, None);
         assert!(core.state().recorded_events.is_empty());
     }
+}
+
+#[test]
+fn midi_settings_mode_edits_base_note_and_mapping_follows_base() {
+    let mut core = MpcCore::new();
+
+    let mode_outputs = core.dispatch(HardwareEvent::Press {
+        control: PanelControl::Midi,
+    });
+    assert_eq!(core.state().mode, Mode::Midi);
+    assert!(
+        mode_outputs
+            .iter()
+            .any(|output| matches!(output, MachineOutput::LcdChanged))
+    );
+    assert_eq!(core.state().lcd.title, "MIDI");
+    assert!(core.state().lcd.lines[0].contains("Input Omni"));
+    assert!(core.state().lcd.lines[1].contains("Base 036 Range 036-051"));
+    assert!(core.state().lcd.lines[2].contains("Host MIDI I/O: off"));
+
+    let cursor_outputs = core.dispatch(HardwareEvent::Press {
+        control: PanelControl::CursorRight,
+    });
+    assert_eq!(
+        core.state().selected_midi_settings_field,
+        MidiSettingsField::BaseNote
+    );
+    assert!(cursor_outputs.iter().any(|output| matches!(
+        output,
+        MachineOutput::MidiSettingsChanged {
+            input_channel: None,
+            base_note: 36,
+            selected_field: MidiSettingsField::BaseNote
+        }
+    )));
+
+    let edit_outputs = core.dispatch(HardwareEvent::TurnDataWheel { delta: 4 });
+    assert_eq!(core.state().midi_base_note, 40);
+    assert!(edit_outputs.iter().any(|output| matches!(
+        output,
+        MachineOutput::MidiSettingsChanged {
+            input_channel: None,
+            base_note: 40,
+            selected_field: MidiSettingsField::BaseNote
+        }
+    )));
+    assert!(core.state().lcd.lines[1].contains("Base 040 Range 040-055"));
+
+    let mapped_outputs = core.dispatch(HardwareEvent::MidiNoteOn {
+        channel: 9,
+        note: 40,
+        velocity: 90,
+    });
+    assert!(mapped_outputs.iter().any(|output| matches!(
+        output,
+        MachineOutput::MidiNoteMapped {
+            channel: 9,
+            note: 40,
+            bank: PadBank::A,
+            pad: 1,
+            velocity: 90
+        }
+    )));
+    assert!(mapped_outputs.iter().any(|output| matches!(
+        output,
+        MachineOutput::SamplePlaybackIntent { intent }
+            if intent.bank == PadBank::A
+                && intent.pad_number == 1
+                && intent.sample_id == "synthetic_a_01"
+    )));
+
+    let top_outputs = core.dispatch(HardwareEvent::MidiNoteOn {
+        channel: 9,
+        note: 55,
+        velocity: 91,
+    });
+    assert!(top_outputs.iter().any(|output| matches!(
+        output,
+        MachineOutput::MidiNoteMapped {
+            note: 55,
+            pad: 16,
+            ..
+        }
+    )));
+
+    let ignored_outputs = core.dispatch(HardwareEvent::MidiNoteOn {
+        channel: 9,
+        note: 39,
+        velocity: 90,
+    });
+    assert_eq!(
+        ignored_outputs,
+        vec![MachineOutput::MidiInputIgnored {
+            reason: "midi note 39 is not mapped in this slice; mapped range is 40..=55".to_string(),
+        }]
+    );
+
+    core.dispatch(HardwareEvent::TurnDataWheel { delta: i32::MAX });
+    assert_eq!(core.state().midi_base_note, 112);
+    assert!(core.state().lcd.lines[1].contains("Base 112 Range 112-127"));
+    core.dispatch(HardwareEvent::TurnDataWheel { delta: i32::MIN });
+    assert_eq!(core.state().midi_base_note, 0);
+    assert!(core.state().lcd.lines[1].contains("Base 000 Range 000-015"));
+}
+
+#[test]
+fn midi_settings_input_channel_filter_blocks_non_matching_channel_and_accepts_match() {
+    let mut core = MpcCore::new();
+
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::Midi,
+    });
+    let channel_outputs = core.dispatch(HardwareEvent::TurnDataWheel { delta: 2 });
+    assert_eq!(core.state().midi_input_channel, Some(2));
+    assert!(channel_outputs.iter().any(|output| matches!(
+        output,
+        MachineOutput::MidiSettingsChanged {
+            input_channel: Some(2),
+            base_note: 36,
+            selected_field: MidiSettingsField::InputChannel
+        }
+    )));
+    assert!(core.state().lcd.lines[0].contains("Input Ch 02"));
+
+    let blocked_outputs = core.dispatch(HardwareEvent::MidiNoteOn {
+        channel: 1,
+        note: 36,
+        velocity: 100,
+    });
+    assert_eq!(
+        blocked_outputs,
+        vec![MachineOutput::MidiInputIgnored {
+            reason: "midi channel 1 ignored; input channel is 2".to_string(),
+        }]
+    );
+    assert_eq!(core.state().last_playback, None);
+    assert!(core.state().recorded_events.is_empty());
+
+    let accepted_outputs = core.dispatch(HardwareEvent::MidiNoteOn {
+        channel: 2,
+        note: 36,
+        velocity: 101,
+    });
+    assert!(accepted_outputs.iter().any(|output| matches!(
+        output,
+        MachineOutput::MidiNoteMapped {
+            channel: 2,
+            note: 36,
+            pad: 1,
+            velocity: 101,
+            ..
+        }
+    )));
+    assert!(matches!(
+        &core.state().last_playback,
+        Some(SamplePlaybackResolution::Intent { intent })
+            if intent.pad_number == 1 && intent.velocity == 101
+    ));
+
+    let note_off_outputs = core.dispatch(HardwareEvent::MidiNoteOff {
+        channel: 1,
+        note: 36,
+        velocity: 64,
+    });
+    assert_eq!(
+        note_off_outputs,
+        vec![MachineOutput::MidiInputIgnored {
+            reason: "midi note-off is a no-op in this slice".to_string(),
+        }]
+    );
+
+    core.dispatch(HardwareEvent::TurnDataWheel { delta: i32::MAX });
+    assert_eq!(core.state().midi_input_channel, Some(16));
+    core.dispatch(HardwareEvent::TurnDataWheel { delta: i32::MIN });
+    assert_eq!(core.state().midi_input_channel, None);
+}
+
+#[test]
+fn midi_settings_project_snapshot_defaults_missing_fields_and_round_trips_explicit_settings() {
+    let mut core = MpcCore::new();
+
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::Midi,
+    });
+    core.dispatch(HardwareEvent::TurnDataWheel { delta: 3 });
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::CursorRight,
+    });
+    core.dispatch(HardwareEvent::TurnDataWheel { delta: 4 });
+
+    let json = core
+        .to_project_json()
+        .expect("MIDI settings snapshot should encode");
+    let mut restored = MpcCore::new();
+    restored
+        .restore_project_json(&json)
+        .expect("MIDI settings snapshot should restore");
+
+    assert_eq!(restored.state().mode, Mode::Midi);
+    assert_eq!(restored.state().midi_input_channel, Some(3));
+    assert_eq!(restored.state().midi_base_note, 40);
+    assert_eq!(
+        restored.state().selected_midi_settings_field,
+        MidiSettingsField::BaseNote
+    );
+    assert!(restored.state().lcd.lines[0].contains("Input Ch 03"));
+    assert!(restored.state().lcd.lines[1].contains("Base 040 Range 040-055"));
+
+    let mut value =
+        serde_json::to_value(MpcCore::new().export_project_snapshot()).expect("snapshot value");
+    let machine = value
+        .pointer_mut("/machine")
+        .and_then(serde_json::Value::as_object_mut)
+        .expect("snapshot machine should be an object");
+    machine.remove("midi_input_channel");
+    machine.remove("midi_base_note");
+    machine.remove("selected_midi_settings_field");
+    let missing_fields_json =
+        serde_json::to_string(&value).expect("older snapshot JSON should encode");
+
+    let mut older = MpcCore::new();
+    older
+        .restore_project_json(&missing_fields_json)
+        .expect("older snapshot without MIDI fields should restore");
+    assert_eq!(older.state().midi_input_channel, None);
+    assert_eq!(older.state().midi_base_note, 36);
+    assert_eq!(
+        older.state().selected_midi_settings_field,
+        MidiSettingsField::InputChannel
+    );
+}
+
+#[test]
+fn midi_settings_changed_output_serializes_stably() {
+    let output = MachineOutput::MidiSettingsChanged {
+        input_channel: None,
+        base_note: 36,
+        selected_field: MidiSettingsField::InputChannel,
+    };
+
+    let json = serde_json::to_value(output).expect("MIDI settings output should serialize");
+
+    assert_eq!(
+        json,
+        serde_json::json!({
+            "type": "midi_settings_changed",
+            "input_channel": null,
+            "base_note": 36,
+            "selected_field": "input_channel"
+        })
+    );
 }
 
 #[test]
