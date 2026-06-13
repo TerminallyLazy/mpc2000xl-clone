@@ -1,4 +1,5 @@
 use anyhow::{Context, Result, bail};
+use mpc_audio::{AudioRenderSettings, AudioSourceKind, ChannelBalance, render_intent};
 use mpc_core::{
     HardwareEvent, MainScreenField, Mode, MpcCore, ProgramPad, SamplePlaybackResolution,
     SequenceEvent,
@@ -55,6 +56,28 @@ pub struct ExpectedState {
     pub last_recorded_sample_id: Option<String>,
     #[serde(default)]
     pub last_recorded_sample_name: Option<String>,
+    #[serde(default)]
+    pub last_audio_render: Option<ExpectedAudioRender>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExpectedAudioRender {
+    pub settings: AudioRenderSettings,
+    pub sample_rate_hz: u32,
+    pub frame_count: usize,
+    pub source_sample_id: String,
+    pub source_sample_name: String,
+    pub selected_track: u8,
+    pub program_index: u8,
+    pub program_name: String,
+    pub bank: mpc_core::PadBank,
+    pub pad_number: u8,
+    pub peak_left: i16,
+    pub peak_right: i16,
+    pub peak_amplitude: i16,
+    pub channel_balance: ChannelBalance,
+    pub source_kind: AudioSourceKind,
+    pub loaded_audio_byte_count: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -275,6 +298,14 @@ pub fn run_fixture(fixture: &Fixture) -> FixtureReport {
         }
     }
 
+    if let Some(expected_audio_render) = &fixture.expect.last_audio_render {
+        validate_expected_audio_render(
+            &mut details,
+            state.last_playback.as_ref(),
+            expected_audio_render,
+        );
+    }
+
     FixtureReport {
         id: fixture.id.clone(),
         name: fixture.name.clone(),
@@ -289,4 +320,128 @@ pub fn run_fixture_path(path: impl AsRef<Path>) -> Result<FixtureReport> {
         bail!("fixture {} has no source references", fixture.id);
     }
     Ok(run_fixture(&fixture))
+}
+
+fn validate_expected_audio_render(
+    details: &mut Vec<String>,
+    last_playback: Option<&SamplePlaybackResolution>,
+    expected: &ExpectedAudioRender,
+) {
+    let Some(SamplePlaybackResolution::Intent { intent }) = last_playback else {
+        details.push(format!(
+            "last_audio_render mismatch: expected renderable SamplePlaybackIntent, got {last_playback:?}"
+        ));
+        return;
+    };
+
+    let rendered = render_intent(intent, expected.settings);
+    let summary = rendered.summary;
+
+    push_mismatch(
+        details,
+        "last_audio_render.sample_rate_hz",
+        &expected.sample_rate_hz,
+        &summary.sample_rate_hz,
+    );
+    push_mismatch(
+        details,
+        "last_audio_render.frame_count",
+        &expected.frame_count,
+        &summary.frame_count,
+    );
+    push_mismatch(
+        details,
+        "last_audio_render.frames.len",
+        &expected.frame_count,
+        &rendered.frames.len(),
+    );
+    push_mismatch(
+        details,
+        "last_audio_render.source_sample_id",
+        &expected.source_sample_id,
+        &summary.source_sample_id,
+    );
+    push_mismatch(
+        details,
+        "last_audio_render.source_sample_name",
+        &expected.source_sample_name,
+        &summary.source_sample_name,
+    );
+    push_mismatch(
+        details,
+        "last_audio_render.selected_track",
+        &expected.selected_track,
+        &summary.selected_track,
+    );
+    push_mismatch(
+        details,
+        "last_audio_render.program_index",
+        &expected.program_index,
+        &summary.program_index,
+    );
+    push_mismatch(
+        details,
+        "last_audio_render.program_name",
+        &expected.program_name,
+        &summary.program_name,
+    );
+    push_mismatch(
+        details,
+        "last_audio_render.bank",
+        &expected.bank,
+        &summary.bank,
+    );
+    push_mismatch(
+        details,
+        "last_audio_render.pad_number",
+        &expected.pad_number,
+        &summary.pad_number,
+    );
+    push_mismatch(
+        details,
+        "last_audio_render.peak_left",
+        &expected.peak_left,
+        &summary.peak_left,
+    );
+    push_mismatch(
+        details,
+        "last_audio_render.peak_right",
+        &expected.peak_right,
+        &summary.peak_right,
+    );
+    push_mismatch(
+        details,
+        "last_audio_render.peak_amplitude",
+        &expected.peak_amplitude,
+        &summary.peak_amplitude,
+    );
+    push_mismatch(
+        details,
+        "last_audio_render.channel_balance",
+        &expected.channel_balance,
+        &summary.channel_balance,
+    );
+    push_mismatch(
+        details,
+        "last_audio_render.source_kind",
+        &expected.source_kind,
+        &summary.source_kind,
+    );
+    push_mismatch(
+        details,
+        "last_audio_render.loaded_audio_byte_count",
+        &expected.loaded_audio_byte_count,
+        &summary.loaded_audio_byte_count,
+    );
+}
+
+fn push_mismatch<T>(details: &mut Vec<String>, label: &str, expected: &T, actual: &T)
+where
+    T: std::fmt::Debug + PartialEq,
+{
+    if expected != actual {
+        details.push(format!(
+            "{label} mismatch: expected {expected:?}, got {actual:?}"
+        ));
+    }
 }

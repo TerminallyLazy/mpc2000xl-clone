@@ -8,4 +8,5 @@ authors.workspace = true
 
 [dependencies]
 eframe.workspace = true
+mpc_audio = { path = "../../crates/mpc_audio" }
 mpc_core = { path = "../../crates/mpc_core" }

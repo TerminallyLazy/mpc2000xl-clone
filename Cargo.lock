@@ -1936,11 +1936,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "mpc_audio"
+version = "0.1.0"
+dependencies = [
+ "mpc_core",
+ "serde",
+]
+
+[[package]]
 name = "mpc_conformance"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
+ "mpc_audio",
  "mpc_core",
  "serde",
  "serde_json",
@@ -1959,6 +1968,7 @@ name = "mpc_desktop"
 version = "0.1.0"
 dependencies = [
  "eframe",
+ "mpc_audio",
  "mpc_core",
 ]
 

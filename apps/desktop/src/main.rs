@@ -1,4 +1,5 @@
 use eframe::egui;
+use mpc_audio::{AudioRenderSettings, AudioRenderSummary, render_intent};
 use mpc_core::{
     HardwareEvent, MachineOutput, Mode, MpcCore, MpcState, PadAssignmentChange, PadBank,
     PanelControl, ProgramPad, SamplePlaybackResolution,
@@ -23,6 +24,7 @@ fn main() -> eframe::Result<()> {
 struct MpcDesktopApp {
     core: MpcCore,
     last_status: String,
+    last_synthetic_render: Option<AudioRenderSummary>,
 }
 
 impl Default for MpcDesktopApp {
@@ -30,6 +32,7 @@ impl Default for MpcDesktopApp {
         Self {
             core: MpcCore::new(),
             last_status: "Ready".to_string(),
+            last_synthetic_render: None,
         }
     }
 }
@@ -50,6 +53,7 @@ impl eframe::App for MpcDesktopApp {
             self.draw_transport(ui);
             self.draw_sequence_status(ui);
             self.draw_program_status(ui);
+            self.draw_audio_render_status(ui);
             ui.add_space(16.0);
             self.draw_pads(ui);
             ui.add_space(16.0);
@@ -127,7 +131,18 @@ impl MpcDesktopApp {
 
     fn dispatch_event(&mut self, event: HardwareEvent) {
         let outputs = self.core.dispatch(event);
+        self.render_last_playback_intent(&outputs);
         self.last_status = Self::status_from_outputs(&outputs, self.core.state());
+    }
+
+    fn render_last_playback_intent(&mut self, outputs: &[MachineOutput]) {
+        if let Some(MachineOutput::SamplePlaybackIntent { intent }) = outputs
+            .iter()
+            .find(|output| matches!(output, MachineOutput::SamplePlaybackIntent { .. }))
+        {
+            let rendered = render_intent(intent, AudioRenderSettings::preview());
+            self.last_synthetic_render = Some(rendered.summary);
+        }
     }
 
     fn status_from_outputs(outputs: &[MachineOutput], state: &MpcState) -> String {
@@ -320,6 +335,14 @@ impl MpcDesktopApp {
         }
     }
 
+    fn draw_audio_render_status(&self, ui: &mut egui::Ui) {
+        ui.horizontal_wrapped(|ui| {
+            ui.label(last_synthetic_render_text(
+                self.last_synthetic_render.as_ref(),
+            ));
+        });
+    }
+
     fn draw_pads(&mut self, ui: &mut egui::Ui) {
         let selected_program_pad = self.core.state().selected_program_pad;
         let program_mode = self.core.state().mode == Mode::Program;
@@ -430,5 +453,20 @@ fn playback_resolution_text(resolution: &SamplePlaybackResolution) -> String {
             }),
             miss.reason
         ),
+    }
+}
+
+fn last_synthetic_render_text(summary: Option<&AudioRenderSummary>) -> String {
+    match summary {
+        Some(summary) => format!(
+            "Synthetic render: {} {} frames @ {} Hz peak L{} R{} balance {:?}",
+            summary.source_sample_name,
+            summary.frame_count,
+            summary.sample_rate_hz,
+            summary.peak_left,
+            summary.peak_right,
+            summary.channel_balance
+        ),
+        None => "Synthetic render: none".to_string(),
     }
 }

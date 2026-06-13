@@ -1,5 +1,6 @@
 [workspace]
 members = [
+  "crates/mpc_audio",
   "crates/mpc_core",
   "crates/mpc_conformance",
   "crates/mpc_firmware_spike",

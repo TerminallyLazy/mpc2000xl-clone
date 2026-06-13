@@ -266,6 +266,89 @@
       ]
     },
     {
+      "id": "audio.synthetic.offline-render-foundation",
+      "name": "Sample playback intent renders deterministic synthetic stereo PCM metadata",
+      "area": "audio",
+      "state": "fixture-backed",
+      "evidence": [
+        {
+          "source_id": "synthetic-audio-render-slice-plan",
+          "source_category": "internal_spec",
+          "type": "plan",
+          "status": "mapped",
+          "ref": "docs/superpowers/plans/2026-06-13-mpc2000xl-synthetic-audio-render.md#behavior-slice"
+        }
+      ],
+      "source_coverage": [
+        {
+          "source_category": "manual",
+          "source_id": "owner-manual",
+          "status": "investigation",
+          "ref": null,
+          "note": "Exact owner-manual mapping for audio playback, pan law, voice behavior, and timing is pending."
+        },
+        {
+          "source_category": "firmware",
+          "source_id": "mpc2000xl-os-local-reference",
+          "status": "investigation",
+          "ref": null,
+          "note": "No firmware trace has been captured for sample playback audio output or timing."
+        },
+        {
+          "source_category": "internal_spec",
+          "source_id": "synthetic-audio-render-slice-plan",
+          "status": "mapped",
+          "ref": "docs/superpowers/plans/2026-06-13-mpc2000xl-synthetic-audio-render.md#deterministic-assumptions",
+          "note": "Renderer is deterministic rights-safe generated synthesis and reports zero loaded audio bytes."
+        }
+      ],
+      "inputs": [
+        {
+          "channel": "model",
+          "event": "sample_playback_intent",
+          "fields": [
+            "sample_id",
+            "sample_name",
+            "velocity",
+            "level",
+            "pan",
+            "program",
+            "pad"
+          ]
+        },
+        {
+          "channel": "render_settings",
+          "sample_rate_hz": "u32",
+          "frame_count": "usize"
+        }
+      ],
+      "expected_outputs": {
+        "audio": {
+          "frames": "deterministic stereo PCM i16",
+          "metadata": [
+            "sample_rate_hz",
+            "frame_count",
+            "source_sample_id",
+            "source_sample_name",
+            "program",
+            "pad",
+            "peak_amplitude",
+            "channel_balance"
+          ],
+          "source_kind": "rights_safe_generated",
+          "loaded_audio_byte_count": 0
+        }
+      },
+      "tolerance": null,
+      "fixture_refs": [
+        "crates/mpc_audio/src/lib.rs",
+        "crates/mpc_conformance/tests/fixtures/program_pad_synthetic_audio_render.json"
+      ],
+      "conflict_notes": [
+        "This is internal-spec/manual-investigation audio scaffolding pending exact source mapping; it is not a host audio integration and includes no proprietary audio bytes."
+      ]
+    },
+    {
       "id": "core.program.clear-reassign-selected-pad",
       "name": "PROGRAM soft keys clear and restore selected pad assignment",
       "area": "program",
