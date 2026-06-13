@@ -1,5 +1,8 @@
 use anyhow::{Context, Result, bail};
-use mpc_core::{HardwareEvent, MainScreenField, Mode, MpcCore, SequenceEvent};
+use mpc_core::{
+    HardwareEvent, MainScreenField, Mode, MpcCore, ProgramPad, SamplePlaybackResolution,
+    SequenceEvent,
+};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::Path;
@@ -38,6 +41,20 @@ pub struct ExpectedState {
     pub playhead_ticks: Option<u64>,
     #[serde(default)]
     pub last_recorded_event: Option<SequenceEvent>,
+    #[serde(default)]
+    pub current_program_index: Option<u8>,
+    #[serde(default)]
+    pub current_program_name: Option<String>,
+    #[serde(default)]
+    pub pad_assignment_count: Option<usize>,
+    #[serde(default)]
+    pub selected_program_pad: Option<ProgramPad>,
+    #[serde(default)]
+    pub last_playback: Option<SamplePlaybackResolution>,
+    #[serde(default)]
+    pub last_recorded_sample_id: Option<String>,
+    #[serde(default)]
+    pub last_recorded_sample_name: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -180,6 +197,80 @@ pub fn run_fixture(fixture: &Fixture) -> FixtureReport {
                 "last_recorded_event mismatch: expected {:?}, got {:?}",
                 last_recorded_event,
                 state.recorded_events.last()
+            ));
+        }
+    }
+
+    if let Some(current_program_index) = fixture.expect.current_program_index {
+        if state.current_program.index != current_program_index {
+            details.push(format!(
+                "current_program_index mismatch: expected {}, got {}",
+                current_program_index, state.current_program.index
+            ));
+        }
+    }
+
+    if let Some(current_program_name) = &fixture.expect.current_program_name {
+        if state.current_program.name != *current_program_name {
+            details.push(format!(
+                "current_program_name mismatch: expected {}, got {}",
+                current_program_name, state.current_program.name
+            ));
+        }
+    }
+
+    if let Some(pad_assignment_count) = fixture.expect.pad_assignment_count {
+        if state.current_program.pad_assignments.len() != pad_assignment_count {
+            details.push(format!(
+                "pad_assignment_count mismatch: expected {}, got {}",
+                pad_assignment_count,
+                state.current_program.pad_assignments.len()
+            ));
+        }
+    }
+
+    if let Some(selected_program_pad) = fixture.expect.selected_program_pad {
+        if state.selected_program_pad != selected_program_pad {
+            details.push(format!(
+                "selected_program_pad mismatch: expected {:?}, got {:?}",
+                selected_program_pad, state.selected_program_pad
+            ));
+        }
+    }
+
+    if let Some(last_playback) = &fixture.expect.last_playback {
+        if state.last_playback.as_ref() != Some(last_playback) {
+            details.push(format!(
+                "last_playback mismatch: expected {:?}, got {:?}",
+                last_playback, state.last_playback
+            ));
+        }
+    }
+
+    if let Some(last_recorded_sample_id) = &fixture.expect.last_recorded_sample_id {
+        let actual = state
+            .recorded_events
+            .last()
+            .and_then(|event| event.playback.as_ref())
+            .map(|intent| intent.sample_id.as_str());
+        if actual != Some(last_recorded_sample_id.as_str()) {
+            details.push(format!(
+                "last_recorded_sample_id mismatch: expected {}, got {:?}",
+                last_recorded_sample_id, actual
+            ));
+        }
+    }
+
+    if let Some(last_recorded_sample_name) = &fixture.expect.last_recorded_sample_name {
+        let actual = state
+            .recorded_events
+            .last()
+            .and_then(|event| event.playback.as_ref())
+            .map(|intent| intent.sample_name.as_str());
+        if actual != Some(last_recorded_sample_name.as_str()) {
+            details.push(format!(
+                "last_recorded_sample_name mismatch: expected {}, got {:?}",
+                last_recorded_sample_name, actual
             ));
         }
     }

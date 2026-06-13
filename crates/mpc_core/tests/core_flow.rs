@@ -1,6 +1,7 @@
 use mpc_core::{
-    HardwareEvent, INTERNAL_PPQN, MachineOutput, MainScreenField, Mode, MpcCore, PadBank,
-    PanelControl, SequenceEvent,
+    HardwareEvent, INTERNAL_PPQN, MachineOutput, MainScreenField, Mode, MpcCore,
+    PadAssignmentChange, PadBank, PanelControl, PlaybackMissReason, ProgramPad,
+    SamplePlaybackResolution, SequenceEvent,
 };
 
 #[test]
@@ -16,6 +17,17 @@ fn core_starts_on_main_screen() {
     assert_eq!(core.state().selected_main_field, MainScreenField::Tempo);
     assert_eq!(core.state().playhead_ticks, 0);
     assert_eq!(core.state().recorded_events, Vec::new());
+    assert_eq!(core.state().current_program.index, 1);
+    assert_eq!(core.state().current_program.name, "Program01");
+    assert_eq!(core.state().current_program.pad_assignments.len(), 16);
+    assert_eq!(
+        core.state().selected_program_pad,
+        ProgramPad {
+            bank: PadBank::A,
+            pad_number: 1
+        }
+    );
+    assert_eq!(core.state().last_playback, None);
     assert!(!core.state().playing);
 }
 
@@ -74,6 +86,71 @@ fn valid_pad_strike_is_reported() {
             velocity: 96
         }
     )));
+}
+
+#[test]
+fn default_program_assigns_bank_a_to_synthetic_samples() {
+    let core = MpcCore::new();
+
+    assert_eq!(core.state().current_program.pad_assignments.len(), 16);
+    for pad_number in 1..=16 {
+        let assignment = core
+            .state()
+            .current_program
+            .pad_assignments
+            .iter()
+            .find(|assignment| {
+                assignment.pad
+                    == ProgramPad {
+                        bank: PadBank::A,
+                        pad_number,
+                    }
+            })
+            .expect("bank A pad should have a default synthetic assignment");
+        assert_eq!(assignment.sample.id, format!("synthetic_a_{pad_number:02}"));
+        assert_eq!(assignment.sample.name, format!("SYN-A{pad_number:02}"));
+        assert_eq!(assignment.level, 100);
+        assert_eq!(assignment.pan, 0);
+    }
+}
+
+#[test]
+fn assigned_pad_strike_emits_sample_playback_intent() {
+    let mut core = MpcCore::new();
+
+    let outputs = core.dispatch(HardwareEvent::StrikePad {
+        bank: PadBank::A,
+        pad: 5,
+        velocity: 101,
+    });
+
+    assert!(outputs.iter().any(|output| matches!(
+        output,
+        MachineOutput::PadTriggered {
+            bank: PadBank::A,
+            pad: 5,
+            velocity: 101
+        }
+    )));
+    assert!(outputs.iter().any(|output| matches!(
+        output,
+        MachineOutput::SamplePlaybackIntent { intent }
+            if intent.bank == PadBank::A
+                && intent.pad_number == 5
+                && intent.sample_id == "synthetic_a_05"
+                && intent.sample_name == "SYN-A05"
+                && intent.velocity == 101
+                && intent.selected_track == 1
+                && intent.program_index == 1
+                && intent.program_name == "Program01"
+                && intent.level == 100
+                && intent.pan == 0
+    )));
+    assert!(matches!(
+        &core.state().last_playback,
+        Some(SamplePlaybackResolution::Intent { intent })
+            if intent.sample_id == "synthetic_a_05" && intent.velocity == 101
+    ));
 }
 
 #[test]
@@ -136,6 +213,7 @@ fn rec_then_play_records_pad_strike_as_sequence_event() {
         pad_number: 12,
         velocity: 96,
         tick: 0,
+        playback: None,
     };
     assert!(core.state().playing);
     assert!(core.state().recording);
@@ -363,6 +441,182 @@ fn main_screen_track_soft_keys_change_track_or_report_structured_ignore() {
 }
 
 #[test]
+fn program_mode_soft_key_clear_makes_selected_pad_unassigned() {
+    let mut core = MpcCore::new();
+
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::Program,
+    });
+    let clear_outputs = core.dispatch(HardwareEvent::Press {
+        control: PanelControl::SoftKey(1),
+    });
+    let strike_outputs = core.dispatch(HardwareEvent::StrikePad {
+        bank: PadBank::A,
+        pad: 1,
+        velocity: 88,
+    });
+
+    assert_eq!(core.state().mode, Mode::Program);
+    assert_eq!(
+        core.state().selected_program_pad,
+        ProgramPad {
+            bank: PadBank::A,
+            pad_number: 1
+        }
+    );
+    assert_eq!(core.state().current_program.pad_assignments.len(), 15);
+    assert!(clear_outputs.iter().any(|output| matches!(
+        output,
+        MachineOutput::PadAssignmentChanged {
+            bank: PadBank::A,
+            pad: 1,
+            action: PadAssignmentChange::Cleared,
+            assignment: None,
+        }
+    )));
+    assert!(strike_outputs.iter().any(|output| matches!(
+        output,
+        MachineOutput::PadTriggered {
+            bank: PadBank::A,
+            pad: 1,
+            velocity: 88
+        }
+    )));
+    assert!(strike_outputs.iter().any(|output| matches!(
+        output,
+        MachineOutput::SamplePlaybackMiss { miss }
+            if miss.bank == PadBank::A
+                && miss.pad_number == 1
+                && miss.velocity == 88
+                && miss.reason == PlaybackMissReason::PadUnassigned
+    )));
+    assert!(core.state().lcd.lines[1].contains("unassigned"));
+    assert!(matches!(
+        &core.state().last_playback,
+        Some(SamplePlaybackResolution::Miss { miss })
+            if miss.reason == PlaybackMissReason::PadUnassigned
+    ));
+}
+
+#[test]
+fn program_mode_soft_key_reassign_restores_generated_assignment() {
+    let mut core = MpcCore::new();
+
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::Program,
+    });
+    core.dispatch(HardwareEvent::StrikePad {
+        bank: PadBank::A,
+        pad: 7,
+        velocity: 90,
+    });
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::SoftKey(1),
+    });
+    assert_eq!(core.state().current_program.pad_assignments.len(), 15);
+
+    let restore_outputs = core.dispatch(HardwareEvent::Press {
+        control: PanelControl::SoftKey(2),
+    });
+
+    assert_eq!(
+        core.state().selected_program_pad,
+        ProgramPad {
+            bank: PadBank::A,
+            pad_number: 7
+        }
+    );
+    assert_eq!(core.state().current_program.pad_assignments.len(), 16);
+    assert!(restore_outputs.iter().any(|output| matches!(
+        output,
+        MachineOutput::PadAssignmentChanged {
+            bank: PadBank::A,
+            pad: 7,
+            action: PadAssignmentChange::Restored,
+            assignment: Some(assignment),
+        } if assignment.sample.id == "synthetic_a_07"
+            && assignment.sample.name == "SYN-A07"
+            && assignment.level == 100
+            && assignment.pan == 0
+    )));
+    assert!(core.state().lcd.lines[1].contains("SYN-A07"));
+}
+
+#[test]
+fn program_mode_pad_strike_selects_pad_and_triggers_assignment() {
+    let mut core = MpcCore::new();
+
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::Program,
+    });
+    let outputs = core.dispatch(HardwareEvent::StrikePad {
+        bank: PadBank::A,
+        pad: 9,
+        velocity: 93,
+    });
+
+    assert_eq!(
+        core.state().selected_program_pad,
+        ProgramPad {
+            bank: PadBank::A,
+            pad_number: 9
+        }
+    );
+    assert!(outputs.iter().any(|output| matches!(
+        output,
+        MachineOutput::SamplePlaybackIntent { intent }
+            if intent.sample_id == "synthetic_a_09" && intent.velocity == 93
+    )));
+    assert!(
+        outputs
+            .iter()
+            .any(|output| matches!(output, MachineOutput::LcdChanged))
+    );
+    assert!(core.state().lcd.lines[1].contains("SYN-A09"));
+}
+
+#[test]
+fn recording_assigned_pad_captures_sample_metadata() {
+    let mut core = MpcCore::new();
+
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::Rec,
+    });
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::Play,
+    });
+    let outputs = core.dispatch(HardwareEvent::StrikePad {
+        bank: PadBank::A,
+        pad: 3,
+        velocity: 77,
+    });
+
+    let recorded = core
+        .state()
+        .recorded_events
+        .last()
+        .expect("assigned pad should record sequence event");
+    let playback = recorded
+        .playback
+        .as_ref()
+        .expect("assigned pad recording should snapshot playback intent");
+
+    assert_eq!(recorded.pad_bank, PadBank::A);
+    assert_eq!(recorded.pad_number, 3);
+    assert_eq!(recorded.velocity, 77);
+    assert_eq!(playback.sample_id, "synthetic_a_03");
+    assert_eq!(playback.sample_name, "SYN-A03");
+    assert_eq!(playback.program_index, 1);
+    assert_eq!(playback.program_name, "Program01");
+    assert!(outputs.iter().any(|output| matches!(
+        output,
+        MachineOutput::SequenceEventRecorded { event }
+            if event.playback.as_ref().map(|intent| intent.sample_id.as_str())
+                == Some("synthetic_a_03")
+    )));
+}
+
+#[test]
 fn invalid_pad_and_velocity_are_ignored() {
     let mut core = MpcCore::new();
 
@@ -440,6 +694,7 @@ fn replaying_same_events_produces_same_state() {
             pad_number: 4,
             velocity: 64,
             tick: u64::from(INTERNAL_PPQN),
+            playback: None,
         }]
     );
 }

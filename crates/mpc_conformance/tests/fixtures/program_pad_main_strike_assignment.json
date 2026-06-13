@@ -1,0 +1,45 @@
+{
+  "id": "core.program.default-pad-playback-intent",
+  "name": "MAIN pad strike resolves default synthetic sample assignment",
+  "source_refs": [
+    "docs/superpowers/plans/2026-06-13-mpc2000xl-program-pad-assignment.md#source-and-evidence-status"
+  ],
+  "events": [
+    {
+      "type": "strike_pad",
+      "bank": "a",
+      "pad": 1,
+      "velocity": 100
+    }
+  ],
+  "expect": {
+    "mode": "main",
+    "lcd_title": "MAIN",
+    "playing": false,
+    "recording": false,
+    "event_count": 1,
+    "selected_track": 1,
+    "current_program_index": 1,
+    "current_program_name": "Program01",
+    "pad_assignment_count": 16,
+    "selected_program_pad": {
+      "bank": "a",
+      "pad_number": 1
+    },
+    "last_playback": {
+      "type": "intent",
+      "intent": {
+        "selected_track": 1,
+        "program_index": 1,
+        "program_name": "Program01",
+        "bank": "a",
+        "pad_number": 1,
+        "sample_id": "synthetic_a_01",
+        "sample_name": "SYN-A01",
+        "velocity": 100,
+        "level": 100,
+        "pan": 0
+      }
+    }
+  }
+}

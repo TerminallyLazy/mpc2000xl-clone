@@ -1,5 +1,8 @@
 use eframe::egui;
-use mpc_core::{HardwareEvent, MachineOutput, Mode, MpcCore, MpcState, PadBank, PanelControl};
+use mpc_core::{
+    HardwareEvent, MachineOutput, Mode, MpcCore, MpcState, PadAssignmentChange, PadBank,
+    PanelControl, ProgramPad, SamplePlaybackResolution,
+};
 
 fn main() -> eframe::Result<()> {
     let options = eframe::NativeOptions {
@@ -46,6 +49,7 @@ impl eframe::App for MpcDesktopApp {
             ui.add_space(16.0);
             self.draw_transport(ui);
             self.draw_sequence_status(ui);
+            self.draw_program_status(ui);
             ui.add_space(16.0);
             self.draw_pads(ui);
             ui.add_space(16.0);
@@ -134,18 +138,71 @@ impl MpcDesktopApp {
             return format!("Ignored: {reason}");
         }
 
+        if let Some(MachineOutput::PadAssignmentChanged {
+            bank,
+            pad,
+            action,
+            assignment,
+        }) = outputs
+            .iter()
+            .find(|output| matches!(output, MachineOutput::PadAssignmentChanged { .. }))
+        {
+            return match assignment {
+                Some(assignment) => format!(
+                    "Program pad {bank:?}{pad:02} {} to {}",
+                    assignment_action_text(*action),
+                    assignment.sample.name
+                ),
+                None => format!(
+                    "Program pad {bank:?}{pad:02} {}",
+                    assignment_action_text(*action)
+                ),
+            };
+        }
+
         if let Some(MachineOutput::SequenceEventRecorded { event }) = outputs
             .iter()
             .find(|output| matches!(output, MachineOutput::SequenceEventRecorded { .. }))
         {
+            let sample = event
+                .playback
+                .as_ref()
+                .map(|intent| format!(" sample {}", intent.sample_name))
+                .unwrap_or_else(|| " unassigned".to_string());
             return format!(
-                "Recorded Trk {:02} {:?}{:02} velocity {} at tick {} ({} events)",
+                "Recorded Trk {:02} {:?}{:02} velocity {} at tick {}{} ({} events)",
                 event.selected_track,
                 event.pad_bank,
                 event.pad_number,
                 event.velocity,
                 event.tick,
+                sample,
                 state.recorded_events.len()
+            );
+        }
+
+        if let Some(MachineOutput::SamplePlaybackIntent { intent }) = outputs
+            .iter()
+            .find(|output| matches!(output, MachineOutput::SamplePlaybackIntent { .. }))
+        {
+            return format!(
+                "Playback intent Trk {:02} Pgm {:02} {:?}{:02} {} velocity {}",
+                intent.selected_track,
+                intent.program_index,
+                intent.bank,
+                intent.pad_number,
+                intent.sample_name,
+                intent.velocity
+            );
+        }
+
+        if let Some(MachineOutput::SamplePlaybackMiss { miss }) = outputs
+            .iter()
+            .find(|output| matches!(output, MachineOutput::SamplePlaybackMiss { .. }))
+        {
+            return format!(
+                "Playback miss Trk {:02} Pgm {:02} {:?}{:02}: {:?}",
+                miss.selected_track, miss.program_index, miss.bank, miss.pad_number, miss.reason
             );
         }
 
@@ -226,13 +283,60 @@ impl MpcDesktopApp {
         });
     }
 
+    fn draw_program_status(&mut self, ui: &mut egui::Ui) {
+        let state = self.core.state();
+        let selected_pad = state.selected_program_pad;
+        let program_text = format!(
+            "Program: {:02} {}",
+            state.current_program.index, state.current_program.name
+        );
+        let assignment_text = selected_assignment_text(state);
+        let last_playback_text = last_playback_text(state);
+        let show_program_actions = state.mode == Mode::Program;
+
+        ui.horizontal_wrapped(|ui| {
+            ui.label(program_text);
+            ui.separator();
+            ui.label(format!("Selected pad: {}", program_pad_label(selected_pad)));
+            ui.separator();
+            ui.label(assignment_text);
+            ui.separator();
+            ui.label(last_playback_text);
+        });
+
+        if show_program_actions {
+            ui.horizontal(|ui| {
+                if ui.button("F1 Clear selected pad").clicked() {
+                    self.dispatch_event(HardwareEvent::Press {
+                        control: PanelControl::SoftKey(1),
+                    });
+                }
+                if ui.button("F2 Generate assignment").clicked() {
+                    self.dispatch_event(HardwareEvent::Press {
+                        control: PanelControl::SoftKey(2),
+                    });
+                }
+            });
+        }
+    }
+
     fn draw_pads(&mut self, ui: &mut egui::Ui) {
+        let selected_program_pad = self.core.state().selected_program_pad;
+        let program_mode = self.core.state().mode == Mode::Program;
         egui::Grid::new("pads")
             .num_columns(4)
             .spacing([10.0, 10.0])
             .show(ui, |ui| {
                 for pad in 1..=16 {
-                    if ui.button(format!("PAD {pad:02}")).clicked() {
+                    let pad_address = ProgramPad {
+                        bank: PadBank::A,
+                        pad_number: pad,
+                    };
+                    let selected = program_mode && selected_program_pad == pad_address;
+                    if ui
+                        .selectable_label(selected, format!("PAD {pad:02}"))
+                        .clicked()
+                    {
                         self.dispatch_event(HardwareEvent::StrikePad {
                             bank: PadBank::A,
                             pad,
@@ -250,14 +354,20 @@ impl MpcDesktopApp {
 fn main_screen_status(state: &MpcState) -> String {
     match state.mode {
         Mode::Main => format!(
-            "LCD updated: {} focus, Seq {:02}, Trk {:02}, Tempo {}, Bars {:03}, Tick {}, Events {}",
+            "LCD updated: {} focus, Seq {:02}, Trk {:02}, {}, Tempo {}, Bars {:03}, Tick {}, Events {}",
             state.selected_main_field.label(),
             state.sequence_index,
             state.selected_track,
+            state.current_program.name,
             tempo_text(state.tempo_bpm_x100),
             state.bar_count,
             state.playhead_ticks,
             state.recorded_events.len()
+        ),
+        Mode::Program => format!(
+            "LCD updated: PROGRAM {}, {}",
+            program_pad_label(state.selected_program_pad),
+            selected_assignment_text(state)
         ),
         mode => format!("LCD updated: {mode:?}"),
     }
@@ -265,4 +375,60 @@ fn main_screen_status(state: &MpcState) -> String {
 
 fn tempo_text(tempo_bpm_x100: u32) -> String {
     format!("{}.{:02} BPM", tempo_bpm_x100 / 100, tempo_bpm_x100 % 100)
+}
+
+fn assignment_action_text(action: PadAssignmentChange) -> &'static str {
+    match action {
+        PadAssignmentChange::Cleared => "cleared",
+        PadAssignmentChange::Restored => "assigned",
+    }
+}
+
+fn program_pad_label(pad: ProgramPad) -> String {
+    format!("{}{:02}", pad.bank.label(), pad.pad_number)
+}
+
+fn selected_assignment_text(state: &MpcState) -> String {
+    let selected_pad = state.selected_program_pad;
+    match state
+        .current_program
+        .pad_assignments
+        .iter()
+        .find(|assignment| assignment.pad == selected_pad)
+    {
+        Some(assignment) => format!(
+            "Assignment: {} level {} pan {}",
+            assignment.sample.name, assignment.level, assignment.pan
+        ),
+        None => "Assignment: unassigned".to_string(),
+    }
+}
+
+fn last_playback_text(state: &MpcState) -> String {
+    match &state.last_playback {
+        Some(resolution) => playback_resolution_text(resolution),
+        None => "Last playback: none".to_string(),
+    }
+}
+
+fn playback_resolution_text(resolution: &SamplePlaybackResolution) -> String {
+    match resolution {
+        SamplePlaybackResolution::Intent { intent } => format!(
+            "Last playback: {} {} vel {}",
+            program_pad_label(ProgramPad {
+                bank: intent.bank,
+                pad_number: intent.pad_number,
+            }),
+            intent.sample_name,
+            intent.velocity
+        ),
+        SamplePlaybackResolution::Miss { miss } => format!(
+            "Last playback: {} {:?}",
+            program_pad_label(ProgramPad {
+                bank: miss.bank,
+                pad_number: miss.pad_number,
+            }),
+            miss.reason
+        ),
+    }
 }

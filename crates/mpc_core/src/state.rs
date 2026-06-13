@@ -1,6 +1,10 @@
 use serde::{Deserialize, Serialize};
 
-use crate::events::{HardwareEvent, MachineOutput, Mode, PadBank, PanelControl, SequenceEvent};
+use crate::events::{
+    HardwareEvent, MachineOutput, Mode, PadAssignment, PadAssignmentChange, PadBank, PanelControl,
+    PlaybackMissReason, Program, ProgramPad, SamplePlaybackIntent, SamplePlaybackMiss,
+    SamplePlaybackResolution, SequenceEvent, SyntheticSample,
+};
 use crate::lcd::LcdFrame;
 
 /// Internal timing resolution for this foundation slice.
@@ -18,6 +22,10 @@ const MAX_TRACK_INDEX: u8 = 64;
 const MIN_BAR_COUNT: u16 = 1;
 const MAX_BAR_COUNT: u16 = 999;
 const TICK_DENOMINATOR: u128 = 60_000_000_u128 * 100;
+const DEFAULT_PROGRAM_INDEX: u8 = 1;
+const DEFAULT_PROGRAM_NAME: &str = "Program01";
+const DEFAULT_PAD_LEVEL: u8 = 100;
+const DEFAULT_PAD_PAN: i8 = 0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -69,6 +77,9 @@ pub struct MpcState {
     pub bar_count: u16,
     pub selected_main_field: MainScreenField,
     pub pad_bank: PadBank,
+    pub current_program: Program,
+    pub selected_program_pad: ProgramPad,
+    pub last_playback: Option<SamplePlaybackResolution>,
     pub playhead_ticks: u64,
     pub playhead_tick_remainder: u64,
     pub recorded_events: Vec<SequenceEvent>,
@@ -84,6 +95,11 @@ impl Default for MpcState {
         let selected_track = MIN_TRACK_INDEX;
         let bar_count = MIN_BAR_COUNT;
         let selected_main_field = MainScreenField::Tempo;
+        let current_program = default_program();
+        let selected_program_pad = ProgramPad {
+            bank: PadBank::A,
+            pad_number: 1,
+        };
 
         Self {
             mode: Mode::Main,
@@ -91,6 +107,7 @@ impl Default for MpcState {
                 sequence_index,
                 &sequence_name,
                 selected_track,
+                &current_program.name,
                 tempo_bpm_x100,
                 false,
                 false,
@@ -108,6 +125,9 @@ impl Default for MpcState {
             bar_count,
             selected_main_field,
             pad_bank: PadBank::A,
+            current_program,
+            selected_program_pad,
+            last_playback: None,
             playhead_ticks: 0,
             playhead_tick_remainder: 0,
             recorded_events: Vec::new(),
@@ -236,6 +256,12 @@ impl MpcCore {
     }
 
     fn handle_data_wheel(&mut self, delta: i32) -> Vec<MachineOutput> {
+        if self.state.mode == Mode::Program {
+            self.adjust_selected_program_pad(delta);
+            self.refresh_lcd();
+            return vec![MachineOutput::LcdChanged];
+        }
+
         if self.state.mode != Mode::Main {
             return Self::ignored(format!(
                 "{}.data_wheel_unmapped",
@@ -255,6 +281,12 @@ impl MpcCore {
     }
 
     fn move_main_field_left(&mut self) -> Vec<MachineOutput> {
+        if self.state.mode == Mode::Program {
+            self.adjust_selected_program_pad(-1);
+            self.refresh_lcd();
+            return vec![MachineOutput::LcdChanged];
+        }
+
         if self.state.mode != Mode::Main {
             return Self::ignored(format!(
                 "{}.cursor_left_unmapped",
@@ -268,6 +300,12 @@ impl MpcCore {
     }
 
     fn move_main_field_right(&mut self) -> Vec<MachineOutput> {
+        if self.state.mode == Mode::Program {
+            self.adjust_selected_program_pad(1);
+            self.refresh_lcd();
+            return vec![MachineOutput::LcdChanged];
+        }
+
         if self.state.mode != Mode::Main {
             return Self::ignored(format!(
                 "{}.cursor_right_unmapped",
@@ -281,6 +319,10 @@ impl MpcCore {
     }
 
     fn handle_soft_key(&mut self, index: u8) -> Vec<MachineOutput> {
+        if self.state.mode == Mode::Program {
+            return self.handle_program_soft_key(index);
+        }
+
         if self.state.mode != Mode::Main {
             return Self::ignored(format!(
                 "{}.soft_key.{index}_unmapped",
@@ -302,6 +344,14 @@ impl MpcCore {
                 vec![MachineOutput::LcdChanged]
             }
             _ => Self::ignored(format!("main_screen.soft_key.{index}_unimplemented")),
+        }
+    }
+
+    fn handle_program_soft_key(&mut self, index: u8) -> Vec<MachineOutput> {
+        match index {
+            1 => self.clear_selected_pad_assignment(),
+            2 => self.restore_selected_pad_assignment(),
+            _ => Self::ignored(format!("program.soft_key.{index}_unimplemented")),
         }
     }
 
@@ -344,6 +394,7 @@ impl MpcCore {
                 self.state.sequence_index,
                 &self.state.sequence_name,
                 self.state.selected_track,
+                &self.state.current_program.name,
                 self.state.tempo_bpm_x100,
                 self.state.playing,
                 self.state.recording,
@@ -352,7 +403,11 @@ impl MpcCore {
                 self.state.playhead_ticks,
                 self.state.recorded_events.len(),
             ),
-            Mode::Program => LcdFrame::mode_screen("PROGRAM", "Program: InitProgram"),
+            Mode::Program => LcdFrame::program_screen(
+                &self.state.current_program,
+                self.state.selected_program_pad,
+                self.assignment_for(self.state.selected_program_pad),
+            ),
             Mode::Sample => LcdFrame::mode_screen("SAMPLE", "Sample record"),
             Mode::Trim => LcdFrame::mode_screen("TRIM", "Trim sample"),
             Mode::Song => LcdFrame::mode_screen("SONG", "Song mode"),
@@ -367,12 +422,32 @@ impl MpcCore {
     }
 
     fn handle_pad_strike(&mut self, bank: PadBank, pad: u8, velocity: u8) -> Vec<MachineOutput> {
+        let previous_lcd = self.state.lcd.clone();
         self.state.pad_bank = bank;
+        if self.state.mode == Mode::Program {
+            self.state.selected_program_pad = ProgramPad {
+                bank,
+                pad_number: pad,
+            };
+        }
+
         let mut outputs = vec![MachineOutput::PadTriggered {
             bank,
             pad,
             velocity,
         }];
+        let playback = self.resolve_playback(bank, pad, velocity);
+        match &playback {
+            SamplePlaybackResolution::Intent { intent } => {
+                outputs.push(MachineOutput::SamplePlaybackIntent {
+                    intent: intent.clone(),
+                });
+            }
+            SamplePlaybackResolution::Miss { miss } => {
+                outputs.push(MachineOutput::SamplePlaybackMiss { miss: miss.clone() });
+            }
+        }
+        self.state.last_playback = Some(playback.clone());
 
         if self.state.playing && self.state.recording {
             let event = SequenceEvent {
@@ -381,15 +456,18 @@ impl MpcCore {
                 pad_number: pad,
                 velocity,
                 tick: self.state.playhead_ticks,
+                playback: match &playback {
+                    SamplePlaybackResolution::Intent { intent } => Some(intent.clone()),
+                    SamplePlaybackResolution::Miss { .. } => None,
+                },
             };
             self.state.recorded_events.push(event.clone());
             outputs.push(MachineOutput::SequenceEventRecorded { event });
+        }
 
-            let previous_lcd = self.state.lcd.clone();
-            self.refresh_lcd();
-            if self.state.lcd != previous_lcd {
-                outputs.push(MachineOutput::LcdChanged);
-            }
+        self.refresh_lcd();
+        if self.state.lcd != previous_lcd {
+            outputs.push(MachineOutput::LcdChanged);
         }
 
         outputs
@@ -422,10 +500,142 @@ impl MpcCore {
             Vec::new()
         }
     }
+
+    fn assignment_for(&self, pad: ProgramPad) -> Option<&PadAssignment> {
+        self.state
+            .current_program
+            .pad_assignments
+            .iter()
+            .find(|assignment| assignment.pad == pad)
+    }
+
+    fn adjust_selected_program_pad(&mut self, delta: i32) {
+        let next = clamp_delta_u8(self.state.selected_program_pad.pad_number, delta, 1, 16);
+        self.state.selected_program_pad.pad_number = next;
+    }
+
+    fn clear_selected_pad_assignment(&mut self) -> Vec<MachineOutput> {
+        let pad = self.state.selected_program_pad;
+        self.state
+            .current_program
+            .pad_assignments
+            .retain(|assignment| assignment.pad != pad);
+        self.refresh_lcd();
+        vec![
+            MachineOutput::PadAssignmentChanged {
+                bank: pad.bank,
+                pad: pad.pad_number,
+                action: PadAssignmentChange::Cleared,
+                assignment: None,
+            },
+            MachineOutput::LcdChanged,
+        ]
+    }
+
+    fn restore_selected_pad_assignment(&mut self) -> Vec<MachineOutput> {
+        let pad = self.state.selected_program_pad;
+        let assignment = generated_assignment(pad);
+        self.state
+            .current_program
+            .pad_assignments
+            .retain(|existing| existing.pad != pad);
+        self.state
+            .current_program
+            .pad_assignments
+            .push(assignment.clone());
+        self.state
+            .current_program
+            .pad_assignments
+            .sort_by_key(|existing| existing.pad);
+        self.refresh_lcd();
+        vec![
+            MachineOutput::PadAssignmentChanged {
+                bank: pad.bank,
+                pad: pad.pad_number,
+                action: PadAssignmentChange::Restored,
+                assignment: Some(assignment),
+            },
+            MachineOutput::LcdChanged,
+        ]
+    }
+
+    fn resolve_playback(&self, bank: PadBank, pad: u8, velocity: u8) -> SamplePlaybackResolution {
+        let program = &self.state.current_program;
+        let program_pad = ProgramPad {
+            bank,
+            pad_number: pad,
+        };
+
+        if let Some(assignment) = self.assignment_for(program_pad) {
+            return SamplePlaybackResolution::Intent {
+                intent: SamplePlaybackIntent {
+                    selected_track: self.state.selected_track,
+                    program_index: program.index,
+                    program_name: program.name.clone(),
+                    bank,
+                    pad_number: pad,
+                    sample_id: assignment.sample.id.clone(),
+                    sample_name: assignment.sample.name.clone(),
+                    velocity,
+                    level: assignment.level,
+                    pan: assignment.pan,
+                },
+            };
+        }
+
+        SamplePlaybackResolution::Miss {
+            miss: SamplePlaybackMiss {
+                selected_track: self.state.selected_track,
+                program_index: program.index,
+                program_name: program.name.clone(),
+                bank,
+                pad_number: pad,
+                velocity,
+                reason: PlaybackMissReason::PadUnassigned,
+            },
+        }
+    }
 }
 
 fn sequence_name_for(index: u8) -> String {
     format!("Sequence{index:02}")
+}
+
+fn default_program() -> Program {
+    let pad_assignments = (1..=16)
+        .map(|pad_number| {
+            generated_assignment(ProgramPad {
+                bank: PadBank::A,
+                pad_number,
+            })
+        })
+        .collect();
+
+    Program {
+        index: DEFAULT_PROGRAM_INDEX,
+        name: DEFAULT_PROGRAM_NAME.to_string(),
+        pad_assignments,
+    }
+}
+
+fn generated_assignment(pad: ProgramPad) -> PadAssignment {
+    PadAssignment {
+        pad,
+        sample: generated_sample(pad),
+        level: DEFAULT_PAD_LEVEL,
+        pan: DEFAULT_PAD_PAN,
+    }
+}
+
+fn generated_sample(pad: ProgramPad) -> SyntheticSample {
+    SyntheticSample {
+        id: format!(
+            "synthetic_{}_{:02}",
+            pad.bank.label().to_ascii_lowercase(),
+            pad.pad_number
+        ),
+        name: format!("SYN-{}{:02}", pad.bank.label(), pad.pad_number),
+    }
 }
 
 fn clamp_delta_u8(current: u8, delta: i32, min: u8, max: u8) -> u8 {

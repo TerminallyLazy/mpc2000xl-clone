@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 
+use crate::events::{PadAssignment, Program, ProgramPad};
 use crate::state::MainScreenField;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -14,6 +15,7 @@ impl LcdFrame {
         sequence_index: u8,
         sequence_name: &str,
         selected_track: u8,
+        program_name: &str,
         tempo_bpm_x100: u32,
         playing: bool,
         recording: bool,
@@ -43,9 +45,10 @@ impl LcdFrame {
                     sequence_name
                 ),
                 format!(
-                    "{}Trk {:02}  Program Init",
+                    "{}Trk {:02}  Pgm {}",
                     marker(MainScreenField::Track),
-                    selected_track
+                    selected_track,
+                    program_name
                 ),
                 format!(
                     "{}Tempo {:>6} BPM {status}",
@@ -72,6 +75,52 @@ impl LcdFrame {
         }
     }
 
+    pub fn program_screen(
+        program: &Program,
+        selected_pad: ProgramPad,
+        assignment: Option<&PadAssignment>,
+    ) -> Self {
+        let pad_label = format!(
+            "{}{:02}",
+            selected_pad.bank.label(),
+            selected_pad.pad_number
+        );
+        let (assignment_line, sample_line, mix_line) = match assignment {
+            Some(assignment) => (
+                format!("Pad {pad_label} -> {}", assignment.sample.name),
+                format!("Sample {}", assignment.sample.id),
+                format!(
+                    "Level {:03} Pan {}",
+                    assignment.level,
+                    pan_text(assignment.pan)
+                ),
+            ),
+            None => (
+                format!("Pad {pad_label} -> unassigned"),
+                "Sample none".to_string(),
+                "Level --- Pan --".to_string(),
+            ),
+        };
+
+        Self {
+            title: "PROGRAM".to_string(),
+            lines: [
+                format!("Program {:02} {}", program.index, program.name),
+                assignment_line,
+                sample_line,
+                mix_line,
+            ],
+            soft_keys: [
+                "Clear".to_string(),
+                "Assign".to_string(),
+                "F3".to_string(),
+                "F4".to_string(),
+                "F5".to_string(),
+                "F6".to_string(),
+            ],
+        }
+    }
+
     pub fn mode_screen(title: &str, body: &str) -> Self {
         Self {
             title: title.to_string(),
@@ -90,5 +139,13 @@ impl LcdFrame {
                 "F6".to_string(),
             ],
         }
+    }
+}
+
+fn pan_text(pan: i8) -> String {
+    match pan.cmp(&0) {
+        std::cmp::Ordering::Less => format!("L{}", pan.abs()),
+        std::cmp::Ordering::Equal => "C".to_string(),
+        std::cmp::Ordering::Greater => format!("R{pan}"),
     }
 }

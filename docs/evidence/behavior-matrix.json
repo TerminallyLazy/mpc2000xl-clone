@@ -198,6 +198,228 @@
       ]
     },
     {
+      "id": "core.program.default-synthetic-pad-assignment",
+      "name": "Default program resolves assigned pads to synthetic sample metadata",
+      "area": "program",
+      "state": "fixture-backed",
+      "evidence": [
+        {
+          "source_id": "program-pad-assignment-slice-plan",
+          "source_category": "internal_spec",
+          "type": "plan",
+          "status": "mapped",
+          "ref": "docs/superpowers/plans/2026-06-13-mpc2000xl-program-pad-assignment.md#behavior-slice"
+        }
+      ],
+      "source_coverage": [
+        {
+          "source_category": "manual",
+          "source_id": "owner-manual",
+          "status": "investigation",
+          "ref": null,
+          "note": "Exact owner-manual page mapping for PROGRAM sample assignment behavior is pending."
+        },
+        {
+          "source_category": "firmware",
+          "source_id": "mpc2000xl-os-local-reference",
+          "status": "investigation",
+          "ref": null,
+          "note": "No firmware trace has been captured for program assignment defaults."
+        },
+        {
+          "source_category": "internal_spec",
+          "source_id": "program-pad-assignment-slice-plan",
+          "status": "mapped",
+          "ref": "docs/superpowers/plans/2026-06-13-mpc2000xl-program-pad-assignment.md#source-and-evidence-status",
+          "note": "Default assignments are deterministic rights-safe synthetic metadata only."
+        }
+      ],
+      "inputs": [
+        {
+          "channel": "pads",
+          "event": "strike_pad",
+          "bank": "a",
+          "pad": "1..=16",
+          "velocity": "1..=127"
+        }
+      ],
+      "expected_outputs": {
+        "state": {
+          "current_program_index": 1,
+          "current_program_name": "Program01",
+          "default_bank_a_assignment_count": 16,
+          "audio_bytes": "not stored"
+        },
+        "outputs": [
+          "PadTriggered",
+          "SamplePlaybackIntent for assigned pads",
+          "SamplePlaybackMiss for unassigned pads"
+        ]
+      },
+      "tolerance": null,
+      "fixture_refs": [
+        "crates/mpc_core/tests/core_flow.rs",
+        "crates/mpc_conformance/tests/fixtures/program_pad_main_strike_assignment.json"
+      ],
+      "conflict_notes": [
+        "This is an internal-spec/manual-investigation foundation and does not include proprietary samples or copied program content."
+      ]
+    },
+    {
+      "id": "core.program.clear-reassign-selected-pad",
+      "name": "PROGRAM soft keys clear and restore selected pad assignment",
+      "area": "program",
+      "state": "fixture-backed",
+      "evidence": [
+        {
+          "source_id": "program-pad-assignment-slice-plan",
+          "source_category": "internal_spec",
+          "type": "plan",
+          "status": "mapped",
+          "ref": "docs/superpowers/plans/2026-06-13-mpc2000xl-program-pad-assignment.md#behavior-slice"
+        }
+      ],
+      "source_coverage": [
+        {
+          "source_category": "manual",
+          "source_id": "owner-manual",
+          "status": "investigation",
+          "ref": null,
+          "note": "Exact owner-manual page mapping for PROGRAM soft-key assignment editing is pending."
+        },
+        {
+          "source_category": "internal_spec",
+          "source_id": "program-pad-assignment-slice-plan",
+          "status": "mapped",
+          "ref": "docs/superpowers/plans/2026-06-13-mpc2000xl-program-pad-assignment.md#deterministic-assumptions",
+          "note": "F1 Clear and F2 Assign are deterministic internal controls for this foundation slice."
+        }
+      ],
+      "inputs": [
+        {
+          "channel": "front_panel",
+          "event": "press",
+          "control": "program"
+        },
+        {
+          "channel": "front_panel",
+          "event": "press",
+          "control": "soft_key_1"
+        },
+        {
+          "channel": "front_panel",
+          "event": "press",
+          "control": "soft_key_2"
+        }
+      ],
+      "expected_outputs": {
+        "state": {
+          "selected_program_pad": "updated by PROGRAM pad strikes or cursor/data wheel",
+          "clear": "removes selected pad assignment",
+          "assign": "restores deterministic synthetic assignment"
+        },
+        "lcd": {
+          "title": "PROGRAM",
+          "selected_pad_assignment": "visible"
+        },
+        "outputs": [
+          "PadAssignmentChanged",
+          "LcdChanged"
+        ]
+      },
+      "tolerance": null,
+      "fixture_refs": [
+        "crates/mpc_core/tests/core_flow.rs",
+        "crates/mpc_conformance/tests/fixtures/program_pad_clear_reassign.json"
+      ],
+      "conflict_notes": [
+        "Soft-key labels and exact edit flow are internal-spec pending manual evidence; no proprietary screen art or copied text is stored."
+      ]
+    },
+    {
+      "id": "core.sequence.recorded-sample-assignment-metadata",
+      "name": "Recorded pad events snapshot synthetic sample assignment metadata",
+      "area": "sequencer",
+      "state": "fixture-backed",
+      "evidence": [
+        {
+          "source_id": "program-pad-assignment-slice-plan",
+          "source_category": "internal_spec",
+          "type": "plan",
+          "status": "mapped",
+          "ref": "docs/superpowers/plans/2026-06-13-mpc2000xl-program-pad-assignment.md#recording-model"
+        },
+        {
+          "source_id": "sequence-recording-slice-plan",
+          "source_category": "internal_spec",
+          "type": "plan",
+          "status": "mapped",
+          "ref": "docs/superpowers/plans/2026-06-13-mpc2000xl-sequence-recording.md#behavior-slice"
+        }
+      ],
+      "source_coverage": [
+        {
+          "source_category": "manual",
+          "source_id": "owner-manual",
+          "status": "investigation",
+          "ref": null,
+          "note": "Exact reference behavior for recorded event/program assignment coupling is pending."
+        },
+        {
+          "source_category": "internal_spec",
+          "source_id": "program-pad-assignment-slice-plan",
+          "status": "mapped",
+          "ref": "docs/superpowers/plans/2026-06-13-mpc2000xl-program-pad-assignment.md#recording-model",
+          "note": "Recorded events store an optional playback intent snapshot when a pad has an assignment."
+        }
+      ],
+      "inputs": [
+        {
+          "channel": "front_panel",
+          "event": "press",
+          "control": "rec"
+        },
+        {
+          "channel": "front_panel",
+          "event": "press",
+          "control": "play"
+        },
+        {
+          "channel": "pads",
+          "event": "strike_pad",
+          "bank": "a",
+          "pad": "assigned",
+          "velocity": "1..=127"
+        }
+      ],
+      "expected_outputs": {
+        "state": {
+          "recorded_event_fields": [
+            "selected_track",
+            "pad_bank",
+            "pad_number",
+            "velocity",
+            "tick",
+            "playback"
+          ],
+          "playback": "optional SamplePlaybackIntent snapshot for assigned pads"
+        },
+        "outputs": [
+          "PadTriggered",
+          "SamplePlaybackIntent",
+          "SequenceEventRecorded"
+        ]
+      },
+      "tolerance": null,
+      "fixture_refs": [
+        "crates/mpc_core/tests/core_flow.rs",
+        "crates/mpc_conformance/tests/fixtures/sequence_recording_assigned_pad_metadata.json"
+      ],
+      "conflict_notes": [
+        "This preserves deterministic assignment metadata for future playback scheduling but is not a claim of exact MPC2000XL event storage format."
+      ]
+    },
+    {
       "id": "core.main.cursor-focus",
       "name": "MAIN cursor left/right changes selected edit field",
       "area": "front_panel",
@@ -490,11 +712,13 @@
             "pad_bank",
             "pad_number",
             "velocity",
-            "tick"
+            "tick",
+            "playback"
           ]
         },
         "outputs": [
           "PadTriggered",
+          "SamplePlaybackIntent or SamplePlaybackMiss",
           "SequenceEventRecorded when playing and recording"
         ]
       },
