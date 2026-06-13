@@ -1,0 +1,11 @@
+[package]
+name = "mpc_desktop"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+
+[dependencies]
+eframe.workspace = true
+mpc_core = { path = "../../crates/mpc_core" }

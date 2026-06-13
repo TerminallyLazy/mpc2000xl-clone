@@ -2,6 +2,7 @@
 members = [
   "crates/mpc_core",
   "crates/mpc_conformance",
+  "apps/desktop",
 ]
 resolver = "3"
 
