@@ -146,6 +146,9 @@ authors.workspace = true
 
 [dependencies]
 serde.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
 ```
 
 - [ ] **Step 2: Create the core crate module root**
@@ -540,8 +543,9 @@ Run:
 cargo test -p mpc_core
 ```
 
-Expected: PASS, four tests.
+Expected: PASS, ten tests.
 This first successful Cargo test run should create `Cargo.lock`; keep it committed for reproducible app builds.
+The deterministic core test suite includes edge coverage for tempo clamp, invalid pad/velocity, ignored controls, replay determinism, output ordering, and serialization shape.
 
 - [ ] **Step 8: Commit**
 
