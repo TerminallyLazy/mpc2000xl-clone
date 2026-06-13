@@ -40,9 +40,6 @@ Create `Cargo.toml`:
 [workspace]
 members = [
   "crates/mpc_core",
-  "crates/mpc_conformance",
-  "crates/mpc_firmware_spike",
-  "apps/desktop",
 ]
 resolver = "3"
 
@@ -112,7 +109,7 @@ Run:
 cargo metadata --no-deps
 ```
 
-Expected: FAIL because workspace members do not exist yet. The error should name missing workspace member manifests.
+Expected: FAIL because `crates/mpc_core/Cargo.toml` does not exist yet. Future workspace members are added by the tasks that create those crates.
 
 - [ ] **Step 5: Commit**
 
@@ -556,13 +553,27 @@ git commit -m "feat: add deterministic MPC core foundation"
 ### Task 3: Conformance Fixture Runner
 
 **Files:**
+- Modify: `Cargo.toml`
 - Create: `crates/mpc_conformance/Cargo.toml`
 - Create: `crates/mpc_conformance/src/lib.rs`
 - Create: `crates/mpc_conformance/src/main.rs`
 - Create: `crates/mpc_conformance/tests/fixtures.rs`
 - Create: `crates/mpc_conformance/tests/fixtures/main_screen.json`
 
-- [ ] **Step 1: Create the conformance crate manifest**
+- [ ] **Step 1: Add conformance crate to the workspace**
+
+Modify the root `Cargo.toml` workspace members:
+
+```toml
+[workspace]
+members = [
+  "crates/mpc_core",
+  "crates/mpc_conformance",
+]
+resolver = "3"
+```
+
+- [ ] **Step 2: Create the conformance crate manifest**
 
 Create `crates/mpc_conformance/Cargo.toml`:
 
@@ -583,7 +594,7 @@ serde.workspace = true
 serde_json.workspace = true
 ```
 
-- [ ] **Step 2: Implement fixture schema and runner**
+- [ ] **Step 3: Implement fixture schema and runner**
 
 Create `crates/mpc_conformance/src/lib.rs`:
 
@@ -690,7 +701,7 @@ pub fn run_fixture_path(path: impl AsRef<Path>) -> Result<FixtureReport> {
 }
 ```
 
-- [ ] **Step 3: Add the conformance CLI**
+- [ ] **Step 4: Add the conformance CLI**
 
 Create `crates/mpc_conformance/src/main.rs`:
 
@@ -721,7 +732,7 @@ fn main() -> Result<()> {
 }
 ```
 
-- [ ] **Step 4: Add a source-backed fixture**
+- [ ] **Step 5: Add a source-backed fixture**
 
 Create `crates/mpc_conformance/tests/fixtures/main_screen.json`:
 
@@ -749,7 +760,7 @@ Create `crates/mpc_conformance/tests/fixtures/main_screen.json`:
 }
 ```
 
-- [ ] **Step 5: Add fixture tests**
+- [ ] **Step 6: Add fixture tests**
 
 Create `crates/mpc_conformance/tests/fixtures.rs`:
 
@@ -768,7 +779,7 @@ fn fixture_with_source_reference_passes() {
 }
 ```
 
-- [ ] **Step 6: Run conformance tests and CLI**
+- [ ] **Step 7: Run conformance tests and CLI**
 
 Run:
 
@@ -779,10 +790,10 @@ cargo run -p mpc_conformance -- crates/mpc_conformance/tests/fixtures/main_scree
 
 Expected: tests PASS and CLI prints JSON with `"passed": true`.
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 8: Commit**
 
 ```bash
-git add crates/mpc_conformance
+git add Cargo.toml crates/mpc_conformance
 git commit -m "feat: add conformance fixture runner"
 ```
 
@@ -791,10 +802,25 @@ git commit -m "feat: add conformance fixture runner"
 ### Task 4: Native Desktop Shell
 
 **Files:**
+- Modify: `Cargo.toml`
 - Create: `apps/desktop/Cargo.toml`
 - Create: `apps/desktop/src/main.rs`
 
-- [ ] **Step 1: Create the desktop app manifest**
+- [ ] **Step 1: Add desktop app to the workspace**
+
+Modify the root `Cargo.toml` workspace members:
+
+```toml
+[workspace]
+members = [
+  "crates/mpc_core",
+  "crates/mpc_conformance",
+  "apps/desktop",
+]
+resolver = "3"
+```
+
+- [ ] **Step 2: Create the desktop app manifest**
 
 Create `apps/desktop/Cargo.toml`:
 
@@ -812,7 +838,7 @@ eframe.workspace = true
 mpc_core = { path = "../../crates/mpc_core" }
 ```
 
-- [ ] **Step 2: Implement a rights-safe front panel shell**
+- [ ] **Step 3: Implement a rights-safe front panel shell**
 
 Create `apps/desktop/src/main.rs`:
 
@@ -972,7 +998,7 @@ impl MpcDesktopApp {
 }
 ```
 
-- [ ] **Step 3: Build the desktop app**
+- [ ] **Step 4: Build the desktop app**
 
 Run:
 
@@ -982,10 +1008,10 @@ cargo check -p mpc_desktop
 
 Expected: PASS.
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
-git add apps/desktop
+git add Cargo.toml apps/desktop
 git commit -m "feat: add native desktop shell foundation"
 ```
 
@@ -994,12 +1020,28 @@ git commit -m "feat: add native desktop shell foundation"
 ### Task 5: Firmware Image Inspector
 
 **Files:**
+- Modify: `Cargo.toml`
 - Create: `crates/mpc_firmware_spike/Cargo.toml`
 - Create: `crates/mpc_firmware_spike/src/lib.rs`
 - Create: `crates/mpc_firmware_spike/src/main.rs`
 - Create: `crates/mpc_firmware_spike/tests/image_report.rs`
 
-- [ ] **Step 1: Create the firmware spike manifest**
+- [ ] **Step 1: Add firmware spike crate to the workspace**
+
+Modify the root `Cargo.toml` workspace members:
+
+```toml
+[workspace]
+members = [
+  "crates/mpc_core",
+  "crates/mpc_conformance",
+  "crates/mpc_firmware_spike",
+  "apps/desktop",
+]
+resolver = "3"
+```
+
+- [ ] **Step 2: Create the firmware spike manifest**
 
 Create `crates/mpc_firmware_spike/Cargo.toml`:
 
@@ -1020,7 +1062,7 @@ serde_json.workspace = true
 sha2.workspace = true
 ```
 
-- [ ] **Step 2: Implement image metadata inspection**
+- [ ] **Step 3: Implement image metadata inspection**
 
 Create `crates/mpc_firmware_spike/src/lib.rs`:
 
@@ -1060,7 +1102,7 @@ pub fn inspect_image(path: impl AsRef<Path>) -> Result<ImageReport> {
 }
 ```
 
-- [ ] **Step 3: Add the firmware CLI**
+- [ ] **Step 4: Add the firmware CLI**
 
 Create `crates/mpc_firmware_spike/src/main.rs`:
 
@@ -1086,7 +1128,7 @@ fn main() -> Result<()> {
 }
 ```
 
-- [ ] **Step 4: Add synthetic image test**
+- [ ] **Step 5: Add synthetic image test**
 
 Create `crates/mpc_firmware_spike/tests/image_report.rs`:
 
@@ -1113,7 +1155,7 @@ fn image_report_never_stores_firmware_bytes() {
 }
 ```
 
-- [ ] **Step 5: Run firmware spike tests**
+- [ ] **Step 6: Run firmware spike tests**
 
 Run:
 
@@ -1123,10 +1165,10 @@ cargo test -p mpc_firmware_spike
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
-git add crates/mpc_firmware_spike
+git add Cargo.toml crates/mpc_firmware_spike
 git commit -m "feat: add firmware image inspector"
 ```
 
