@@ -652,8 +652,32 @@ impl MpcCore {
                 self.refresh_lcd();
                 vec![MachineOutput::LcdChanged]
             }
+            5 => self.erase_latest_sequence_event_on_selected_track(),
             _ => Self::ignored(format!("main_screen.soft_key.{index}_unimplemented")),
         }
+    }
+
+    fn erase_latest_sequence_event_on_selected_track(&mut self) -> Vec<MachineOutput> {
+        let selected_track = self.state.selected_track;
+        let Some(index) = self
+            .state
+            .recorded_events
+            .iter()
+            .rposition(|event| event.selected_track == selected_track)
+        else {
+            return Self::ignored(format!("sequence.erase.track_{selected_track}.no_events"));
+        };
+
+        let event = self.state.recorded_events.remove(index);
+        self.refresh_lcd();
+        vec![
+            MachineOutput::SequenceEventsErased {
+                selected_track,
+                count: 1,
+                events: vec![event],
+            },
+            MachineOutput::LcdChanged,
+        ]
     }
 
     fn handle_program_soft_key(&mut self, index: u8) -> Vec<MachineOutput> {

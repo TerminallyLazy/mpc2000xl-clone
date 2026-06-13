@@ -472,6 +472,20 @@ impl MpcDesktopApp {
             );
         }
 
+        if let Some(MachineOutput::SequenceEventsErased {
+            selected_track,
+            count,
+            ..
+        }) = outputs
+            .iter()
+            .find(|output| matches!(output, MachineOutput::SequenceEventsErased { .. }))
+        {
+            return format!(
+                "Erased {count} event(s) from Trk {selected_track:02} ({} events remain)",
+                state.recorded_events.len()
+            );
+        }
+
         if let Some(MachineOutput::PlayheadLocated { tick }) = outputs
             .iter()
             .find(|output| matches!(output, MachineOutput::PlayheadLocated { .. }))
@@ -667,23 +681,39 @@ impl MpcDesktopApp {
         });
     }
 
-    fn draw_sequence_status(&self, ui: &mut egui::Ui) {
+    fn draw_sequence_status(&mut self, ui: &mut egui::Ui) {
         let state = self.core.state();
+        let playing = state.playing;
+        let recording = state.recording;
+        let loop_enabled = state.loop_enabled;
+        let sequence_length_ticks = state.sequence_length_ticks();
+        let playhead_ticks = state.playhead_ticks;
+        let recorded_event_count = state.recorded_events.len();
+        let can_erase = state.mode == Mode::Main;
         ui.horizontal_wrapped(|ui| {
             ui.label(format!(
                 "Transport: playing={} recording={}",
-                state.playing, state.recording
+                playing, recording
             ));
             ui.separator();
             ui.label(format!(
                 "Loop: {} length {} ticks",
-                if state.loop_enabled { "on" } else { "off" },
-                state.sequence_length_ticks()
+                if loop_enabled { "on" } else { "off" },
+                sequence_length_ticks
             ));
             ui.separator();
-            ui.label(format!("Playhead: {} ticks", state.playhead_ticks));
+            ui.label(format!("Playhead: {} ticks", playhead_ticks));
             ui.separator();
-            ui.label(format!("Recorded events: {}", state.recorded_events.len()));
+            ui.label(format!("Recorded events: {}", recorded_event_count));
+            ui.separator();
+            if ui
+                .add_enabled(can_erase, egui::Button::new("Erase last event"))
+                .clicked()
+            {
+                self.dispatch_event(HardwareEvent::Press {
+                    control: PanelControl::SoftKey(5),
+                });
+            }
         });
     }
 

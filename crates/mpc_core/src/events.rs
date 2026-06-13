@@ -282,6 +282,11 @@ pub enum MachineOutput {
     SequenceEventRecorded {
         event: SequenceEvent,
     },
+    SequenceEventsErased {
+        selected_track: u8,
+        count: u64,
+        events: Vec<SequenceEvent>,
+    },
     SequenceEventPlayed {
         event: SequenceEvent,
     },

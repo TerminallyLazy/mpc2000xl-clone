@@ -1746,6 +1746,89 @@
         "MIDI note-on intentionally remains bank-A-only until a verified active MIDI bank policy is mapped.",
         "No proprietary pad-bank manual text, firmware bytes, JJ-OS assets, factory samples, or hardware scans are stored in the repo."
       ]
+    },
+    {
+      "id": "core.sequence.event-erase-foundation",
+      "name": "MAIN F5 erase removes the latest selected-track sequence event",
+      "area": "sequence",
+      "state": "fixture-backed-internal-spec",
+      "evidence": [
+        {
+          "source_id": "sequence-event-erase-slice-plan",
+          "source_category": "internal_spec",
+          "type": "plan",
+          "status": "mapped",
+          "ref": "docs/superpowers/plans/2026-06-13-mpc2000xl-sequence-event-erase.md#behavior-slice"
+        }
+      ],
+      "source_coverage": [
+        {
+          "source_category": "manual",
+          "source_id": "owner-manual",
+          "status": "investigation",
+          "ref": null,
+          "note": "Exact MPC2000XL erase screen flow, filters, ranges, confirmation, and undo behavior are not mapped yet."
+        },
+        {
+          "source_category": "jjos",
+          "source_id": "jjos-unverified-boundary",
+          "status": "unverified",
+          "ref": null,
+          "note": "JJ-OS erase behavior is not accepted as reference evidence for this slice."
+        },
+        {
+          "source_category": "internal_spec",
+          "source_id": "sequence-event-erase-slice-plan",
+          "status": "mapped",
+          "ref": "docs/superpowers/plans/2026-06-13-mpc2000xl-sequence-event-erase.md#source-and-evidence-status",
+          "note": "The current contract is erase-latest-current-track foundation behavior."
+        }
+      ],
+      "inputs": [
+        {
+          "channel": "front_panel",
+          "event": "press",
+          "mode": "main",
+          "control": "soft_key_5",
+          "lcd_label": "Erase"
+        },
+        {
+          "channel": "desktop",
+          "event": "button",
+          "control": "Erase last event"
+        }
+      ],
+      "expected_outputs": {
+        "success": [
+          "SequenceEventsErased with selected_track, count, and erased event metadata",
+          "LcdChanged with reduced MAIN recorded-event count"
+        ],
+        "no_events": [
+          "Ignored reason sequence.erase.track_<n>.no_events",
+          "no LCD refresh"
+        ],
+        "state": {
+          "scope": "only the latest event on selected_track is removed",
+          "order": "remaining events preserve their original order",
+          "transport": "playing and recording are preserved",
+          "playhead": "playhead ticks and fractional remainder are preserved",
+          "pad_bank": "active pad bank is preserved",
+          "last_playback": "preserved because erase is sequence metadata editing",
+          "project_snapshot": "only remaining recorded_events persist"
+        },
+        "playback": {
+          "scheduling": "erased events are not scheduled after erase"
+        }
+      },
+      "tolerance": null,
+      "fixture_refs": [
+        "crates/mpc_core/tests/core_flow.rs",
+        "crates/mpc_conformance/tests/fixtures/sequence_event_erase_last_banked_round_trip.json"
+      ],
+      "conflict_notes": [
+        "This is not a full MPC2000XL or JJ-OS erase mode clone; range, filter, all-track, confirmation, and undo semantics remain deferred.",
+        "No proprietary manuals, service scans, firmware bytes, JJ-OS assets, factory samples, or copied third-party code are stored in the repo."
+      ]
     }
   ]
 }

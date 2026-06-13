@@ -834,6 +834,318 @@ fn sequence_playback_uses_recorded_metadata_after_program_assignment_is_cleared(
 }
 
 #[test]
+fn sequence_erase_main_f5_erases_latest_selected_track_event_and_updates_lcd_count() {
+    let mut core = MpcCore::new();
+
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::Overdub,
+    });
+    core.dispatch(HardwareEvent::StrikePad {
+        bank: PadBank::B,
+        pad: 3,
+        velocity: 91,
+    });
+    core.dispatch(HardwareEvent::Tick { micros: 500_000 });
+    core.dispatch(HardwareEvent::StrikePad {
+        bank: PadBank::C,
+        pad: 4,
+        velocity: 92,
+    });
+
+    let retained = core.state().recorded_events[0].clone();
+    let erased = core.state().recorded_events[1].clone();
+    let last_playback_before_erase = core.state().last_playback.clone();
+    let active_bank_before_erase = core.state().pad_bank;
+    let outputs = core.dispatch(HardwareEvent::Press {
+        control: PanelControl::SoftKey(5),
+    });
+
+    assert_eq!(core.state().recorded_events, vec![retained]);
+    assert_eq!(core.state().pad_bank, active_bank_before_erase);
+    assert_eq!(core.state().last_playback, last_playback_before_erase);
+    assert!(core.state().lcd.lines[3].contains("E001"));
+    assert_eq!(
+        outputs,
+        vec![
+            MachineOutput::SequenceEventsErased {
+                selected_track: 1,
+                count: 1,
+                events: vec![erased],
+            },
+            MachineOutput::LcdChanged,
+        ]
+    );
+}
+
+#[test]
+fn sequence_erase_main_f5_with_no_events_on_selected_track_is_ignored_without_lcd_change() {
+    let mut snapshot = MpcCore::new().export_project_snapshot();
+    snapshot.sequence.selected_track = 2;
+    snapshot.sequence.recorded_events = vec![SequenceEvent {
+        selected_track: 1,
+        pad_bank: PadBank::A,
+        pad_number: 1,
+        velocity: 88,
+        tick: 96,
+        playback: Some(sample_playback_intent_for_track_bank_pad(
+            1,
+            PadBank::A,
+            1,
+            88,
+        )),
+    }];
+    snapshot.machine.event_count = 7;
+    let mut core = restore_snapshot(snapshot);
+    let mut expected_state = core.state().clone();
+    expected_state.event_count += 1;
+
+    let outputs = core.dispatch(HardwareEvent::Press {
+        control: PanelControl::SoftKey(5),
+    });
+
+    assert_eq!(
+        outputs,
+        vec![MachineOutput::Ignored {
+            reason: "sequence.erase.track_2.no_events".to_string(),
+        }]
+    );
+    assert_eq!(core.state(), &expected_state);
+}
+
+#[test]
+fn sequence_erase_is_scoped_to_selected_track_and_preserves_remaining_order() {
+    let mut snapshot = MpcCore::new().export_project_snapshot();
+    snapshot.sequence.selected_track = 2;
+    snapshot.sequence.recorded_events = vec![
+        SequenceEvent {
+            selected_track: 1,
+            pad_bank: PadBank::A,
+            pad_number: 1,
+            velocity: 81,
+            tick: 24,
+            playback: Some(sample_playback_intent_for_track_bank_pad(
+                1,
+                PadBank::A,
+                1,
+                81,
+            )),
+        },
+        SequenceEvent {
+            selected_track: 2,
+            pad_bank: PadBank::D,
+            pad_number: 8,
+            velocity: 82,
+            tick: 48,
+            playback: Some(sample_playback_intent_for_track_bank_pad(
+                2,
+                PadBank::D,
+                8,
+                82,
+            )),
+        },
+        SequenceEvent {
+            selected_track: 1,
+            pad_bank: PadBank::B,
+            pad_number: 3,
+            velocity: 83,
+            tick: 72,
+            playback: Some(sample_playback_intent_for_track_bank_pad(
+                1,
+                PadBank::B,
+                3,
+                83,
+            )),
+        },
+    ];
+    snapshot.machine.event_count = 12;
+    let mut core = restore_snapshot(snapshot);
+
+    let outputs = core.dispatch(HardwareEvent::Press {
+        control: PanelControl::SoftKey(5),
+    });
+
+    assert_eq!(
+        core.state()
+            .recorded_events
+            .iter()
+            .map(|event| (event.selected_track, event.pad_bank, event.pad_number))
+            .collect::<Vec<_>>(),
+        vec![(1, PadBank::A, 1), (1, PadBank::B, 3)]
+    );
+    assert!(matches!(
+        outputs.as_slice(),
+        [
+            MachineOutput::SequenceEventsErased {
+                selected_track: 2,
+                count: 1,
+                events,
+            },
+            MachineOutput::LcdChanged,
+        ] if events.len() == 1
+            && events[0].selected_track == 2
+            && events[0].pad_bank == PadBank::D
+            && events[0].pad_number == 8
+    ));
+}
+
+#[test]
+fn sequence_erase_while_playing_and_recording_preserves_transport_playhead_and_last_playback() {
+    let mut core = MpcCore::new();
+
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::Overdub,
+    });
+    core.dispatch(HardwareEvent::Tick { micros: 250_000 });
+    core.dispatch(HardwareEvent::Tick { micros: 1 });
+    core.dispatch(HardwareEvent::StrikePad {
+        bank: PadBank::D,
+        pad: 9,
+        velocity: 94,
+    });
+
+    let playing = core.state().playing;
+    let recording = core.state().recording;
+    let playhead_ticks = core.state().playhead_ticks;
+    let playhead_tick_remainder = core.state().playhead_tick_remainder;
+    let pad_bank = core.state().pad_bank;
+    let last_playback = core.state().last_playback.clone();
+
+    let outputs = core.dispatch(HardwareEvent::Press {
+        control: PanelControl::SoftKey(5),
+    });
+
+    assert!(matches!(
+        outputs.as_slice(),
+        [
+            MachineOutput::SequenceEventsErased {
+                selected_track: 1,
+                count: 1,
+                ..
+            },
+            MachineOutput::LcdChanged,
+        ]
+    ));
+    assert_eq!(core.state().recorded_events.len(), 0);
+    assert_eq!(core.state().playing, playing);
+    assert_eq!(core.state().recording, recording);
+    assert_eq!(core.state().playhead_ticks, playhead_ticks);
+    assert_eq!(
+        core.state().playhead_tick_remainder,
+        playhead_tick_remainder
+    );
+    assert_eq!(core.state().pad_bank, pad_bank);
+    assert_eq!(core.state().last_playback, last_playback);
+}
+
+#[test]
+fn sequence_erase_playback_after_erase_schedules_only_retained_events() {
+    let snapshot = snapshot_with_recorded_assigned_events_at_tick(&[(1, 71), (2, 72)]);
+    let mut core = restore_snapshot(snapshot);
+
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::SoftKey(5),
+    });
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::Play,
+    });
+    let outputs = core.dispatch(HardwareEvent::Tick { micros: 500_000 });
+
+    let played_pads = outputs
+        .iter()
+        .filter_map(|output| match output {
+            MachineOutput::SequenceEventPlayed { event } => Some(event.pad_number),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let scheduled_sample_ids = playback_intents(&outputs)
+        .iter()
+        .map(|intent| intent.sample_id.as_str())
+        .collect::<Vec<_>>();
+
+    assert_eq!(core.state().recorded_events.len(), 1);
+    assert_eq!(core.state().recorded_events[0].pad_number, 1);
+    assert_eq!(played_pads, vec![1]);
+    assert_eq!(scheduled_sample_ids, vec!["synthetic_a_01"]);
+}
+
+#[test]
+fn sequence_erase_project_snapshot_round_trip_contains_only_retained_events() {
+    let mut core = MpcCore::new();
+
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::Overdub,
+    });
+    core.dispatch(HardwareEvent::StrikePad {
+        bank: PadBank::B,
+        pad: 5,
+        velocity: 90,
+    });
+    core.dispatch(HardwareEvent::Tick { micros: 500_000 });
+    core.dispatch(HardwareEvent::StrikePad {
+        bank: PadBank::A,
+        pad: 6,
+        velocity: 91,
+    });
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::SoftKey(5),
+    });
+
+    let json = core.to_project_json().expect("snapshot should encode");
+    let value: serde_json::Value =
+        serde_json::from_str(&json).expect("snapshot JSON should parse as value");
+    let recorded_events = value
+        .pointer("/sequence/recorded_events")
+        .and_then(serde_json::Value::as_array)
+        .expect("snapshot should contain recorded events");
+    assert_eq!(recorded_events.len(), 1);
+    assert_eq!(
+        recorded_events[0]
+            .pointer("/playback/sample_id")
+            .and_then(serde_json::Value::as_str),
+        Some("synthetic_b_05")
+    );
+
+    let mut restored = MpcCore::new();
+    restored
+        .restore_project_json(&json)
+        .expect("snapshot should restore");
+
+    assert_eq!(restored.state().recorded_events.len(), 1);
+    assert_eq!(restored.state().recorded_events[0].pad_bank, PadBank::B);
+    assert_eq!(restored.state().recorded_events[0].pad_number, 5);
+    assert_eq!(
+        restored.state().recorded_events[0]
+            .playback
+            .as_ref()
+            .map(|intent| intent.sample_id.as_str()),
+        Some("synthetic_b_05")
+    );
+}
+
+#[test]
+fn sequence_erase_output_serializes_with_stable_shape() {
+    let output = MachineOutput::SequenceEventsErased {
+        selected_track: 7,
+        count: 1,
+        events: vec![SequenceEvent {
+            selected_track: 7,
+            pad_bank: PadBank::D,
+            pad_number: 16,
+            velocity: 127,
+            tick: 384,
+            playback: None,
+        }],
+    };
+
+    let json = serde_json::to_string(&output).expect("erase output should serialize");
+
+    assert_eq!(
+        json,
+        r#"{"type":"sequence_events_erased","selected_track":7,"count":1,"events":[{"selected_track":7,"pad_bank":"d","pad_number":16,"velocity":127,"tick":384}]}"#
+    );
+}
+
+#[test]
 fn stop_disarms_recording() {
     let mut core = MpcCore::new();
 
@@ -2359,9 +2671,18 @@ fn sample_playback_intent_for_bank_pad(
     pad: u8,
     velocity: u8,
 ) -> SamplePlaybackIntent {
+    sample_playback_intent_for_track_bank_pad(1, bank, pad, velocity)
+}
+
+fn sample_playback_intent_for_track_bank_pad(
+    selected_track: u8,
+    bank: PadBank,
+    pad: u8,
+    velocity: u8,
+) -> SamplePlaybackIntent {
     let bank_label = bank.label();
     SamplePlaybackIntent {
-        selected_track: 1,
+        selected_track,
         program_index: 1,
         program_name: "Program01".to_string(),
         bank,
