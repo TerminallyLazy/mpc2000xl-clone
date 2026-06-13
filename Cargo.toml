@@ -1,6 +1,7 @@
 [workspace]
 members = [
   "crates/mpc_core",
+  "crates/mpc_conformance",
 ]
 resolver = "3"
 

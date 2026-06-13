@@ -1,0 +1,21 @@
+{
+  "id": "core.main.program-mode",
+  "name": "Program mode button changes LCD title",
+  "source_refs": [
+    "docs/superpowers/specs/2026-06-13-mpc2000xl-full-app-product-design.md#front-panel-runtime",
+    "docs/superpowers/specs/2026-06-13-mpc2000xl-conformance-lab-design.md#fixture-strategy"
+  ],
+  "events": [
+    {
+      "type": "press",
+      "control": "program"
+    }
+  ],
+  "expect": {
+    "mode": "program",
+    "lcd_title": "PROGRAM",
+    "playing": false,
+    "recording": false,
+    "event_count": 1
+  }
+}
