@@ -1048,6 +1048,148 @@
       "conflict_notes": [
         "This slice is internal-spec/manual-investigation plumbing toward the full app; exact audio/device evidence remains pending."
       ]
+    },
+    {
+      "id": "core.project.snapshot-round-trip",
+      "name": "Project snapshot round-trips sequence, program, and synthetic metadata",
+      "area": "project_persistence",
+      "state": "fixture-backed-internal-spec",
+      "evidence": [
+        {
+          "source_id": "project-persistence-slice-plan",
+          "source_category": "internal_spec",
+          "type": "plan",
+          "status": "mapped",
+          "ref": "docs/superpowers/plans/2026-06-13-mpc2000xl-project-persistence.md#behavior-slice"
+        }
+      ],
+      "source_coverage": [
+        {
+          "source_category": "manual",
+          "source_id": "owner-manual",
+          "status": "investigation",
+          "ref": null,
+          "note": "Exact MPC2000XL project save/load workflow, storage naming, and file format evidence are not mapped yet."
+        },
+        {
+          "source_category": "firmware",
+          "source_id": "mpc2000xl-os-local-reference",
+          "status": "investigation",
+          "ref": null,
+          "note": "No firmware trace or binary format evidence has been captured for native project persistence."
+        },
+        {
+          "source_category": "vmpc",
+          "source_id": "vmpc-docs-public",
+          "status": "investigation",
+          "ref": null,
+          "note": "VMPC comparative project persistence behavior remains pending docs/source/license review."
+        },
+        {
+          "source_category": "internal_spec",
+          "source_id": "project-persistence-slice-plan",
+          "status": "mapped",
+          "ref": "docs/superpowers/plans/2026-06-13-mpc2000xl-project-persistence.md#snapshot-schema-boundary",
+          "note": "The current JSON snapshot is repo-owned metadata-only persistence toward the full app, not a claim about native MPC2000XL disk formats."
+        }
+      ],
+      "inputs": [
+        {
+          "channel": "project",
+          "event": "export_snapshot"
+        },
+        {
+          "channel": "project",
+          "event": "restore_snapshot"
+        }
+      ],
+      "expected_outputs": {
+        "snapshot": {
+          "version": 1,
+          "rights_boundary": "metadata_only_no_audio_bytes",
+          "contains_audio_bytes": false
+        },
+        "state": {
+          "sequence": "index, name, tempo, selected track, bars, playhead ticks, and recorded events restore",
+          "program": "current program index/name, selected program pad, and pad assignments restore",
+          "synthetic_metadata": "sample ids/names in assignments and recorded playback metadata restore"
+        }
+      },
+      "tolerance": null,
+      "fixture_refs": [
+        "crates/mpc_core/tests/core_flow.rs",
+        "crates/mpc_conformance/tests/fixtures/project_persistence_assigned_pad_round_trip.json"
+      ],
+      "conflict_notes": [
+        "This is an internal-spec/manual-investigation JSON snapshot foundation toward the full app; exact MPC2000XL storage and file-format evidence remains pending."
+      ]
+    },
+    {
+      "id": "core.project.restore-validation",
+      "name": "Project snapshot restore validates version, ranges, duplicate pads, and transport safety",
+      "area": "project_persistence",
+      "state": "unit-backed-internal-spec",
+      "evidence": [
+        {
+          "source_id": "project-persistence-slice-plan",
+          "source_category": "internal_spec",
+          "type": "plan",
+          "status": "mapped",
+          "ref": "docs/superpowers/plans/2026-06-13-mpc2000xl-project-persistence.md#validation"
+        }
+      ],
+      "source_coverage": [
+        {
+          "source_category": "manual",
+          "source_id": "owner-manual",
+          "status": "investigation",
+          "ref": null,
+          "note": "Manual evidence for exact project-load transport behavior and invalid-file UX is not mapped yet."
+        },
+        {
+          "source_category": "firmware",
+          "source_id": "mpc2000xl-os-local-reference",
+          "status": "investigation",
+          "ref": null,
+          "note": "No firmware trace has been captured for invalid project data handling."
+        },
+        {
+          "source_category": "internal_spec",
+          "source_id": "project-persistence-slice-plan",
+          "status": "mapped",
+          "ref": "docs/superpowers/plans/2026-06-13-mpc2000xl-project-persistence.md#validation",
+          "note": "Restore validation is a repo-owned safety contract for metadata-only snapshots."
+        }
+      ],
+      "inputs": [
+        {
+          "channel": "project",
+          "event": "restore_snapshot",
+          "data": "versioned JSON metadata"
+        }
+      ],
+      "expected_outputs": {
+        "invalid_data": [
+          "unsupported snapshot versions are rejected",
+          "out-of-range track, pad, velocity, tempo, and bar values are rejected",
+          "duplicate pad assignment collisions are rejected"
+        ],
+        "transport": {
+          "playing": false,
+          "recording": false,
+          "note": "transport is intentionally not persisted in this slice"
+        },
+        "lcd": {
+          "refresh": "LCD is rebuilt from restored state"
+        }
+      },
+      "tolerance": null,
+      "fixture_refs": [
+        "crates/mpc_core/tests/core_flow.rs"
+      ],
+      "conflict_notes": [
+        "Transport safety and validation behavior are internal-spec/manual-investigation guardrails pending exact MPC2000XL project-load evidence."
+      ]
     }
   ]
 }

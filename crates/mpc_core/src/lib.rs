@@ -8,4 +8,8 @@ pub use events::{
     SamplePlaybackResolution, SequenceEvent, SyntheticSample,
 };
 pub use lcd::LcdFrame;
-pub use state::{INTERNAL_PPQN, MainScreenField, MpcCore, MpcState};
+pub use state::{
+    INTERNAL_PPQN, MainScreenField, MpcCore, MpcState, PROJECT_SNAPSHOT_VERSION,
+    ProjectMachineSnapshot, ProjectProgramSnapshot, ProjectSequenceSnapshot, ProjectSnapshot,
+    ProjectSnapshotError,
+};

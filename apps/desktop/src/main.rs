@@ -30,6 +30,10 @@ struct MpcDesktopApp {
     last_status: String,
     last_synthetic_render: Option<AudioRenderSummary>,
     last_synthetic_render_error: Option<String>,
+    last_project_snapshot_json: Option<String>,
+    last_project_snapshot_status: String,
+    last_project_snapshot_version: Option<u16>,
+    last_project_snapshot_bytes: Option<usize>,
 }
 
 impl Default for MpcDesktopApp {
@@ -44,6 +48,10 @@ impl Default for MpcDesktopApp {
             last_status: "Ready".to_string(),
             last_synthetic_render: None,
             last_synthetic_render_error: None,
+            last_project_snapshot_json: None,
+            last_project_snapshot_status: "Snapshot: none".to_string(),
+            last_project_snapshot_version: None,
+            last_project_snapshot_bytes: None,
         }
     }
 }
@@ -60,6 +68,8 @@ impl eframe::App for MpcDesktopApp {
             self.draw_mode_buttons(ui);
             ui.add_space(16.0);
             self.draw_edit_controls(ui);
+            ui.add_space(16.0);
+            self.draw_project_snapshot_controls(ui);
             ui.add_space(16.0);
             self.draw_transport(ui);
             self.draw_sequence_status(ui);
@@ -139,6 +149,91 @@ impl MpcDesktopApp {
                 self.dispatch_event(HardwareEvent::TurnDataWheel { delta: 1 });
             }
         });
+    }
+
+    fn draw_project_snapshot_controls(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal_wrapped(|ui| {
+            if ui.button("Save Snapshot").clicked() {
+                self.save_project_snapshot();
+            }
+
+            let has_snapshot = self.last_project_snapshot_json.is_some();
+            if ui
+                .add_enabled(has_snapshot, egui::Button::new("Load Last Snapshot"))
+                .clicked()
+            {
+                self.load_last_project_snapshot();
+            }
+
+            ui.separator();
+            ui.label(project_snapshot_status_text(
+                &self.last_project_snapshot_status,
+                self.last_project_snapshot_version,
+                self.last_project_snapshot_bytes,
+            ));
+        });
+    }
+
+    fn save_project_snapshot(&mut self) {
+        let snapshot = self.core.export_project_snapshot();
+        match self.core.to_project_json() {
+            Ok(json) => {
+                let byte_count = json.len();
+                self.last_project_snapshot_json = Some(json);
+                self.last_project_snapshot_version = Some(snapshot.version);
+                self.last_project_snapshot_bytes = Some(byte_count);
+                self.last_project_snapshot_status = format!(
+                    "saved metadata snapshot v{} ({byte_count} bytes)",
+                    snapshot.version
+                );
+                self.last_status = format!(
+                    "Saved project snapshot v{} ({byte_count} bytes)",
+                    snapshot.version
+                );
+            }
+            Err(error) => {
+                let message = format!("Snapshot save failed: {error}");
+                self.last_project_snapshot_status = message.clone();
+                self.last_status = message;
+            }
+        }
+    }
+
+    fn load_last_project_snapshot(&mut self) {
+        let Some(json) = self.last_project_snapshot_json.clone() else {
+            self.last_project_snapshot_status = "Snapshot: none saved".to_string();
+            self.last_status = "No project snapshot saved".to_string();
+            return;
+        };
+
+        let byte_count = json.len();
+        match MpcCore::from_project_json(&json) {
+            Ok(snapshot) => {
+                let version = snapshot.version;
+                match self.core.restore_project_snapshot(snapshot) {
+                    Ok(()) => {
+                        self.last_project_snapshot_version = Some(version);
+                        self.last_project_snapshot_bytes = Some(byte_count);
+                        self.last_project_snapshot_status = format!(
+                            "loaded metadata snapshot v{version} ({byte_count} bytes); transport stopped"
+                        );
+                        self.last_status = format!(
+                            "Loaded project snapshot v{version}; transport stopped/disarmed"
+                        );
+                    }
+                    Err(error) => {
+                        let message = format!("Snapshot load failed: {error}");
+                        self.last_project_snapshot_status = message.clone();
+                        self.last_status = message;
+                    }
+                }
+            }
+            Err(error) => {
+                let message = format!("Snapshot load failed: {error}");
+                self.last_project_snapshot_status = message.clone();
+                self.last_status = message;
+            }
+        }
     }
 
     fn dispatch_event(&mut self, event: HardwareEvent) {
@@ -513,6 +608,19 @@ fn last_synthetic_render_text(summary: Option<&AudioRenderSummary>, error: Optio
             summary.channel_balance
         ),
         (None, None) => "Synthetic render: none".to_string(),
+    }
+}
+
+fn project_snapshot_status_text(
+    status: &str,
+    version: Option<u16>,
+    byte_count: Option<usize>,
+) -> String {
+    match (version, byte_count) {
+        (Some(version), Some(byte_count)) => {
+            format!("Snapshot: v{version}, {byte_count} bytes, {status}")
+        }
+        _ => status.to_string(),
     }
 }
 

@@ -1,4 +1,6 @@
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeSet;
+use std::fmt;
 
 use crate::events::{
     HardwareEvent, MachineOutput, Mode, PadAssignment, PadAssignmentChange, PadBank, PanelControl,
@@ -12,13 +14,18 @@ use crate::lcd::LcdFrame;
 /// The exact MPC2000XL timing source mapping is still pending reference
 /// evidence, so sequence recording uses a deterministic 96 PPQN basis for now.
 pub const INTERNAL_PPQN: u32 = 96;
+pub const PROJECT_SNAPSHOT_VERSION: u16 = 1;
 
+const PROJECT_SNAPSHOT_KIND: &str = "mpc2000xl_clone_project";
+const PROJECT_RIGHTS_BOUNDARY: &str = "metadata_only_no_audio_bytes";
 const MIN_TEMPO_BPM_X100: u32 = 3000;
 const MAX_TEMPO_BPM_X100: u32 = 30000;
 const MIN_SEQUENCE_INDEX: u8 = 1;
 const MAX_SEQUENCE_INDEX: u8 = 99;
 const MIN_TRACK_INDEX: u8 = 1;
 const MAX_TRACK_INDEX: u8 = 64;
+const MIN_PROGRAM_INDEX: u8 = 1;
+const MAX_PROGRAM_INDEX: u8 = 128;
 const MIN_BAR_COUNT: u16 = 1;
 const MAX_BAR_COUNT: u16 = 999;
 const TICK_DENOMINATOR: u128 = 60_000_000_u128 * 100;
@@ -26,6 +33,9 @@ const DEFAULT_PROGRAM_INDEX: u8 = 1;
 const DEFAULT_PROGRAM_NAME: &str = "Program01";
 const DEFAULT_PAD_LEVEL: u8 = 100;
 const DEFAULT_PAD_PAN: i8 = 0;
+const MAX_PAD_LEVEL: u8 = 127;
+const MIN_PAD_PAN: i8 = -50;
+const MAX_PAD_PAN: i8 = 50;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -64,6 +74,101 @@ impl MainScreenField {
         }
     }
 }
+
+/// Versioned, rights-safe project persistence model.
+///
+/// The snapshot intentionally contains metadata only: sequence settings,
+/// program assignments, recorded event metadata, synthetic sample identifiers,
+/// and current UI/playhead position. It does not contain audio bytes, copied
+/// assets, firmware data, manuals, service scans, or transport armed/playing
+/// state. Restoring a snapshot always leaves transport stopped and disarmed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProjectSnapshot {
+    pub kind: String,
+    pub version: u16,
+    pub rights_boundary: String,
+    pub machine: ProjectMachineSnapshot,
+    pub sequence: ProjectSequenceSnapshot,
+    pub program: ProjectProgramSnapshot,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProjectMachineSnapshot {
+    pub mode: Mode,
+    pub selected_main_field: MainScreenField,
+    pub pad_bank: PadBank,
+    pub selected_program_pad: ProgramPad,
+    pub playhead_ticks: u64,
+    pub playhead_tick_remainder: u64,
+    pub event_count: u64,
+    pub last_playback: Option<SamplePlaybackResolution>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProjectSequenceSnapshot {
+    pub index: u8,
+    pub name: String,
+    pub tempo_bpm_x100: u32,
+    pub selected_track: u8,
+    pub bar_count: u16,
+    pub recorded_events: Vec<SequenceEvent>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProjectProgramSnapshot {
+    pub index: u8,
+    pub name: String,
+    pub pad_assignments: Vec<PadAssignment>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProjectSnapshotError {
+    JsonEncode { message: String },
+    JsonDecode { message: String },
+    UnsupportedVersion { version: u16, supported: u16 },
+    InvalidKind { kind: String },
+    InvalidRightsBoundary { rights_boundary: String },
+    InvalidValue { field: String, message: String },
+    DuplicatePadAssignment { pad: ProgramPad },
+}
+
+impl fmt::Display for ProjectSnapshotError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::JsonEncode { message } => {
+                write!(formatter, "project JSON encode failed: {message}")
+            }
+            Self::JsonDecode { message } => {
+                write!(formatter, "project JSON decode failed: {message}")
+            }
+            Self::UnsupportedVersion { version, supported } => write!(
+                formatter,
+                "unsupported project snapshot version {version}; supported version is {supported}"
+            ),
+            Self::InvalidKind { kind } => {
+                write!(formatter, "invalid project snapshot kind {kind:?}")
+            }
+            Self::InvalidRightsBoundary { rights_boundary } => write!(
+                formatter,
+                "invalid project rights boundary {rights_boundary:?}"
+            ),
+            Self::InvalidValue { field, message } => {
+                write!(
+                    formatter,
+                    "invalid project snapshot field {field}: {message}"
+                )
+            }
+            Self::DuplicatePadAssignment { pad } => write!(
+                formatter,
+                "duplicate project pad assignment for {}{:02}",
+                pad.bank.label(),
+                pad.pad_number
+            ),
+        }
+    }
+}
+
+impl std::error::Error for ProjectSnapshotError {}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MpcState {
@@ -148,6 +253,97 @@ impl MpcCore {
 
     pub fn state(&self) -> &MpcState {
         &self.state
+    }
+
+    pub fn export_project_snapshot(&self) -> ProjectSnapshot {
+        let mut pad_assignments = self.state.current_program.pad_assignments.clone();
+        pad_assignments.sort_by_key(|assignment| assignment.pad);
+
+        ProjectSnapshot {
+            kind: PROJECT_SNAPSHOT_KIND.to_string(),
+            version: PROJECT_SNAPSHOT_VERSION,
+            rights_boundary: PROJECT_RIGHTS_BOUNDARY.to_string(),
+            machine: ProjectMachineSnapshot {
+                mode: self.state.mode,
+                selected_main_field: self.state.selected_main_field,
+                pad_bank: self.state.pad_bank,
+                selected_program_pad: self.state.selected_program_pad,
+                playhead_ticks: self.state.playhead_ticks,
+                playhead_tick_remainder: self.state.playhead_tick_remainder,
+                event_count: self.state.event_count,
+                last_playback: self.state.last_playback.clone(),
+            },
+            sequence: ProjectSequenceSnapshot {
+                index: self.state.sequence_index,
+                name: self.state.sequence_name.clone(),
+                tempo_bpm_x100: self.state.tempo_bpm_x100,
+                selected_track: self.state.selected_track,
+                bar_count: self.state.bar_count,
+                recorded_events: self.state.recorded_events.clone(),
+            },
+            program: ProjectProgramSnapshot {
+                index: self.state.current_program.index,
+                name: self.state.current_program.name.clone(),
+                pad_assignments,
+            },
+        }
+    }
+
+    pub fn restore_project_snapshot(
+        &mut self,
+        snapshot: ProjectSnapshot,
+    ) -> Result<(), ProjectSnapshotError> {
+        validate_project_snapshot(&snapshot)?;
+
+        let mut pad_assignments = snapshot.program.pad_assignments;
+        pad_assignments.sort_by_key(|assignment| assignment.pad);
+
+        self.state.mode = snapshot.machine.mode;
+        self.state.sequence_index = snapshot.sequence.index;
+        self.state.sequence_name = snapshot.sequence.name;
+        self.state.tempo_bpm_x100 = snapshot.sequence.tempo_bpm_x100;
+        self.state.playing = false;
+        self.state.recording = false;
+        self.state.selected_track = snapshot.sequence.selected_track;
+        self.state.bar_count = snapshot.sequence.bar_count;
+        self.state.selected_main_field = snapshot.machine.selected_main_field;
+        self.state.pad_bank = snapshot.machine.pad_bank;
+        self.state.current_program = Program {
+            index: snapshot.program.index,
+            name: snapshot.program.name,
+            pad_assignments,
+        };
+        self.state.selected_program_pad = snapshot.machine.selected_program_pad;
+        self.state.last_playback = snapshot.machine.last_playback;
+        self.state.playhead_ticks = snapshot.machine.playhead_ticks;
+        self.state.playhead_tick_remainder = snapshot.machine.playhead_tick_remainder;
+        self.state.recorded_events = snapshot.sequence.recorded_events;
+        self.state.event_count = snapshot.machine.event_count;
+        self.refresh_lcd();
+
+        Ok(())
+    }
+
+    pub fn to_project_json(&self) -> Result<String, ProjectSnapshotError> {
+        serde_json::to_string_pretty(&self.export_project_snapshot()).map_err(|error| {
+            ProjectSnapshotError::JsonEncode {
+                message: error.to_string(),
+            }
+        })
+    }
+
+    pub fn from_project_json(json: &str) -> Result<ProjectSnapshot, ProjectSnapshotError> {
+        let snapshot =
+            serde_json::from_str(json).map_err(|error| ProjectSnapshotError::JsonDecode {
+                message: error.to_string(),
+            })?;
+        validate_project_snapshot(&snapshot)?;
+        Ok(snapshot)
+    }
+
+    pub fn restore_project_json(&mut self, json: &str) -> Result<(), ProjectSnapshotError> {
+        let snapshot = Self::from_project_json(json)?;
+        self.restore_project_snapshot(snapshot)
     }
 
     pub fn dispatch(&mut self, event: HardwareEvent) -> Vec<MachineOutput> {
@@ -594,6 +790,314 @@ impl MpcCore {
                 reason: PlaybackMissReason::PadUnassigned,
             },
         }
+    }
+}
+
+fn validate_project_snapshot(snapshot: &ProjectSnapshot) -> Result<(), ProjectSnapshotError> {
+    if snapshot.kind != PROJECT_SNAPSHOT_KIND {
+        return Err(ProjectSnapshotError::InvalidKind {
+            kind: snapshot.kind.clone(),
+        });
+    }
+    if snapshot.version != PROJECT_SNAPSHOT_VERSION {
+        return Err(ProjectSnapshotError::UnsupportedVersion {
+            version: snapshot.version,
+            supported: PROJECT_SNAPSHOT_VERSION,
+        });
+    }
+    if snapshot.rights_boundary != PROJECT_RIGHTS_BOUNDARY {
+        return Err(ProjectSnapshotError::InvalidRightsBoundary {
+            rights_boundary: snapshot.rights_boundary.clone(),
+        });
+    }
+
+    validate_range_u8(
+        "sequence.index",
+        snapshot.sequence.index,
+        MIN_SEQUENCE_INDEX,
+        MAX_SEQUENCE_INDEX,
+    )?;
+    validate_non_empty("sequence.name", &snapshot.sequence.name)?;
+    validate_range_u32(
+        "sequence.tempo_bpm_x100",
+        snapshot.sequence.tempo_bpm_x100,
+        MIN_TEMPO_BPM_X100,
+        MAX_TEMPO_BPM_X100,
+    )?;
+    validate_range_u8(
+        "sequence.selected_track",
+        snapshot.sequence.selected_track,
+        MIN_TRACK_INDEX,
+        MAX_TRACK_INDEX,
+    )?;
+    validate_range_u16(
+        "sequence.bar_count",
+        snapshot.sequence.bar_count,
+        MIN_BAR_COUNT,
+        MAX_BAR_COUNT,
+    )?;
+
+    validate_range_u8(
+        "program.index",
+        snapshot.program.index,
+        MIN_PROGRAM_INDEX,
+        MAX_PROGRAM_INDEX,
+    )?;
+    validate_non_empty("program.name", &snapshot.program.name)?;
+    validate_program_pad(
+        "machine.selected_program_pad",
+        snapshot.machine.selected_program_pad,
+    )?;
+    validate_playhead_remainder(snapshot.machine.playhead_tick_remainder)?;
+
+    validate_playback_resolution(
+        "machine.last_playback",
+        snapshot.machine.last_playback.as_ref(),
+    )?;
+
+    let mut seen_assignments = BTreeSet::new();
+    for (index, assignment) in snapshot.program.pad_assignments.iter().enumerate() {
+        let field = format!("program.pad_assignments[{index}]");
+        validate_assignment(&field, assignment)?;
+        if !seen_assignments.insert(assignment.pad) {
+            return Err(ProjectSnapshotError::DuplicatePadAssignment {
+                pad: assignment.pad,
+            });
+        }
+    }
+
+    for (index, event) in snapshot.sequence.recorded_events.iter().enumerate() {
+        validate_sequence_event(
+            &format!("sequence.recorded_events[{index}]"),
+            event,
+            snapshot.machine.playhead_ticks,
+        )?;
+    }
+
+    Ok(())
+}
+
+fn validate_assignment(
+    field: &str,
+    assignment: &PadAssignment,
+) -> Result<(), ProjectSnapshotError> {
+    validate_program_pad(&format!("{field}.pad"), assignment.pad)?;
+    validate_non_empty(&format!("{field}.sample.id"), &assignment.sample.id)?;
+    validate_non_empty(&format!("{field}.sample.name"), &assignment.sample.name)?;
+    validate_range_u8(
+        &format!("{field}.level"),
+        assignment.level,
+        0,
+        MAX_PAD_LEVEL,
+    )?;
+    validate_range_i8(
+        &format!("{field}.pan"),
+        assignment.pan,
+        MIN_PAD_PAN,
+        MAX_PAD_PAN,
+    )
+}
+
+fn validate_sequence_event(
+    field: &str,
+    event: &SequenceEvent,
+    playhead_ticks: u64,
+) -> Result<(), ProjectSnapshotError> {
+    validate_range_u8(
+        &format!("{field}.selected_track"),
+        event.selected_track,
+        MIN_TRACK_INDEX,
+        MAX_TRACK_INDEX,
+    )?;
+    validate_pad_number(&format!("{field}.pad_number"), event.pad_number)?;
+    validate_velocity(&format!("{field}.velocity"), event.velocity)?;
+    if event.tick > playhead_ticks {
+        return Err(invalid_value(
+            &format!("{field}.tick"),
+            format!("must be <= playhead_ticks {playhead_ticks}"),
+        ));
+    }
+
+    if let Some(playback) = &event.playback {
+        validate_playback_intent(&format!("{field}.playback"), playback)?;
+        if playback.selected_track != event.selected_track {
+            return Err(invalid_value(
+                &format!("{field}.playback.selected_track"),
+                "must match recorded event selected_track",
+            ));
+        }
+        if playback.bank != event.pad_bank {
+            return Err(invalid_value(
+                &format!("{field}.playback.bank"),
+                "must match recorded event pad_bank",
+            ));
+        }
+        if playback.pad_number != event.pad_number {
+            return Err(invalid_value(
+                &format!("{field}.playback.pad_number"),
+                "must match recorded event pad_number",
+            ));
+        }
+        if playback.velocity != event.velocity {
+            return Err(invalid_value(
+                &format!("{field}.playback.velocity"),
+                "must match recorded event velocity",
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_playback_resolution(
+    field: &str,
+    playback: Option<&SamplePlaybackResolution>,
+) -> Result<(), ProjectSnapshotError> {
+    match playback {
+        Some(SamplePlaybackResolution::Intent { intent }) => {
+            validate_playback_intent(&format!("{field}.intent"), intent)
+        }
+        Some(SamplePlaybackResolution::Miss { miss }) => {
+            validate_playback_miss(&format!("{field}.miss"), miss)
+        }
+        None => Ok(()),
+    }
+}
+
+fn validate_playback_intent(
+    field: &str,
+    intent: &SamplePlaybackIntent,
+) -> Result<(), ProjectSnapshotError> {
+    validate_range_u8(
+        &format!("{field}.selected_track"),
+        intent.selected_track,
+        MIN_TRACK_INDEX,
+        MAX_TRACK_INDEX,
+    )?;
+    validate_range_u8(
+        &format!("{field}.program_index"),
+        intent.program_index,
+        MIN_PROGRAM_INDEX,
+        MAX_PROGRAM_INDEX,
+    )?;
+    validate_non_empty(&format!("{field}.program_name"), &intent.program_name)?;
+    validate_pad_number(&format!("{field}.pad_number"), intent.pad_number)?;
+    validate_non_empty(&format!("{field}.sample_id"), &intent.sample_id)?;
+    validate_non_empty(&format!("{field}.sample_name"), &intent.sample_name)?;
+    validate_velocity(&format!("{field}.velocity"), intent.velocity)?;
+    validate_range_u8(&format!("{field}.level"), intent.level, 0, MAX_PAD_LEVEL)?;
+    validate_range_i8(
+        &format!("{field}.pan"),
+        intent.pan,
+        MIN_PAD_PAN,
+        MAX_PAD_PAN,
+    )
+}
+
+fn validate_playback_miss(
+    field: &str,
+    miss: &SamplePlaybackMiss,
+) -> Result<(), ProjectSnapshotError> {
+    validate_range_u8(
+        &format!("{field}.selected_track"),
+        miss.selected_track,
+        MIN_TRACK_INDEX,
+        MAX_TRACK_INDEX,
+    )?;
+    validate_range_u8(
+        &format!("{field}.program_index"),
+        miss.program_index,
+        MIN_PROGRAM_INDEX,
+        MAX_PROGRAM_INDEX,
+    )?;
+    validate_non_empty(&format!("{field}.program_name"), &miss.program_name)?;
+    validate_pad_number(&format!("{field}.pad_number"), miss.pad_number)?;
+    validate_velocity(&format!("{field}.velocity"), miss.velocity)
+}
+
+fn validate_program_pad(field: &str, pad: ProgramPad) -> Result<(), ProjectSnapshotError> {
+    validate_pad_number(&format!("{field}.pad_number"), pad.pad_number)
+}
+
+fn validate_pad_number(field: &str, pad_number: u8) -> Result<(), ProjectSnapshotError> {
+    validate_range_u8(field, pad_number, 1, 16)
+}
+
+fn validate_velocity(field: &str, velocity: u8) -> Result<(), ProjectSnapshotError> {
+    validate_range_u8(field, velocity, 1, 127)
+}
+
+fn validate_playhead_remainder(remainder: u64) -> Result<(), ProjectSnapshotError> {
+    if u128::from(remainder) >= TICK_DENOMINATOR {
+        return Err(invalid_value(
+            "machine.playhead_tick_remainder",
+            format!("must be less than {TICK_DENOMINATOR}"),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_non_empty(field: &str, value: &str) -> Result<(), ProjectSnapshotError> {
+    if value.trim().is_empty() {
+        return Err(invalid_value(field, "must not be empty"));
+    }
+    Ok(())
+}
+
+fn validate_range_u8(field: &str, value: u8, min: u8, max: u8) -> Result<(), ProjectSnapshotError> {
+    if value < min || value > max {
+        return Err(invalid_value(
+            field,
+            format!("must be in range {min}..={max}"),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_range_u16(
+    field: &str,
+    value: u16,
+    min: u16,
+    max: u16,
+) -> Result<(), ProjectSnapshotError> {
+    if value < min || value > max {
+        return Err(invalid_value(
+            field,
+            format!("must be in range {min}..={max}"),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_range_u32(
+    field: &str,
+    value: u32,
+    min: u32,
+    max: u32,
+) -> Result<(), ProjectSnapshotError> {
+    if value < min || value > max {
+        return Err(invalid_value(
+            field,
+            format!("must be in range {min}..={max}"),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_range_i8(field: &str, value: i8, min: i8, max: i8) -> Result<(), ProjectSnapshotError> {
+    if value < min || value > max {
+        return Err(invalid_value(
+            field,
+            format!("must be in range {min}..={max}"),
+        ));
+    }
+    Ok(())
+}
+
+fn invalid_value(field: &str, message: impl Into<String>) -> ProjectSnapshotError {
+    ProjectSnapshotError::InvalidValue {
+        field: field.to_string(),
+        message: message.into(),
     }
 }
 

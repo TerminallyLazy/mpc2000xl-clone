@@ -1,7 +1,7 @@
 use mpc_core::{
     HardwareEvent, INTERNAL_PPQN, MachineOutput, MainScreenField, Mode, MpcCore,
-    PadAssignmentChange, PadBank, PanelControl, PlaybackMissReason, ProgramPad,
-    SamplePlaybackResolution, SequenceEvent,
+    PROJECT_SNAPSHOT_VERSION, PadAssignmentChange, PadBank, PanelControl, PlaybackMissReason,
+    ProgramPad, ProjectSnapshotError, SamplePlaybackResolution, SequenceEvent,
 };
 
 #[test]
@@ -697,6 +697,190 @@ fn replaying_same_events_produces_same_state() {
             playback: None,
         }]
     );
+}
+
+#[test]
+fn project_snapshot_round_trips_after_edits_and_recording() {
+    let mut core = MpcCore::new();
+
+    core.dispatch(HardwareEvent::TurnDataWheel { delta: 5 });
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::CursorLeft,
+    });
+    core.dispatch(HardwareEvent::TurnDataWheel { delta: 4 });
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::CursorLeft,
+    });
+    core.dispatch(HardwareEvent::TurnDataWheel { delta: 2 });
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::CursorLeft,
+    });
+    core.dispatch(HardwareEvent::TurnDataWheel { delta: 3 });
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::Program,
+    });
+    core.dispatch(HardwareEvent::StrikePad {
+        bank: PadBank::A,
+        pad: 5,
+        velocity: 90,
+    });
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::Rec,
+    });
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::Play,
+    });
+    core.dispatch(HardwareEvent::Tick { micros: 500_000 });
+    core.dispatch(HardwareEvent::StrikePad {
+        bank: PadBank::A,
+        pad: 5,
+        velocity: 87,
+    });
+
+    let json = core.to_project_json().expect("snapshot should encode");
+    assert!(json.contains("\"version\": 1"));
+    assert!(json.contains("metadata_only_no_audio_bytes"));
+
+    let mut restored = MpcCore::new();
+    restored
+        .restore_project_json(&json)
+        .expect("snapshot should restore");
+
+    assert_eq!(restored.state().mode, Mode::Program);
+    assert_eq!(restored.state().sequence_index, 3);
+    assert_eq!(restored.state().sequence_name, "Sequence03");
+    assert_eq!(restored.state().tempo_bpm_x100, 12500);
+    assert_eq!(restored.state().selected_track, 5);
+    assert_eq!(restored.state().bar_count, 4);
+    assert_eq!(
+        restored.state().selected_program_pad,
+        ProgramPad {
+            bank: PadBank::A,
+            pad_number: 5
+        }
+    );
+    assert_eq!(restored.state().recorded_events.len(), 1);
+    assert_eq!(
+        restored.state().recorded_events[0]
+            .playback
+            .as_ref()
+            .map(|intent| (
+                intent.sample_id.as_str(),
+                intent.sample_name.as_str(),
+                intent.velocity
+            )),
+        Some(("synthetic_a_05", "SYN-A05", 87))
+    );
+    assert_eq!(restored.state().playhead_ticks, 100);
+    assert!(!restored.state().playing);
+    assert!(!restored.state().recording);
+}
+
+#[test]
+fn project_snapshot_rejects_invalid_version() {
+    let core = MpcCore::new();
+    let mut snapshot = core.export_project_snapshot();
+    snapshot.version = PROJECT_SNAPSHOT_VERSION + 1;
+    let mut restored = MpcCore::new();
+
+    let error = restored
+        .restore_project_snapshot(snapshot)
+        .expect_err("unsupported version should be rejected");
+
+    assert!(matches!(
+        error,
+        ProjectSnapshotError::UnsupportedVersion {
+            version,
+            supported: PROJECT_SNAPSHOT_VERSION,
+        } if version == PROJECT_SNAPSHOT_VERSION + 1
+    ));
+}
+
+#[test]
+fn project_snapshot_rejects_invalid_assignment_pad() {
+    let core = MpcCore::new();
+    let mut snapshot = core.export_project_snapshot();
+    snapshot.program.pad_assignments[0].pad.pad_number = 17;
+    let mut restored = MpcCore::new();
+
+    let error = restored
+        .restore_project_snapshot(snapshot)
+        .expect_err("assignment pad outside 1..=16 should be rejected");
+
+    assert!(matches!(
+        error,
+        ProjectSnapshotError::InvalidValue { field, .. }
+            if field == "program.pad_assignments[0].pad.pad_number"
+    ));
+}
+
+#[test]
+fn project_snapshot_rejects_duplicate_pad_assignments() {
+    let core = MpcCore::new();
+    let mut snapshot = core.export_project_snapshot();
+    snapshot.program.pad_assignments[1].pad = snapshot.program.pad_assignments[0].pad;
+    let mut restored = MpcCore::new();
+
+    let error = restored
+        .restore_project_snapshot(snapshot)
+        .expect_err("duplicate pad assignment should be rejected");
+
+    assert!(matches!(
+        error,
+        ProjectSnapshotError::DuplicatePadAssignment { pad }
+            if pad == ProgramPad {
+                bank: PadBank::A,
+                pad_number: 1
+            }
+    ));
+}
+
+#[test]
+fn project_snapshot_restore_refreshes_lcd() {
+    let mut core = MpcCore::new();
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::Program,
+    });
+    core.dispatch(HardwareEvent::StrikePad {
+        bank: PadBank::A,
+        pad: 6,
+        velocity: 90,
+    });
+
+    let snapshot = core.export_project_snapshot();
+    let mut restored = MpcCore::new();
+    restored
+        .restore_project_snapshot(snapshot)
+        .expect("snapshot should restore");
+
+    assert_eq!(restored.state().lcd.title, "PROGRAM");
+    assert!(restored.state().lcd.lines[0].contains("Program01"));
+    assert!(restored.state().lcd.lines[1].contains("SYN-A06"));
+    assert!(!restored.state().lcd.lines[2].contains("PLAY"));
+}
+
+#[test]
+fn restored_project_can_still_emit_playback_intent() {
+    let core = MpcCore::new();
+    let snapshot = core.export_project_snapshot();
+    let mut restored = MpcCore::new();
+    restored
+        .restore_project_snapshot(snapshot)
+        .expect("snapshot should restore");
+
+    let outputs = restored.dispatch(HardwareEvent::StrikePad {
+        bank: PadBank::A,
+        pad: 8,
+        velocity: 111,
+    });
+
+    assert!(outputs.iter().any(|output| matches!(
+        output,
+        MachineOutput::SamplePlaybackIntent { intent }
+            if intent.sample_id == "synthetic_a_08"
+                && intent.sample_name == "SYN-A08"
+                && intent.velocity == 111
+    )));
 }
 
 #[test]

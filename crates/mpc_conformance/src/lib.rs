@@ -1,8 +1,8 @@
 use anyhow::{Context, Result, bail};
 use mpc_audio::{AudioRenderSettings, AudioSourceKind, ChannelBalance, render_intent};
 use mpc_core::{
-    HardwareEvent, MainScreenField, Mode, MpcCore, ProgramPad, SamplePlaybackResolution,
-    SequenceEvent,
+    HardwareEvent, MainScreenField, Mode, MpcCore, MpcState, PROJECT_SNAPSHOT_VERSION, ProgramPad,
+    SamplePlaybackResolution, SequenceEvent,
 };
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -15,6 +15,17 @@ pub struct Fixture {
     pub source_refs: Vec<String>,
     pub events: Vec<HardwareEvent>,
     pub expect: ExpectedState,
+    #[serde(default)]
+    pub project_round_trip: Option<ProjectRoundTripExpectation>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProjectRoundTripExpectation {
+    #[serde(default)]
+    pub post_restore_events: Vec<HardwareEvent>,
+    pub expect: ExpectedState,
+    #[serde(default)]
+    pub expect_snapshot_version: Option<u16>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -103,207 +114,10 @@ pub fn run_fixture(fixture: &Fixture) -> FixtureReport {
         core.dispatch(event.clone());
     }
 
-    let state = core.state();
     let mut details = Vec::new();
-
-    if state.mode != fixture.expect.mode {
-        details.push(format!(
-            "mode mismatch: expected {:?}, got {:?}",
-            fixture.expect.mode, state.mode
-        ));
-    }
-
-    if state.lcd.title != fixture.expect.lcd_title {
-        details.push(format!(
-            "lcd title mismatch: expected {}, got {}",
-            fixture.expect.lcd_title, state.lcd.title
-        ));
-    }
-
-    if state.playing != fixture.expect.playing {
-        details.push(format!(
-            "playing mismatch: expected {}, got {}",
-            fixture.expect.playing, state.playing
-        ));
-    }
-
-    if state.recording != fixture.expect.recording {
-        details.push(format!(
-            "recording mismatch: expected {}, got {}",
-            fixture.expect.recording, state.recording
-        ));
-    }
-
-    if state.event_count != fixture.expect.event_count {
-        details.push(format!(
-            "event_count mismatch: expected {}, got {}",
-            fixture.expect.event_count, state.event_count
-        ));
-    }
-
-    if let Some(selected_field) = fixture.expect.selected_field {
-        if state.selected_main_field != selected_field {
-            details.push(format!(
-                "selected_field mismatch: expected {:?}, got {:?}",
-                selected_field, state.selected_main_field
-            ));
-        }
-    }
-
-    if let Some(selected_track) = fixture.expect.selected_track {
-        if state.selected_track != selected_track {
-            details.push(format!(
-                "selected_track mismatch: expected {}, got {}",
-                selected_track, state.selected_track
-            ));
-        }
-    }
-
-    if let Some(tempo_bpm_x100) = fixture.expect.tempo_bpm_x100 {
-        if state.tempo_bpm_x100 != tempo_bpm_x100 {
-            details.push(format!(
-                "tempo_bpm_x100 mismatch: expected {}, got {}",
-                tempo_bpm_x100, state.tempo_bpm_x100
-            ));
-        }
-    }
-
-    if let Some(sequence_index) = fixture.expect.sequence_index {
-        if state.sequence_index != sequence_index {
-            details.push(format!(
-                "sequence_index mismatch: expected {}, got {}",
-                sequence_index, state.sequence_index
-            ));
-        }
-    }
-
-    if let Some(sequence_name) = &fixture.expect.sequence_name {
-        if state.sequence_name != *sequence_name {
-            details.push(format!(
-                "sequence_name mismatch: expected {}, got {}",
-                sequence_name, state.sequence_name
-            ));
-        }
-    }
-
-    if let Some(bar_count) = fixture.expect.bar_count {
-        if state.bar_count != bar_count {
-            details.push(format!(
-                "bar_count mismatch: expected {}, got {}",
-                bar_count, state.bar_count
-            ));
-        }
-    }
-
-    if let Some(recorded_event_count) = fixture.expect.recorded_event_count {
-        if state.recorded_events.len() != recorded_event_count {
-            details.push(format!(
-                "recorded_event_count mismatch: expected {}, got {}",
-                recorded_event_count,
-                state.recorded_events.len()
-            ));
-        }
-    }
-
-    if let Some(playhead_ticks) = fixture.expect.playhead_ticks {
-        if state.playhead_ticks != playhead_ticks {
-            details.push(format!(
-                "playhead_ticks mismatch: expected {}, got {}",
-                playhead_ticks, state.playhead_ticks
-            ));
-        }
-    }
-
-    if let Some(last_recorded_event) = &fixture.expect.last_recorded_event {
-        if state.recorded_events.last() != Some(last_recorded_event) {
-            details.push(format!(
-                "last_recorded_event mismatch: expected {:?}, got {:?}",
-                last_recorded_event,
-                state.recorded_events.last()
-            ));
-        }
-    }
-
-    if let Some(current_program_index) = fixture.expect.current_program_index {
-        if state.current_program.index != current_program_index {
-            details.push(format!(
-                "current_program_index mismatch: expected {}, got {}",
-                current_program_index, state.current_program.index
-            ));
-        }
-    }
-
-    if let Some(current_program_name) = &fixture.expect.current_program_name {
-        if state.current_program.name != *current_program_name {
-            details.push(format!(
-                "current_program_name mismatch: expected {}, got {}",
-                current_program_name, state.current_program.name
-            ));
-        }
-    }
-
-    if let Some(pad_assignment_count) = fixture.expect.pad_assignment_count {
-        if state.current_program.pad_assignments.len() != pad_assignment_count {
-            details.push(format!(
-                "pad_assignment_count mismatch: expected {}, got {}",
-                pad_assignment_count,
-                state.current_program.pad_assignments.len()
-            ));
-        }
-    }
-
-    if let Some(selected_program_pad) = fixture.expect.selected_program_pad {
-        if state.selected_program_pad != selected_program_pad {
-            details.push(format!(
-                "selected_program_pad mismatch: expected {:?}, got {:?}",
-                selected_program_pad, state.selected_program_pad
-            ));
-        }
-    }
-
-    if let Some(last_playback) = &fixture.expect.last_playback {
-        if state.last_playback.as_ref() != Some(last_playback) {
-            details.push(format!(
-                "last_playback mismatch: expected {:?}, got {:?}",
-                last_playback, state.last_playback
-            ));
-        }
-    }
-
-    if let Some(last_recorded_sample_id) = &fixture.expect.last_recorded_sample_id {
-        let actual = state
-            .recorded_events
-            .last()
-            .and_then(|event| event.playback.as_ref())
-            .map(|intent| intent.sample_id.as_str());
-        if actual != Some(last_recorded_sample_id.as_str()) {
-            details.push(format!(
-                "last_recorded_sample_id mismatch: expected {}, got {:?}",
-                last_recorded_sample_id, actual
-            ));
-        }
-    }
-
-    if let Some(last_recorded_sample_name) = &fixture.expect.last_recorded_sample_name {
-        let actual = state
-            .recorded_events
-            .last()
-            .and_then(|event| event.playback.as_ref())
-            .map(|intent| intent.sample_name.as_str());
-        if actual != Some(last_recorded_sample_name.as_str()) {
-            details.push(format!(
-                "last_recorded_sample_name mismatch: expected {}, got {:?}",
-                last_recorded_sample_name, actual
-            ));
-        }
-    }
-
-    if let Some(expected_audio_render) = &fixture.expect.last_audio_render {
-        validate_expected_audio_render(
-            &mut details,
-            state.last_playback.as_ref(),
-            expected_audio_render,
-        );
+    validate_expected_state(&mut details, "", core.state(), &fixture.expect);
+    if let Some(project_round_trip) = &fixture.project_round_trip {
+        validate_project_round_trip(&mut details, &core, project_round_trip);
     }
 
     FixtureReport {
@@ -320,6 +134,255 @@ pub fn run_fixture_path(path: impl AsRef<Path>) -> Result<FixtureReport> {
         bail!("fixture {} has no source references", fixture.id);
     }
     Ok(run_fixture(&fixture))
+}
+
+fn validate_project_round_trip(
+    details: &mut Vec<String>,
+    core: &MpcCore,
+    expected: &ProjectRoundTripExpectation,
+) {
+    let snapshot = core.export_project_snapshot();
+    let expected_version = expected
+        .expect_snapshot_version
+        .unwrap_or(PROJECT_SNAPSHOT_VERSION);
+    if snapshot.version != expected_version {
+        details.push(format!(
+            "project_round_trip.snapshot_version mismatch: expected {}, got {}",
+            expected_version, snapshot.version
+        ));
+    }
+
+    let json = match core.to_project_json() {
+        Ok(json) => json,
+        Err(error) => {
+            details.push(format!("project_round_trip.encode error: {error}"));
+            return;
+        }
+    };
+
+    let mut restored = MpcCore::new();
+    if let Err(error) = restored.restore_project_json(&json) {
+        details.push(format!("project_round_trip.restore error: {error}"));
+        return;
+    }
+
+    for event in &expected.post_restore_events {
+        restored.dispatch(event.clone());
+    }
+
+    validate_expected_state(
+        details,
+        "project_round_trip.",
+        restored.state(),
+        &expected.expect,
+    );
+}
+
+fn validate_expected_state(
+    details: &mut Vec<String>,
+    prefix: &str,
+    state: &MpcState,
+    expected: &ExpectedState,
+) {
+    if state.mode != expected.mode {
+        details.push(format!(
+            "{prefix}mode mismatch: expected {:?}, got {:?}",
+            expected.mode, state.mode
+        ));
+    }
+
+    if state.lcd.title != expected.lcd_title {
+        details.push(format!(
+            "{prefix}lcd title mismatch: expected {}, got {}",
+            expected.lcd_title, state.lcd.title
+        ));
+    }
+
+    if state.playing != expected.playing {
+        details.push(format!(
+            "{prefix}playing mismatch: expected {}, got {}",
+            expected.playing, state.playing
+        ));
+    }
+
+    if state.recording != expected.recording {
+        details.push(format!(
+            "{prefix}recording mismatch: expected {}, got {}",
+            expected.recording, state.recording
+        ));
+    }
+
+    if state.event_count != expected.event_count {
+        details.push(format!(
+            "{prefix}event_count mismatch: expected {}, got {}",
+            expected.event_count, state.event_count
+        ));
+    }
+
+    if let Some(selected_field) = expected.selected_field {
+        if state.selected_main_field != selected_field {
+            details.push(format!(
+                "{prefix}selected_field mismatch: expected {:?}, got {:?}",
+                selected_field, state.selected_main_field
+            ));
+        }
+    }
+
+    if let Some(selected_track) = expected.selected_track {
+        if state.selected_track != selected_track {
+            details.push(format!(
+                "{prefix}selected_track mismatch: expected {}, got {}",
+                selected_track, state.selected_track
+            ));
+        }
+    }
+
+    if let Some(tempo_bpm_x100) = expected.tempo_bpm_x100 {
+        if state.tempo_bpm_x100 != tempo_bpm_x100 {
+            details.push(format!(
+                "{prefix}tempo_bpm_x100 mismatch: expected {}, got {}",
+                tempo_bpm_x100, state.tempo_bpm_x100
+            ));
+        }
+    }
+
+    if let Some(sequence_index) = expected.sequence_index {
+        if state.sequence_index != sequence_index {
+            details.push(format!(
+                "{prefix}sequence_index mismatch: expected {}, got {}",
+                sequence_index, state.sequence_index
+            ));
+        }
+    }
+
+    if let Some(sequence_name) = &expected.sequence_name {
+        if state.sequence_name != *sequence_name {
+            details.push(format!(
+                "{prefix}sequence_name mismatch: expected {}, got {}",
+                sequence_name, state.sequence_name
+            ));
+        }
+    }
+
+    if let Some(bar_count) = expected.bar_count {
+        if state.bar_count != bar_count {
+            details.push(format!(
+                "{prefix}bar_count mismatch: expected {}, got {}",
+                bar_count, state.bar_count
+            ));
+        }
+    }
+
+    if let Some(recorded_event_count) = expected.recorded_event_count {
+        if state.recorded_events.len() != recorded_event_count {
+            details.push(format!(
+                "{prefix}recorded_event_count mismatch: expected {}, got {}",
+                recorded_event_count,
+                state.recorded_events.len()
+            ));
+        }
+    }
+
+    if let Some(playhead_ticks) = expected.playhead_ticks {
+        if state.playhead_ticks != playhead_ticks {
+            details.push(format!(
+                "{prefix}playhead_ticks mismatch: expected {}, got {}",
+                playhead_ticks, state.playhead_ticks
+            ));
+        }
+    }
+
+    if let Some(last_recorded_event) = &expected.last_recorded_event {
+        if state.recorded_events.last() != Some(last_recorded_event) {
+            details.push(format!(
+                "{prefix}last_recorded_event mismatch: expected {:?}, got {:?}",
+                last_recorded_event,
+                state.recorded_events.last()
+            ));
+        }
+    }
+
+    if let Some(current_program_index) = expected.current_program_index {
+        if state.current_program.index != current_program_index {
+            details.push(format!(
+                "{prefix}current_program_index mismatch: expected {}, got {}",
+                current_program_index, state.current_program.index
+            ));
+        }
+    }
+
+    if let Some(current_program_name) = &expected.current_program_name {
+        if state.current_program.name != *current_program_name {
+            details.push(format!(
+                "{prefix}current_program_name mismatch: expected {}, got {}",
+                current_program_name, state.current_program.name
+            ));
+        }
+    }
+
+    if let Some(pad_assignment_count) = expected.pad_assignment_count {
+        if state.current_program.pad_assignments.len() != pad_assignment_count {
+            details.push(format!(
+                "{prefix}pad_assignment_count mismatch: expected {}, got {}",
+                pad_assignment_count,
+                state.current_program.pad_assignments.len()
+            ));
+        }
+    }
+
+    if let Some(selected_program_pad) = expected.selected_program_pad {
+        if state.selected_program_pad != selected_program_pad {
+            details.push(format!(
+                "{prefix}selected_program_pad mismatch: expected {:?}, got {:?}",
+                selected_program_pad, state.selected_program_pad
+            ));
+        }
+    }
+
+    if let Some(last_playback) = &expected.last_playback {
+        if state.last_playback.as_ref() != Some(last_playback) {
+            details.push(format!(
+                "{prefix}last_playback mismatch: expected {:?}, got {:?}",
+                last_playback, state.last_playback
+            ));
+        }
+    }
+
+    if let Some(last_recorded_sample_id) = &expected.last_recorded_sample_id {
+        let actual = state
+            .recorded_events
+            .last()
+            .and_then(|event| event.playback.as_ref())
+            .map(|intent| intent.sample_id.as_str());
+        if actual != Some(last_recorded_sample_id.as_str()) {
+            details.push(format!(
+                "{prefix}last_recorded_sample_id mismatch: expected {}, got {:?}",
+                last_recorded_sample_id, actual
+            ));
+        }
+    }
+
+    if let Some(last_recorded_sample_name) = &expected.last_recorded_sample_name {
+        let actual = state
+            .recorded_events
+            .last()
+            .and_then(|event| event.playback.as_ref())
+            .map(|intent| intent.sample_name.as_str());
+        if actual != Some(last_recorded_sample_name.as_str()) {
+            details.push(format!(
+                "{prefix}last_recorded_sample_name mismatch: expected {}, got {:?}",
+                last_recorded_sample_name, actual
+            ));
+        }
+    }
+
+    if let Some(expected_audio_render) = &expected.last_audio_render {
+        validate_expected_audio_render(
+            details,
+            state.last_playback.as_ref(),
+            expected_audio_render,
+        );
+    }
 }
 
 fn validate_expected_audio_render(

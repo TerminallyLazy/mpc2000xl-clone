@@ -1,0 +1,156 @@
+{
+  "id": "core.project.assigned-pad-round-trip",
+  "name": "Project snapshot round-trips assigned pad recording metadata",
+  "source_refs": [
+    "docs/superpowers/plans/2026-06-13-mpc2000xl-project-persistence.md#source-and-evidence-status",
+    "docs/superpowers/plans/2026-06-13-mpc2000xl-sequence-recording.md#source-and-evidence-status",
+    "docs/superpowers/plans/2026-06-13-mpc2000xl-program-pad-assignment.md#source-and-evidence-status"
+  ],
+  "events": [
+    {
+      "type": "press",
+      "control": "program"
+    },
+    {
+      "type": "strike_pad",
+      "bank": "a",
+      "pad": 3,
+      "velocity": 90
+    },
+    {
+      "type": "press",
+      "control": "rec"
+    },
+    {
+      "type": "press",
+      "control": "play"
+    },
+    {
+      "type": "tick",
+      "micros": 500000
+    },
+    {
+      "type": "strike_pad",
+      "bank": "a",
+      "pad": 3,
+      "velocity": 77
+    }
+  ],
+  "expect": {
+    "mode": "program",
+    "lcd_title": "PROGRAM",
+    "playing": true,
+    "recording": true,
+    "event_count": 6,
+    "selected_track": 1,
+    "recorded_event_count": 1,
+    "playhead_ticks": 96,
+    "current_program_index": 1,
+    "current_program_name": "Program01",
+    "pad_assignment_count": 16,
+    "selected_program_pad": {
+      "bank": "a",
+      "pad_number": 3
+    },
+    "last_recorded_sample_id": "synthetic_a_03",
+    "last_recorded_sample_name": "SYN-A03",
+    "last_playback": {
+      "type": "intent",
+      "intent": {
+        "selected_track": 1,
+        "program_index": 1,
+        "program_name": "Program01",
+        "bank": "a",
+        "pad_number": 3,
+        "sample_id": "synthetic_a_03",
+        "sample_name": "SYN-A03",
+        "velocity": 77,
+        "level": 100,
+        "pan": 0
+      }
+    },
+    "last_recorded_event": {
+      "selected_track": 1,
+      "pad_bank": "a",
+      "pad_number": 3,
+      "velocity": 77,
+      "tick": 96,
+      "playback": {
+        "selected_track": 1,
+        "program_index": 1,
+        "program_name": "Program01",
+        "bank": "a",
+        "pad_number": 3,
+        "sample_id": "synthetic_a_03",
+        "sample_name": "SYN-A03",
+        "velocity": 77,
+        "level": 100,
+        "pan": 0
+      }
+    }
+  },
+  "project_round_trip": {
+    "expect_snapshot_version": 1,
+    "post_restore_events": [
+      {
+        "type": "strike_pad",
+        "bank": "a",
+        "pad": 3,
+        "velocity": 99
+      }
+    ],
+    "expect": {
+      "mode": "program",
+      "lcd_title": "PROGRAM",
+      "playing": false,
+      "recording": false,
+      "event_count": 7,
+      "selected_track": 1,
+      "recorded_event_count": 1,
+      "playhead_ticks": 96,
+      "current_program_index": 1,
+      "current_program_name": "Program01",
+      "pad_assignment_count": 16,
+      "selected_program_pad": {
+        "bank": "a",
+        "pad_number": 3
+      },
+      "last_recorded_sample_id": "synthetic_a_03",
+      "last_recorded_sample_name": "SYN-A03",
+      "last_playback": {
+        "type": "intent",
+        "intent": {
+          "selected_track": 1,
+          "program_index": 1,
+          "program_name": "Program01",
+          "bank": "a",
+          "pad_number": 3,
+          "sample_id": "synthetic_a_03",
+          "sample_name": "SYN-A03",
+          "velocity": 99,
+          "level": 100,
+          "pan": 0
+        }
+      },
+      "last_recorded_event": {
+        "selected_track": 1,
+        "pad_bank": "a",
+        "pad_number": 3,
+        "velocity": 77,
+        "tick": 96,
+        "playback": {
+          "selected_track": 1,
+          "program_index": 1,
+          "program_name": "Program01",
+          "bank": "a",
+          "pad_number": 3,
+          "sample_id": "synthetic_a_03",
+          "sample_name": "SYN-A03",
+          "velocity": 77,
+          "level": 100,
+          "pan": 0
+        }
+      }
+    }
+  }
+}
