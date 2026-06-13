@@ -8,6 +8,7 @@ Implemented behavior:
 
 - A new workspace crate, `mpc_audio`, consumes `mpc_core::SamplePlaybackIntent`.
 - The renderer returns typed `AudioRenderSettings`, `AudioFrame`, `RenderedAudio`, and `AudioRenderSummary` values.
+- `AudioRenderSettings` are bounded by foundation guardrails before allocation: sample rates must stay within the accepted synthetic-render range and a single render cannot exceed the maximum frame count.
 - Output is stereo PCM frame data generated entirely from repo-owned deterministic synthesis.
 - Summary metadata includes sample rate, frame count, source sample id/name, selected track, program, pad, velocity, level, pan, peak amplitude, channel balance, source kind, and loaded audio byte count.
 - `mpc_conformance` can optionally render the last playback intent when a fixture includes `expect.last_audio_render`.
@@ -23,6 +24,7 @@ Implemented behavior:
 - Pan is clamped to `-100..=100` and maps to deterministic left/right channel gains.
 - Center pan emits equal left and right peaks. Negative pan reports left balance when left peak is larger; positive pan reports right balance when right peak is larger.
 - Render length and sample rate are settings metadata and buffer-size controls only. This slice does not claim source-accurate timing or pitch behavior.
+- The current bounded settings policy is a safety guardrail for this foundation renderer, not evidence of MPC2000XL hardware limits. Longer windows should be chunked explicitly in later host-audio or sequence-render slices.
 
 ## Source And Evidence Status
 
@@ -47,6 +49,7 @@ Focused checks added:
 - Velocity and level change peak amplitude.
 - Pan changes left/right channel peaks and balance direction.
 - Render frame count and sample rate are preserved.
+- Oversized frame counts and out-of-range sample rates are rejected before render allocation.
 - Render summaries report rights-safe generated source and zero loaded audio bytes.
 - A conformance fixture strikes an assigned pad and checks deterministic render metadata.
 

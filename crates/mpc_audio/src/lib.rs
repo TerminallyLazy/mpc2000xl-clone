@@ -1,8 +1,18 @@
 use mpc_core::{PadBank, SamplePlaybackIntent};
 use serde::{Deserialize, Serialize};
 
-const DEFAULT_SAMPLE_RATE_HZ: u32 = 44_100;
-const DEFAULT_FRAME_COUNT: usize = 512;
+pub const DEFAULT_SAMPLE_RATE_HZ: u32 = 44_100;
+pub const DEFAULT_FRAME_COUNT: usize = 512;
+/// Foundation guardrail: accept common low-rate audio metadata, but reject
+/// malformed zero or near-zero rates before any render allocation happens.
+pub const MIN_SAMPLE_RATE_HZ: u32 = 8_000;
+/// Foundation guardrail: keep synthetic renders within common high-resolution
+/// audio metadata bounds until longer render windows are chunked explicitly.
+pub const MAX_SAMPLE_RATE_HZ: u32 = 192_000;
+/// Foundation guardrail: cap one synthetic render buffer to one second at the
+/// maximum accepted sample rate so malformed fixtures cannot request OOM-sized
+/// allocations.
+pub const MAX_RENDER_FRAMES: usize = MAX_SAMPLE_RATE_HZ as usize;
 const PCM_MAX: i32 = i16::MAX as i32;
 const MAX_VELOCITY: i32 = 127;
 const MAX_LEVEL: i32 = 127;
@@ -17,11 +27,13 @@ pub struct AudioRenderSettings {
 }
 
 impl AudioRenderSettings {
-    pub fn new(sample_rate_hz: u32, frame_count: usize) -> Self {
-        Self {
+    pub fn new(sample_rate_hz: u32, frame_count: usize) -> Result<Self, AudioRenderError> {
+        let settings = Self {
             sample_rate_hz,
             frame_count,
-        }
+        };
+        settings.validate()?;
+        Ok(settings)
     }
 
     pub fn preview() -> Self {
@@ -29,6 +41,31 @@ impl AudioRenderSettings {
             sample_rate_hz: DEFAULT_SAMPLE_RATE_HZ,
             frame_count: 256,
         }
+    }
+
+    pub fn validate(&self) -> Result<(), AudioRenderError> {
+        if self.sample_rate_hz < MIN_SAMPLE_RATE_HZ {
+            return Err(AudioRenderError::SampleRateBelowMinimum {
+                sample_rate_hz: self.sample_rate_hz,
+                min_sample_rate_hz: MIN_SAMPLE_RATE_HZ,
+            });
+        }
+
+        if self.sample_rate_hz > MAX_SAMPLE_RATE_HZ {
+            return Err(AudioRenderError::SampleRateAboveMaximum {
+                sample_rate_hz: self.sample_rate_hz,
+                max_sample_rate_hz: MAX_SAMPLE_RATE_HZ,
+            });
+        }
+
+        if self.frame_count > MAX_RENDER_FRAMES {
+            return Err(AudioRenderError::FrameCountTooLarge {
+                frame_count: self.frame_count,
+                max_frame_count: MAX_RENDER_FRAMES,
+            });
+        }
+
+        Ok(())
     }
 }
 
@@ -40,6 +77,52 @@ impl Default for AudioRenderSettings {
         }
     }
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AudioRenderError {
+    SampleRateBelowMinimum {
+        sample_rate_hz: u32,
+        min_sample_rate_hz: u32,
+    },
+    SampleRateAboveMaximum {
+        sample_rate_hz: u32,
+        max_sample_rate_hz: u32,
+    },
+    FrameCountTooLarge {
+        frame_count: usize,
+        max_frame_count: usize,
+    },
+}
+
+impl std::fmt::Display for AudioRenderError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::SampleRateBelowMinimum {
+                sample_rate_hz,
+                min_sample_rate_hz,
+            } => write!(
+                formatter,
+                "sample rate {sample_rate_hz} Hz is below minimum {min_sample_rate_hz} Hz"
+            ),
+            Self::SampleRateAboveMaximum {
+                sample_rate_hz,
+                max_sample_rate_hz,
+            } => write!(
+                formatter,
+                "sample rate {sample_rate_hz} Hz exceeds maximum {max_sample_rate_hz} Hz"
+            ),
+            Self::FrameCountTooLarge {
+                frame_count,
+                max_frame_count,
+            } => write!(
+                formatter,
+                "frame count {frame_count} exceeds maximum {max_frame_count}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for AudioRenderError {}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AudioFrame {
@@ -93,7 +176,9 @@ pub struct RenderedAudio {
 pub fn render_intent(
     intent: &SamplePlaybackIntent,
     settings: AudioRenderSettings,
-) -> RenderedAudio {
+) -> Result<RenderedAudio, AudioRenderError> {
+    settings.validate()?;
+
     let seed = stable_seed(intent);
     let mono_peak = scaled_mono_peak(intent.velocity, intent.level);
     let pan = intent.pan.clamp(-PAN_RANGE, PAN_RANGE);
@@ -136,11 +221,11 @@ pub fn render_intent(
         loaded_audio_byte_count: 0,
     };
 
-    RenderedAudio {
+    Ok(RenderedAudio {
         settings,
         summary,
         frames,
-    }
+    })
 }
 
 fn stable_seed(intent: &SamplePlaybackIntent) -> u32 {
@@ -199,10 +284,10 @@ mod tests {
     #[test]
     fn same_intent_and_settings_render_exact_same_frames() {
         let intent = test_intent(100, 100, 0);
-        let settings = AudioRenderSettings::new(48_000, 96);
+        let settings = settings(48_000, 96);
 
-        let first = render_intent(&intent, settings);
-        let second = render_intent(&intent, settings);
+        let first = render(&intent, settings);
+        let second = render(&intent, settings);
 
         assert_eq!(first.frames, second.frames);
         assert_eq!(first.summary, second.summary);
@@ -210,18 +295,9 @@ mod tests {
 
     #[test]
     fn velocity_and_level_affect_peak_amplitude() {
-        let quiet_velocity = render_intent(
-            &test_intent(40, 100, 0),
-            AudioRenderSettings::new(44_100, 128),
-        );
-        let loud_velocity = render_intent(
-            &test_intent(100, 100, 0),
-            AudioRenderSettings::new(44_100, 128),
-        );
-        let quiet_level = render_intent(
-            &test_intent(100, 40, 0),
-            AudioRenderSettings::new(44_100, 128),
-        );
+        let quiet_velocity = render(&test_intent(40, 100, 0), settings(44_100, 128));
+        let loud_velocity = render(&test_intent(100, 100, 0), settings(44_100, 128));
+        let quiet_level = render(&test_intent(100, 40, 0), settings(44_100, 128));
 
         assert!(loud_velocity.summary.peak_amplitude > quiet_velocity.summary.peak_amplitude);
         assert!(loud_velocity.summary.peak_amplitude > quiet_level.summary.peak_amplitude);
@@ -229,18 +305,9 @@ mod tests {
 
     #[test]
     fn pan_affects_left_and_right_channels() {
-        let left = render_intent(
-            &test_intent(100, 100, -60),
-            AudioRenderSettings::new(44_100, 128),
-        );
-        let center = render_intent(
-            &test_intent(100, 100, 0),
-            AudioRenderSettings::new(44_100, 128),
-        );
-        let right = render_intent(
-            &test_intent(100, 100, 60),
-            AudioRenderSettings::new(44_100, 128),
-        );
+        let left = render(&test_intent(100, 100, -60), settings(44_100, 128));
+        let center = render(&test_intent(100, 100, 0), settings(44_100, 128));
+        let right = render(&test_intent(100, 100, 60), settings(44_100, 128));
 
         assert!(left.summary.peak_left > left.summary.peak_right);
         assert_eq!(left.summary.channel_balance, ChannelBalance::Left);
@@ -252,10 +319,7 @@ mod tests {
 
     #[test]
     fn render_length_and_sample_rate_are_respected() {
-        let rendered = render_intent(
-            &test_intent(100, 100, 0),
-            AudioRenderSettings::new(32_000, 17),
-        );
+        let rendered = render(&test_intent(100, 100, 0), settings(32_000, 17));
 
         assert_eq!(rendered.frames.len(), 17);
         assert_eq!(rendered.settings.sample_rate_hz, 32_000);
@@ -265,16 +329,66 @@ mod tests {
 
     #[test]
     fn renderer_reports_that_no_audio_bytes_are_loaded_from_disk() {
-        let rendered = render_intent(
-            &test_intent(100, 100, 0),
-            AudioRenderSettings::new(44_100, 32),
-        );
+        let rendered = render(&test_intent(100, 100, 0), settings(44_100, 32));
 
         assert_eq!(
             rendered.summary.source_kind,
             AudioSourceKind::RightsSafeGenerated
         );
         assert_eq!(rendered.summary.loaded_audio_byte_count, 0);
+    }
+
+    #[test]
+    fn settings_reject_oversized_frame_count_before_render_allocation() {
+        let frame_count = MAX_RENDER_FRAMES + 1;
+        let expected = AudioRenderError::FrameCountTooLarge {
+            frame_count,
+            max_frame_count: MAX_RENDER_FRAMES,
+        };
+
+        assert_eq!(
+            AudioRenderSettings::new(DEFAULT_SAMPLE_RATE_HZ, frame_count),
+            Err(expected)
+        );
+
+        let unchecked_settings = AudioRenderSettings {
+            sample_rate_hz: DEFAULT_SAMPLE_RATE_HZ,
+            frame_count,
+        };
+        assert_eq!(
+            render_intent(&test_intent(100, 100, 0), unchecked_settings),
+            Err(expected)
+        );
+    }
+
+    #[test]
+    fn settings_reject_sample_rates_outside_foundation_bounds() {
+        assert_eq!(
+            AudioRenderSettings::new(MIN_SAMPLE_RATE_HZ - 1, 1),
+            Err(AudioRenderError::SampleRateBelowMinimum {
+                sample_rate_hz: MIN_SAMPLE_RATE_HZ - 1,
+                min_sample_rate_hz: MIN_SAMPLE_RATE_HZ,
+            })
+        );
+        assert_eq!(
+            AudioRenderSettings::new(MAX_SAMPLE_RATE_HZ + 1, 1),
+            Err(AudioRenderError::SampleRateAboveMaximum {
+                sample_rate_hz: MAX_SAMPLE_RATE_HZ + 1,
+                max_sample_rate_hz: MAX_SAMPLE_RATE_HZ,
+            })
+        );
+
+        assert!(AudioRenderSettings::new(MIN_SAMPLE_RATE_HZ, 1).is_ok());
+        assert!(AudioRenderSettings::new(MAX_SAMPLE_RATE_HZ, 1).is_ok());
+    }
+
+    fn settings(sample_rate_hz: u32, frame_count: usize) -> AudioRenderSettings {
+        AudioRenderSettings::new(sample_rate_hz, frame_count)
+            .expect("test settings should satisfy audio render guardrails")
+    }
+
+    fn render(intent: &SamplePlaybackIntent, settings: AudioRenderSettings) -> RenderedAudio {
+        render_intent(intent, settings).expect("test render settings should be valid")
     }
 
     fn test_intent(velocity: u8, level: u8, pan: i8) -> SamplePlaybackIntent {

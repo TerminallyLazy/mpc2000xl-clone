@@ -25,6 +25,7 @@ struct MpcDesktopApp {
     core: MpcCore,
     last_status: String,
     last_synthetic_render: Option<AudioRenderSummary>,
+    last_synthetic_render_error: Option<String>,
 }
 
 impl Default for MpcDesktopApp {
@@ -33,6 +34,7 @@ impl Default for MpcDesktopApp {
             core: MpcCore::new(),
             last_status: "Ready".to_string(),
             last_synthetic_render: None,
+            last_synthetic_render_error: None,
         }
     }
 }
@@ -131,17 +133,31 @@ impl MpcDesktopApp {
 
     fn dispatch_event(&mut self, event: HardwareEvent) {
         let outputs = self.core.dispatch(event);
-        self.render_last_playback_intent(&outputs);
-        self.last_status = Self::status_from_outputs(&outputs, self.core.state());
+        let render_error = self.render_last_playback_intent(&outputs);
+        self.last_status =
+            render_error.unwrap_or_else(|| Self::status_from_outputs(&outputs, self.core.state()));
     }
 
-    fn render_last_playback_intent(&mut self, outputs: &[MachineOutput]) {
+    fn render_last_playback_intent(&mut self, outputs: &[MachineOutput]) -> Option<String> {
         if let Some(MachineOutput::SamplePlaybackIntent { intent }) = outputs
             .iter()
             .find(|output| matches!(output, MachineOutput::SamplePlaybackIntent { .. }))
         {
-            let rendered = render_intent(intent, AudioRenderSettings::preview());
-            self.last_synthetic_render = Some(rendered.summary);
+            match render_intent(intent, AudioRenderSettings::preview()) {
+                Ok(rendered) => {
+                    self.last_synthetic_render = Some(rendered.summary);
+                    self.last_synthetic_render_error = None;
+                    None
+                }
+                Err(error) => {
+                    let message = format!("Synthetic render failed: {error}");
+                    self.last_synthetic_render = None;
+                    self.last_synthetic_render_error = Some(message.clone());
+                    Some(message)
+                }
+            }
+        } else {
+            None
         }
     }
 
@@ -339,6 +355,7 @@ impl MpcDesktopApp {
         ui.horizontal_wrapped(|ui| {
             ui.label(last_synthetic_render_text(
                 self.last_synthetic_render.as_ref(),
+                self.last_synthetic_render_error.as_deref(),
             ));
         });
     }
@@ -456,9 +473,10 @@ fn playback_resolution_text(resolution: &SamplePlaybackResolution) -> String {
     }
 }
 
-fn last_synthetic_render_text(summary: Option<&AudioRenderSummary>) -> String {
-    match summary {
-        Some(summary) => format!(
+fn last_synthetic_render_text(summary: Option<&AudioRenderSummary>, error: Option<&str>) -> String {
+    match (summary, error) {
+        (_, Some(error)) => error.to_string(),
+        (Some(summary), None) => format!(
             "Synthetic render: {} {} frames @ {} Hz peak L{} R{} balance {:?}",
             summary.source_sample_name,
             summary.frame_count,
@@ -467,6 +485,6 @@ fn last_synthetic_render_text(summary: Option<&AudioRenderSummary>) -> String {
             summary.peak_right,
             summary.channel_balance
         ),
-        None => "Synthetic render: none".to_string(),
+        (None, None) => "Synthetic render: none".to_string(),
     }
 }

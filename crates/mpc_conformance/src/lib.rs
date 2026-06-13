@@ -334,7 +334,13 @@ fn validate_expected_audio_render(
         return;
     };
 
-    let rendered = render_intent(intent, expected.settings);
+    let rendered = match render_intent(intent, expected.settings) {
+        Ok(rendered) => rendered,
+        Err(error) => {
+            details.push(format!("last_audio_render render error: {error}"));
+            return;
+        }
+    };
     let summary = rendered.summary;
 
     push_mismatch(
@@ -443,5 +449,62 @@ where
         details.push(format!(
             "{label} mismatch: expected {expected:?}, got {actual:?}"
         ));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mpc_core::{PadBank, SamplePlaybackIntent};
+
+    #[test]
+    fn invalid_audio_render_settings_are_reported_as_fixture_details() {
+        let frame_count = mpc_audio::MAX_RENDER_FRAMES + 1;
+        let playback = SamplePlaybackResolution::Intent {
+            intent: SamplePlaybackIntent {
+                selected_track: 1,
+                program_index: 1,
+                program_name: "Program01".to_string(),
+                bank: PadBank::A,
+                pad_number: 1,
+                sample_id: "synthetic_a_01".to_string(),
+                sample_name: "SYN-A01".to_string(),
+                velocity: 100,
+                level: 100,
+                pan: 0,
+            },
+        };
+        let expected = ExpectedAudioRender {
+            settings: AudioRenderSettings {
+                sample_rate_hz: mpc_audio::DEFAULT_SAMPLE_RATE_HZ,
+                frame_count,
+            },
+            sample_rate_hz: mpc_audio::DEFAULT_SAMPLE_RATE_HZ,
+            frame_count,
+            source_sample_id: "synthetic_a_01".to_string(),
+            source_sample_name: "SYN-A01".to_string(),
+            selected_track: 1,
+            program_index: 1,
+            program_name: "Program01".to_string(),
+            bank: PadBank::A,
+            pad_number: 1,
+            peak_left: 0,
+            peak_right: 0,
+            peak_amplitude: 0,
+            channel_balance: ChannelBalance::Center,
+            source_kind: AudioSourceKind::RightsSafeGenerated,
+            loaded_audio_byte_count: 0,
+        };
+        let mut details = Vec::new();
+
+        validate_expected_audio_render(&mut details, Some(&playback), &expected);
+
+        assert_eq!(
+            details,
+            vec![format!(
+                "last_audio_render render error: frame count {frame_count} exceeds maximum {}",
+                mpc_audio::MAX_RENDER_FRAMES
+            )]
+        );
     }
 }
