@@ -7,13 +7,17 @@ from typing import Optional
 ROOT = Path(__file__).resolve().parents[1]
 FORBIDDEN_SUFFIXES = {
     ".7z",
+    ".aac",
+    ".ai",
     ".aif",
+    ".aifc",
     ".aiff",
     ".avi",
     ".bin",
     ".bmp",
     ".bz2",
     ".dmg",
+    ".eps",
     ".flac",
     ".gif",
     ".gz",
@@ -29,11 +33,15 @@ FORBIDDEN_SUFFIXES = {
     ".midi",
     ".mkv",
     ".mov",
+    ".mpeg",
     ".mp3",
     ".mp4",
+    ".mpg",
     ".ogg",
+    ".opus",
     ".pdf",
     ".png",
+    ".psd",
     ".rar",
     ".raw",
     ".rom",
@@ -47,6 +55,7 @@ FORBIDDEN_SUFFIXES = {
     ".tiff",
     ".wav",
     ".webp",
+    ".webm",
     ".xz",
     ".zip",
 }
@@ -73,7 +82,7 @@ def tracked_files():
 
 def allowlist_reason(relative: str) -> Optional[str]:
     reason = ALLOWLIST.get(relative)
-    if reason is None:
+    if not isinstance(reason, str):
         return None
     return reason.strip() or None
 
@@ -84,15 +93,18 @@ def is_blocked_tracked_path(relative: str) -> bool:
 
 def is_forbidden(path: Path) -> bool:
     relative = path.relative_to(ROOT).as_posix()
+    if is_blocked_tracked_path(relative):
+        return True
     if allowlist_reason(relative):
         return False
-    return is_blocked_tracked_path(relative) or any(
-        suffix.lower() in FORBIDDEN_SUFFIXES for suffix in path.suffixes
-    )
+    return any(suffix.lower() in FORBIDDEN_SUFFIXES for suffix in path.suffixes)
 
 
 def main() -> int:
-    invalid_allowlist = [path for path, reason in ALLOWLIST.items() if not reason.strip()]
+    invalid_allowlist = [
+        path for path, reason in ALLOWLIST.items()
+        if not isinstance(reason, str) or not reason.strip()
+    ]
     if invalid_allowlist:
         print("Asset guard allowlist entries require non-empty reasons:")
         for path in invalid_allowlist:
@@ -106,6 +118,7 @@ def main() -> int:
         for violation in violations:
             print(f" - {violation}")
         print("If a generated rights-safe fixture is intentional, add its repo path to ALLOWLIST with a reason.")
+        print("Tracked files under local research asset directories are never allowlisted; keep them untracked.")
         return 1
 
     print("Asset guard passed: no forbidden tracked reference/media assets found.")
