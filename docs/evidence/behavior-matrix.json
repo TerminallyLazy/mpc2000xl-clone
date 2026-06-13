@@ -1,5 +1,19 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
+  "source_categories": {
+    "manual": "Owner manual or operation-guide references for user-visible behavior.",
+    "schematic": "Service schematic or service-photo references for hardware signal context.",
+    "firmware": "User-supplied MPC2000XL OS image metadata or runtime traces kept outside git.",
+    "vmpc": "VMPC docs, source, and license review references for comparative research.",
+    "jjos": "JJ-OS investigation boundary; not accepted as MPC2000XL evidence until verified.",
+    "internal_spec": "Repo-owned product, conformance, spike, and implementation specs."
+  },
+  "coverage_statuses": [
+    "mapped",
+    "investigation",
+    "unmapped",
+    "conflict-note"
+  ],
   "behaviors": [
     {
       "id": "core.main.initial-screen",
@@ -9,13 +23,61 @@
       "evidence": [
         {
           "source_id": "full-app-product-spec",
+          "source_category": "internal_spec",
           "type": "spec",
+          "status": "mapped",
           "ref": "docs/superpowers/specs/2026-06-13-mpc2000xl-full-app-product-design.md#front-panel-runtime"
         },
         {
           "source_id": "conformance-lab-spec",
+          "source_category": "internal_spec",
           "type": "spec",
+          "status": "mapped",
           "ref": "docs/superpowers/specs/2026-06-13-mpc2000xl-conformance-lab-design.md#behavior-matrix"
+        }
+      ],
+      "source_coverage": [
+        {
+          "source_category": "manual",
+          "source_id": "owner-manual",
+          "status": "investigation",
+          "ref": null,
+          "note": "Owner-manual page or section for startup screen is not mapped yet."
+        },
+        {
+          "source_category": "schematic",
+          "source_id": "operation-schematic",
+          "status": "unmapped",
+          "ref": null,
+          "note": "No service schematic signal mapping is needed for this UI seed yet."
+        },
+        {
+          "source_category": "firmware",
+          "source_id": "mpc2000xl-os-local-reference",
+          "status": "investigation",
+          "ref": null,
+          "note": "No user-supplied firmware trace has been captured for initial boot state."
+        },
+        {
+          "source_category": "vmpc",
+          "source_id": "vmpc-docs-public",
+          "status": "investigation",
+          "ref": null,
+          "note": "VMPC comparative behavior remains pending docs/source/license review."
+        },
+        {
+          "source_category": "jjos",
+          "source_id": "jjos-unverified-boundary",
+          "status": "conflict-note",
+          "ref": "docs/superpowers/specs/2026-06-13-mpc2000xl-full-app-product-design.md#jj-os-evidence-boundary",
+          "note": "JJ-OS for MPC2000XL is unverified and must not be used as acceptance evidence."
+        },
+        {
+          "source_category": "internal_spec",
+          "source_id": "full-app-product-spec",
+          "status": "mapped",
+          "ref": "docs/superpowers/specs/2026-06-13-mpc2000xl-full-app-product-design.md#front-panel-runtime",
+          "note": "Seed behavior is currently backed by repo-owned product and conformance specs."
         }
       ],
       "inputs": [],
@@ -37,7 +99,9 @@
       "fixture_refs": [
         "crates/mpc_core/tests/core_flow.rs"
       ],
-      "conflict_notes": []
+      "conflict_notes": [
+        "Manual, firmware, VMPC, and hardware evidence are not mapped yet; this remains an internal-spec seed."
+      ]
     },
     {
       "id": "core.main.program-mode",
@@ -47,13 +111,61 @@
       "evidence": [
         {
           "source_id": "full-app-product-spec",
+          "source_category": "internal_spec",
           "type": "spec",
+          "status": "mapped",
           "ref": "docs/superpowers/specs/2026-06-13-mpc2000xl-full-app-product-design.md#front-panel-runtime"
         },
         {
           "source_id": "conformance-lab-spec",
+          "source_category": "internal_spec",
           "type": "spec",
+          "status": "mapped",
           "ref": "docs/superpowers/specs/2026-06-13-mpc2000xl-conformance-lab-design.md#fixture-strategy"
+        }
+      ],
+      "source_coverage": [
+        {
+          "source_category": "manual",
+          "source_id": "owner-manual",
+          "status": "investigation",
+          "ref": null,
+          "note": "Owner-manual page or section for PROGRAM button navigation is not mapped yet."
+        },
+        {
+          "source_category": "schematic",
+          "source_id": "operation-schematic",
+          "status": "unmapped",
+          "ref": null,
+          "note": "Panel-control electrical mapping is not part of this behavior fixture yet."
+        },
+        {
+          "source_category": "firmware",
+          "source_id": "mpc2000xl-os-local-reference",
+          "status": "investigation",
+          "ref": null,
+          "note": "No user-supplied firmware trace has been captured for PROGRAM navigation."
+        },
+        {
+          "source_category": "vmpc",
+          "source_id": "vmpc-docs-public",
+          "status": "investigation",
+          "ref": null,
+          "note": "VMPC comparative behavior remains pending docs/source/license review."
+        },
+        {
+          "source_category": "jjos",
+          "source_id": "jjos-unverified-boundary",
+          "status": "conflict-note",
+          "ref": "docs/superpowers/specs/2026-06-13-mpc2000xl-full-app-product-design.md#jj-os-evidence-boundary",
+          "note": "JJ-OS for MPC2000XL is unverified and must not be used as acceptance evidence."
+        },
+        {
+          "source_category": "internal_spec",
+          "source_id": "conformance-lab-spec",
+          "status": "mapped",
+          "ref": "docs/superpowers/specs/2026-06-13-mpc2000xl-conformance-lab-design.md#fixture-strategy",
+          "note": "Seed behavior is currently backed by repo-owned product and conformance specs."
         }
       ],
       "inputs": [
@@ -81,7 +193,9 @@
       "fixture_refs": [
         "crates/mpc_conformance/tests/fixtures/main_screen.json"
       ],
-      "conflict_notes": []
+      "conflict_notes": [
+        "Manual, firmware, VMPC, and hardware evidence are not mapped yet; this remains an internal-spec seed."
+      ]
     }
   ]
 }

@@ -1222,360 +1222,172 @@ git commit -m "feat: add firmware image inspector"
 - Update: `docs/evidence/source-map.md`
 - Update: `docs/evidence/behavior-matrix.json`
 - Update: `tools/check_assets.py`
+- Update: `docs/superpowers/plans/2026-06-13-mpc2000xl-full-app-foundation.md`
 
-- [ ] **Step 1: Create source-map seed with source IDs**
+- [ ] **Step 1: Update source-map seed with source categories and investigation boundaries**
 
-Create `docs/evidence/source-map.md` with stable source IDs and local path hints:
+Update `docs/evidence/source-map.md` with stable source IDs, explicit categories, local path hints, and investigation boundaries. Do not copy proprietary source pages, scans, firmware, VMPC code/assets, JJ-OS artifacts, or media into the repository.
 
 ```markdown
-# MPC2000XL Source Map
-
-This file tracks evidence sources without copying proprietary source pages, scans, firmware, or media into the repository. Source IDs are stable references; local path hints are workstation pointers only.
-
-## Sources
-
-| ID | Type | Description | Local path hint |
-| --- | --- | --- | --- |
-| owner-manual | owner_manual | MPC2000XL owner manual | `/Users/lazy/Downloads/akai_mpc2000xl_manual.pdf` |
-| analog-schematic | service_schematic | MPC2000XL analog schematic | `/Users/lazy/Downloads/MPC2000XL_ServManual/MPC2k analog.pdf` |
-| main-schematic-1 | service_schematic | MPC2000XL main schematic, part 1 | `/Users/lazy/Downloads/MPC2000XL_ServManual/MPC2k main 1_2.pdf` |
-| main-schematic-2 | service_schematic | MPC2000XL main schematic, part 2 | `/Users/lazy/Downloads/MPC2000XL_ServManual/MPC2k main 2_2.pdf` |
-| operation-schematic | service_schematic | MPC2000XL operation schematic | `/Users/lazy/Downloads/MPC2000XL_ServManual/MPC2k operation.pdf` |
-| combined-schematic | service_schematic | MPC2000XL combined schematic | `/Users/lazy/Downloads/Akai-MPC-2000-XL-Schematic.pdf` |
-| schematic-photo-1 | service_photo | MPC2000XL service manual schematic photo 1 | `/Users/lazy/Downloads/MPC2000XL_ServManual/P7200082.jpg` |
-| schematic-photo-2 | service_photo | MPC2000XL service manual schematic photo 2 | `/Users/lazy/Downloads/MPC2000XL_ServManual/P7200083.jpg` |
-| full-app-product-spec | spec | Full app product design notes | `docs/superpowers/specs/2026-06-13-mpc2000xl-full-app-product-design.md` |
-| conformance-lab-spec | spec | Conformance lab design notes | `docs/superpowers/specs/2026-06-13-mpc2000xl-conformance-lab-design.md` |
-
-## Legal Boundary
-
-Do not copy proprietary manuals, firmware, service scans, hardware photos, copied artwork, logos, factory samples, third-party media, or audio/media samples into the repository.
-
-## Mapping Rules
-
-- Store independently written behavior summaries.
-- Use source IDs in behavior matrices, fixtures, tests, and implementation notes.
-- Store page, section, and file references when known.
-- Keep raw manuals, firmware, service scans, hardware photos, and audio samples outside git.
-- Treat local path hints as optional private lookup aids, not canonical source identity.
-- Mark conflicts between manual, VMPC, firmware, and hardware traces explicitly.
+| Category | Use | Repository boundary |
+| --- | --- | --- |
+| manual | User-visible behavior, terminology, screen flow, and operating procedures. | Store only independently written notes plus page or section references. |
+| schematic | Hardware signal, connector, board, and service-reference context. | Store only independently written notes plus sheet references. |
+| firmware | User-supplied MPC2000XL OS image metadata, hashes, and observed runtime traces. | Never store firmware bytes or downloaded firmware artifacts. |
+| vmpc | VMPC docs/source/license review findings used for comparative behavior only. | Store review notes and URLs, not copied third-party code or assets. |
+| jjos | JJ-OS compatibility investigation boundary. | Treat as unverified for MPC2000XL until a real target is proven. |
+| internal_spec | Repo-owned product, conformance, spike, and implementation specs. | Store normal repo documentation and tests. |
 ```
 
-- [ ] **Step 2: Create structured behavior matrix seed**
+Required source IDs include `owner-manual`, the schematic/service-photo IDs, `mpc2000xl-os-local-reference`, `firmware-spike-spec`, `vmpc-docs-public`, `vmpc-source-review`, `vmpc-license-review`, `jjos-unverified-boundary`, `full-app-product-spec`, and `conformance-lab-spec`.
 
-Create `docs/evidence/behavior-matrix.json` with evidence classifications, input events, channel-scoped outputs, tolerance, fixture references, and conflict notes:
+- [ ] **Step 2: Update structured behavior matrix seed**
+
+Update `docs/evidence/behavior-matrix.json` so each behavior has mapped evidence and explicit source coverage across manual, schematic, firmware, VMPC, JJ-OS, and internal-spec categories.
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 2,
+  "source_categories": {
+    "manual": "Owner manual or operation-guide references for user-visible behavior.",
+    "schematic": "Service schematic or service-photo references for hardware signal context.",
+    "firmware": "User-supplied MPC2000XL OS image metadata or runtime traces kept outside git.",
+    "vmpc": "VMPC docs, source, and license review references for comparative research.",
+    "jjos": "JJ-OS investigation boundary; not accepted as MPC2000XL evidence until verified.",
+    "internal_spec": "Repo-owned product, conformance, spike, and implementation specs."
+  },
+  "coverage_statuses": [
+    "mapped",
+    "investigation",
+    "unmapped",
+    "conflict-note"
+  ],
   "behaviors": [
     {
       "id": "core.main.initial-screen",
-      "name": "Core starts on MAIN screen",
-      "area": "front_panel",
-      "state": "fixture-backed",
       "evidence": [
         {
           "source_id": "full-app-product-spec",
+          "source_category": "internal_spec",
           "type": "spec",
-          "ref": "docs/superpowers/specs/2026-06-13-mpc2000xl-full-app-product-design.md#front-panel-runtime"
-        },
-        {
-          "source_id": "conformance-lab-spec",
-          "type": "spec",
-          "ref": "docs/superpowers/specs/2026-06-13-mpc2000xl-conformance-lab-design.md#behavior-matrix"
+          "status": "mapped"
         }
       ],
-      "inputs": [],
-      "expected_outputs": {
-        "state": {
-          "mode": "main",
-          "playing": false,
-          "recording": false,
-          "lcd_title": "MAIN"
-        },
-        "lcd": {
-          "title": "MAIN"
-        },
-        "transport": {
-          "status": "stopped"
-        }
-      },
-      "tolerance": null,
-      "fixture_refs": [
-        "crates/mpc_core/tests/core_flow.rs"
+      "source_coverage": [
+        { "source_category": "manual", "source_id": "owner-manual", "status": "investigation" },
+        { "source_category": "schematic", "source_id": "operation-schematic", "status": "unmapped" },
+        { "source_category": "firmware", "source_id": "mpc2000xl-os-local-reference", "status": "investigation" },
+        { "source_category": "vmpc", "source_id": "vmpc-docs-public", "status": "investigation" },
+        { "source_category": "jjos", "source_id": "jjos-unverified-boundary", "status": "conflict-note" },
+        { "source_category": "internal_spec", "source_id": "full-app-product-spec", "status": "mapped" }
       ],
-      "conflict_notes": []
-    },
-    {
-      "id": "core.main.program-mode",
-      "name": "Program button changes LCD title",
-      "area": "front_panel",
-      "state": "fixture-backed",
-      "evidence": [
-        {
-          "source_id": "full-app-product-spec",
-          "type": "spec",
-          "ref": "docs/superpowers/specs/2026-06-13-mpc2000xl-full-app-product-design.md#front-panel-runtime"
-        },
-        {
-          "source_id": "conformance-lab-spec",
-          "type": "spec",
-          "ref": "docs/superpowers/specs/2026-06-13-mpc2000xl-conformance-lab-design.md#fixture-strategy"
-        }
-      ],
-      "inputs": [
-        {
-          "channel": "front_panel",
-          "event": "press",
-          "control": "program"
-        }
-      ],
-      "expected_outputs": {
-        "state": {
-          "mode": "program",
-          "playing": false,
-          "recording": false,
-          "lcd_title": "PROGRAM"
-        },
-        "lcd": {
-          "title": "PROGRAM"
-        },
-        "events": {
-          "event_count": 1
-        }
-      },
-      "tolerance": null,
-      "fixture_refs": [
-        "crates/mpc_conformance/tests/fixtures/main_screen.json"
-      ],
-      "conflict_notes": []
+      "conflict_notes": [
+        "Manual, firmware, VMPC, and hardware evidence are not mapped yet; this remains an internal-spec seed."
+      ]
     }
   ]
 }
 ```
 
-- [ ] **Step 3: Create tracked-file asset guard**
+The final seed preserves the existing fixture-backed behaviors and adds `source_category`, `status`, and `source_coverage` entries. Missing manual/firmware/VMPC streams are `investigation`, schematic streams are `unmapped` where not yet relevant, and JJ-OS is a `conflict-note`/unverified boundary.
 
-Create `tools/check_assets.py` so it scans tracked files only, expands forbidden reference/media suffix coverage, blocks local research asset directories, sniffs binary/media content, validates allowlist entries, and reports violation reasons:
+- [ ] **Step 3: Update tracked-file asset guard**
+
+Update `tools/check_assets.py` so content scanning reads the staged/index Git blobs, not the working-tree paths. It must parse `git ls-files -s -z`, keep each path's object ID, and inspect bytes through `git cat-file -p <oid>` or equivalent.
+
+Required guard behavior:
+
+- Scan only tracked index entries.
+- Block tracked files under `captures/`, `firmware/`, `local-assets/`, and `reference-assets/`.
+- Validate allowlist entries before scanning. Invalid entries print `path: reason` and distinguish non-string reason, empty reason, untracked path, and blocked local asset prefix.
+- Allowlisted paths must be tracked and must not be under blocked local asset directories.
+- Check forbidden suffixes before content sniffing.
+- Catch binary/media magic prefixes and common container offset signatures before generic text classification.
+- Catch extensionless textual proprietary assets such as SVG roots and EPS/PostScript roots.
+- Accept valid UTF-8 text with normal control characters; apply the byte-ratio binary-like heuristic only to undecodable samples.
+
+Core implementation shape:
 
 ```python
-#!/usr/bin/env python3
-from pathlib import Path
-import subprocess
-import sys
-from typing import Optional
-
-ROOT = Path(__file__).resolve().parents[1]
-FORBIDDEN_SUFFIXES = {
-    ".7z",
-    ".aac",
-    ".ai",
-    ".aif",
-    ".aifc",
-    ".aiff",
-    ".avi",
-    ".bin",
-    ".bmp",
-    ".bz2",
-    ".dmg",
-    ".eps",
-    ".flac",
-    ".gif",
-    ".gz",
-    ".heic",
-    ".icns",
-    ".ico",
-    ".img",
-    ".iso",
-    ".jpeg",
-    ".jpg",
-    ".m4a",
-    ".mid",
-    ".midi",
-    ".mkv",
-    ".mov",
-    ".mpeg",
-    ".mp3",
-    ".mp4",
-    ".mpg",
-    ".ogg",
-    ".opus",
-    ".pdf",
-    ".png",
-    ".psd",
-    ".rar",
-    ".raw",
-    ".rom",
-    ".sit",
-    ".snd",
-    ".svg",
-    ".syx",
-    ".tar",
-    ".tgz",
-    ".tif",
-    ".tiff",
-    ".wav",
-    ".webp",
-    ".webm",
-    ".xz",
-    ".zip",
-}
-ALLOWLIST = {
-    # "path/to/generated-fixture.wav": "Synthetic test fixture generated from repo-owned code.",
-}
-BLOCKED_TRACKED_PREFIXES = (
-    "captures/",
-    "firmware/",
-    "local-assets/",
-    "reference-assets/",
-)
-BLOCKED_MAGIC_PREFIXES = (
-    (b"%PDF-", "pdf content"),
-    (b"\x89PNG\r\n\x1a\n", "png content"),
-    (b"\xff\xd8\xff", "jpeg content"),
-    (b"GIF87a", "gif content"),
-    (b"GIF89a", "gif content"),
-    (b"BM", "bmp content"),
-    (b"fLaC", "flac content"),
-    (b"OggS", "ogg content"),
-    (b"ID3", "mp3 content"),
-    (b"MThd", "midi content"),
-    (b"Rar!", "rar content"),
-    (b"7z\xbc\xaf\x27\x1c", "7z content"),
-    (b"\x1f\x8b", "gzip content"),
-    (b"BZh", "bzip2 content"),
-    (b"\xfd7zXZ\x00", "xz content"),
-    (b"PK\x03\x04", "zip content"),
-)
-RIFF_BLOCKED_TYPES = {b"WAVE", b"AVI ", b"WEBP"}
-TEXT_BYTE_WHITELIST = set(range(32, 127)) | {9, 10, 13, 12, 8}
+@dataclass(frozen=True)
+class TrackedBlob:
+    mode: str
+    oid: str
+    path: str
 
 
-def tracked_files():
+def tracked_blobs() -> list[TrackedBlob]:
     result = subprocess.run(
-        ["git", "ls-files", "-z"],
+        ["git", "ls-files", "-s", "-z"],
         cwd=ROOT,
         check=True,
         stdout=subprocess.PIPE,
     )
-    return [ROOT / path.decode("utf-8") for path in result.stdout.split(b"\0") if path]
+    ...
 
 
-def allowlist_reason(relative: str) -> Optional[str]:
-    reason = ALLOWLIST.get(relative)
-    if not isinstance(reason, str):
-        return None
-    return reason.strip() or None
-
-
-def is_blocked_tracked_path(relative: str) -> bool:
-    return any(relative.startswith(prefix) for prefix in BLOCKED_TRACKED_PREFIXES)
-
-
-def content_reason(path: Path) -> Optional[str]:
-    try:
-        with path.open("rb") as file:
-            sample = file.read(8192)
-    except OSError as exc:
-        return f"unreadable tracked file: {exc}"
-
-    if not sample:
-        return None
-
-    for prefix, reason in BLOCKED_MAGIC_PREFIXES:
-        if sample.startswith(prefix):
-            return reason
-
-    if sample.startswith(b"RIFF") and len(sample) >= 12 and sample[8:12] in RIFF_BLOCKED_TYPES:
-        riff_type = sample[8:12].decode("ascii", errors="replace").strip()
-        return f"riff {riff_type} content"
-
-    if b"\0" in sample:
-        return "binary content"
-
-    non_text = sum(byte not in TEXT_BYTE_WHITELIST for byte in sample)
-    if len(sample) >= 128 and non_text / len(sample) > 0.30:
-        return "binary-like content"
-
-    return None
-
-
-def violation_reason(path: Path) -> Optional[str]:
-    relative = path.relative_to(ROOT).as_posix()
-    if is_blocked_tracked_path(relative):
-        return "tracked file under local research asset directory"
-    if allowlist_reason(relative):
-        return None
-    for suffix in path.suffixes:
-        lowered = suffix.lower()
-        if lowered in FORBIDDEN_SUFFIXES:
-            return f"forbidden suffix {lowered}"
-    return content_reason(path)
-
-
-def main() -> int:
-    tracked = tracked_files()
-    tracked_relatives = {path.relative_to(ROOT).as_posix() for path in tracked}
-    invalid_allowlist = [
-        path for path, reason in ALLOWLIST.items()
-        if not isinstance(reason, str) or not reason.strip() or path not in tracked_relatives
-    ]
-    if invalid_allowlist:
-        print("Asset guard allowlist entries require non-empty reasons and tracked paths:")
-        for path in invalid_allowlist:
-            print(f" - {path}")
-        return 1
-
-    violations = []
-    for path in tracked:
-        reason = violation_reason(path)
-        if reason:
-            violations.append((path.relative_to(ROOT).as_posix(), reason))
-
-    if violations:
-        print("Refusing forbidden tracked reference/media assets:")
-        for violation, reason in violations:
-            print(f" - {violation}: {reason}")
-        print("If a generated rights-safe fixture is intentional, add its repo path to ALLOWLIST with a reason.")
-        print("Tracked files under local research asset directories are never allowlisted; keep them untracked.")
-        return 1
-
-    print("Asset guard passed: no forbidden tracked reference/media assets found.")
-    return 0
-
-
-if __name__ == "__main__":
-    sys.exit(main())
+def blob_sample(blob: TrackedBlob) -> bytes:
+    result = subprocess.run(
+        ["git", "cat-file", "-p", blob.oid],
+        cwd=ROOT,
+        check=True,
+        stdout=subprocess.PIPE,
+    )
+    return result.stdout[:MAX_SAMPLE_BYTES]
 ```
 
-- [ ] **Step 4: Run asset guard**
+- [ ] **Step 4: Run asset guard and JSON/Python validation**
 
 Run:
 
 ```bash
 python3 tools/check_assets.py
+python3 -m py_compile tools/check_assets.py
+python3 -m json.tool docs/evidence/behavior-matrix.json >/tmp/behavior-matrix.pretty
 ```
 
-Expected: PASS with `Asset guard passed: no forbidden tracked reference/media assets found.`
+Expected: asset guard PASS, Python compile PASS, JSON validation PASS.
 
-- [ ] **Step 5: Validate JSON and commit**
+- [ ] **Step 5: Prove staged/index blob scanning catches dirty-index content**
+
+Run a dirty-index proof that stages a forbidden extensionless PDF-like blob and then removes it from the index without leaving the repo dirty:
+
+```bash
+tmp_path="tmp-index-asset-proof"
+oid="$(printf '%%PDF-1.7\nreview proof\n' | git hash-object -w --stdin)"
+cleanup() {
+  git update-index --force-remove "$tmp_path" >/dev/null 2>&1 || true
+}
+trap cleanup EXIT
+git update-index --add --cacheinfo 100644 "$oid" "$tmp_path"
+python3 tools/check_assets.py
+cleanup
+trap - EXIT
+```
+
+Expected: `python3 tools/check_assets.py` fails while the forbidden blob is staged, reporting `tmp-index-asset-proof: pdf content`. The cleanup removes the proof entry from the index.
+
+- [ ] **Step 6: Clean generated Python cache and check working tree**
 
 Run:
 
 ```bash
-python3 -m json.tool docs/evidence/behavior-matrix.json >/tmp/behavior-matrix.pretty
+rm -rf tools/__pycache__
 git status --short
 ```
 
-Expected before commit: only Task 6 files modified.
+Expected before commit: only Task 6 owned files modified.
 
-Commit:
+- [ ] **Step 7: Commit**
 
 ```bash
 git add docs/evidence/source-map.md docs/evidence/behavior-matrix.json tools/check_assets.py docs/superpowers/plans/2026-06-13-mpc2000xl-full-app-foundation.md
-git commit -m "fix: tighten tracked asset guard"
+git commit -m "fix: scan tracked asset blobs from git index"
 ```
+
+Review fix history:
+
+- 2026-06-13: Task 6 review fixes added explicit manual/schematic/firmware/VMPC/JJ-OS/internal-spec source categories, expanded behavior matrix source coverage, changed the asset guard to scan staged Git blob contents, tightened allowlist validation, added textual/container signatures, and avoided UTF-8 false positives.
 
 ---
 
