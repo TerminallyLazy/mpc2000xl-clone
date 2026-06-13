@@ -19,7 +19,7 @@ This file tracks evidence sources without copying proprietary source pages, scan
 
 ## Legal Boundary
 
-Do not copy proprietary manuals, firmware, service scans, hardware photos, or audio/media samples into the repository.
+Do not copy proprietary manuals, firmware, service scans, hardware photos, copied artwork, logos, factory samples, third-party media, or audio/media samples into the repository.
 
 ## Mapping Rules
 
