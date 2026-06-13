@@ -6,9 +6,16 @@ license.workspace = true
 rust-version.workspace = true
 authors.workspace = true
 
+[[bin]]
+name = "mpc-firmware-spike"
+path = "src/main.rs"
+
 [dependencies]
 anyhow.workspace = true
 clap.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
+
+[dev-dependencies]
+tempfile = "3.23.0"

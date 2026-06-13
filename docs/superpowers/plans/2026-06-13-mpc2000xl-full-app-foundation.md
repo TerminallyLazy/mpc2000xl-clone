@@ -1031,6 +1031,7 @@ git commit -m "feat: add native desktop shell foundation"
 - Create: `crates/mpc_firmware_spike/src/lib.rs`
 - Create: `crates/mpc_firmware_spike/src/main.rs`
 - Create: `crates/mpc_firmware_spike/tests/image_report.rs`
+- Include: `Cargo.lock` if Cargo updates it
 
 - [ ] **Step 1: Add firmware spike crate to the workspace**
 
@@ -1060,12 +1061,19 @@ license.workspace = true
 rust-version.workspace = true
 authors.workspace = true
 
+[[bin]]
+name = "mpc-firmware-spike"
+path = "src/main.rs"
+
 [dependencies]
 anyhow.workspace = true
 clap.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
+
+[dev-dependencies]
+tempfile = "3.23.0"
 ```
 
 - [ ] **Step 3: Implement image metadata inspection**
@@ -1076,7 +1084,8 @@ Create `crates/mpc_firmware_spike/src/lib.rs`:
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::fs;
+use std::fs::File;
+use std::io::{BufReader, Read};
 use std::path::Path;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1089,11 +1098,32 @@ pub struct ImageReport {
 
 pub fn inspect_image(path: impl AsRef<Path>) -> Result<ImageReport> {
     let path = path.as_ref();
-    let bytes = fs::read(path)
-        .with_context(|| format!("failed to read firmware image {}", path.display()))?;
+    let file = File::open(path)
+        .with_context(|| format!("failed to open firmware image {}", path.display()))?;
+    let byte_len = file
+        .metadata()
+        .with_context(|| format!("failed to read firmware image metadata {}", path.display()))?
+        .len();
+
     let mut hasher = Sha256::new();
-    hasher.update(&bytes);
-    let sha256 = format!("{:x}", hasher.finalize());
+    let mut reader = BufReader::new(file);
+    let mut buffer = [0_u8; 8192];
+
+    loop {
+        let read = reader
+            .read(&mut buffer)
+            .with_context(|| format!("failed to read firmware image {}", path.display()))?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+
+    let sha256 = hasher
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
 
     Ok(ImageReport {
         file_name: path
@@ -1101,7 +1131,7 @@ pub fn inspect_image(path: impl AsRef<Path>) -> Result<ImageReport> {
             .and_then(|name| name.to_str())
             .unwrap_or("unknown")
             .to_string(),
-        byte_len: bytes.len() as u64,
+        byte_len,
         sha256,
         stores_firmware_bytes: false,
     })
@@ -1140,24 +1170,28 @@ Create `crates/mpc_firmware_spike/tests/image_report.rs`:
 
 ```rust
 use mpc_firmware_spike::inspect_image;
-use std::fs;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::io::Write;
+use tempfile::NamedTempFile;
 
 #[test]
 fn image_report_never_stores_firmware_bytes() {
-    let unique = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("clock should be valid")
-        .as_nanos();
-    let path = std::env::temp_dir().join(format!("mpc-synthetic-{unique}.bin"));
-    fs::write(&path, [0x4d, 0x50, 0x43, 0x32]).expect("synthetic image should write");
+    let mut file = NamedTempFile::new().expect("synthetic image should be creatable");
+    file.write_all(b"MPC2")
+        .expect("synthetic image should write");
+    file.flush().expect("synthetic image should flush");
 
-    let report = inspect_image(&path).expect("synthetic image should inspect");
-    fs::remove_file(&path).expect("synthetic image should be removable");
+    let report = inspect_image(file.path()).expect("synthetic image should inspect");
 
     assert_eq!(report.byte_len, 4);
-    assert!(!report.sha256.is_empty());
+    assert_eq!(
+        report.sha256,
+        "05e71909ec817edba4a8c4cc7a55f0d8c7bc0a592f7a12ae272f5fbfcc44e427"
+    );
     assert!(!report.stores_firmware_bytes);
+
+    let json = serde_json::to_string(&report).expect("report should serialize");
+    assert!(!json.contains("MPC2"));
+    assert!(!json.contains("4d504332"));
 }
 ```
 
@@ -1174,7 +1208,7 @@ Expected: PASS.
 - [ ] **Step 7: Commit**
 
 ```bash
-git add Cargo.toml crates/mpc_firmware_spike
+git add Cargo.toml Cargo.lock crates/mpc_firmware_spike
 git commit -m "feat: add firmware image inspector"
 ```
 
