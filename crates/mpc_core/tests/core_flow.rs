@@ -1,4 +1,6 @@
-use mpc_core::{HardwareEvent, Mode, MpcCore, PadBank, PanelControl};
+use mpc_core::{
+    HardwareEvent, MachineOutput, MainScreenField, Mode, MpcCore, PadBank, PanelControl,
+};
 
 #[test]
 fn core_starts_on_main_screen() {
@@ -6,7 +8,11 @@ fn core_starts_on_main_screen() {
 
     assert_eq!(core.state().mode, Mode::Main);
     assert_eq!(core.state().lcd.title, "MAIN");
+    assert_eq!(core.state().sequence_index, 1);
     assert_eq!(core.state().sequence_name, "Sequence01");
+    assert_eq!(core.state().selected_track, 1);
+    assert_eq!(core.state().bar_count, 1);
+    assert_eq!(core.state().selected_main_field, MainScreenField::Tempo);
     assert!(!core.state().playing);
 }
 
@@ -96,6 +102,113 @@ fn tempo_adjustment_clamps_extreme_deltas_without_overflow() {
 
     core.dispatch(HardwareEvent::TurnDataWheel { delta: i32::MIN });
     assert_eq!(core.state().tempo_bpm_x100, 3000);
+}
+
+#[test]
+fn main_screen_cursor_left_and_right_move_focus_and_refresh_lcd() {
+    let mut core = MpcCore::new();
+
+    let left_outputs = core.dispatch(HardwareEvent::Press {
+        control: PanelControl::CursorLeft,
+    });
+
+    assert_eq!(core.state().selected_main_field, MainScreenField::Track);
+    assert_eq!(left_outputs, vec![MachineOutput::LcdChanged]);
+    assert!(core.state().lcd.lines[1].starts_with(">Trk"));
+
+    let right_outputs = core.dispatch(HardwareEvent::Press {
+        control: PanelControl::CursorRight,
+    });
+
+    assert_eq!(core.state().selected_main_field, MainScreenField::Tempo);
+    assert_eq!(right_outputs, vec![MachineOutput::LcdChanged]);
+    assert!(core.state().lcd.lines[2].starts_with(">Tempo"));
+}
+
+#[test]
+fn data_wheel_edits_selected_main_screen_field() {
+    let mut core = MpcCore::new();
+
+    core.dispatch(HardwareEvent::TurnDataWheel { delta: 2 });
+    assert_eq!(core.state().tempo_bpm_x100, 12200);
+
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::CursorLeft,
+    });
+    core.dispatch(HardwareEvent::TurnDataWheel { delta: 2 });
+    assert_eq!(core.state().selected_track, 3);
+
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::CursorLeft,
+    });
+    core.dispatch(HardwareEvent::TurnDataWheel { delta: 4 });
+    assert_eq!(core.state().sequence_index, 5);
+    assert_eq!(core.state().sequence_name, "Sequence05");
+
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::CursorLeft,
+    });
+    core.dispatch(HardwareEvent::TurnDataWheel { delta: 6 });
+    assert_eq!(core.state().bar_count, 7);
+    assert!(core.state().lcd.lines[3].contains("Bars 007"));
+}
+
+#[test]
+fn main_screen_edit_fields_clamp_to_foundation_ranges() {
+    let mut core = MpcCore::new();
+
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::CursorLeft,
+    });
+    core.dispatch(HardwareEvent::TurnDataWheel { delta: i32::MAX });
+    assert_eq!(core.state().selected_track, 64);
+    core.dispatch(HardwareEvent::TurnDataWheel { delta: i32::MIN });
+    assert_eq!(core.state().selected_track, 1);
+
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::CursorLeft,
+    });
+    core.dispatch(HardwareEvent::TurnDataWheel { delta: i32::MAX });
+    assert_eq!(core.state().sequence_index, 99);
+    assert_eq!(core.state().sequence_name, "Sequence99");
+    core.dispatch(HardwareEvent::TurnDataWheel { delta: i32::MIN });
+    assert_eq!(core.state().sequence_index, 1);
+    assert_eq!(core.state().sequence_name, "Sequence01");
+
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::CursorLeft,
+    });
+    core.dispatch(HardwareEvent::TurnDataWheel { delta: i32::MAX });
+    assert_eq!(core.state().bar_count, 999);
+    core.dispatch(HardwareEvent::TurnDataWheel { delta: i32::MIN });
+    assert_eq!(core.state().bar_count, 1);
+}
+
+#[test]
+fn main_screen_track_soft_keys_change_track_or_report_structured_ignore() {
+    let mut core = MpcCore::new();
+
+    let increment = core.dispatch(HardwareEvent::Press {
+        control: PanelControl::SoftKey(2),
+    });
+    assert_eq!(increment, vec![MachineOutput::LcdChanged]);
+    assert_eq!(core.state().selected_main_field, MainScreenField::Track);
+    assert_eq!(core.state().selected_track, 2);
+
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::SoftKey(3),
+    });
+    assert_eq!(core.state().selected_track, 1);
+
+    let unsupported = core.dispatch(HardwareEvent::Press {
+        control: PanelControl::SoftKey(1),
+    });
+    assert_eq!(
+        unsupported,
+        vec![MachineOutput::Ignored {
+            reason: "main_screen.soft_key.1_unimplemented".to_string(),
+        }]
+    );
 }
 
 #[test]

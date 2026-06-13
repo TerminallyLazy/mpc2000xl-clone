@@ -3,14 +3,64 @@ use serde::{Deserialize, Serialize};
 use crate::events::{HardwareEvent, MachineOutput, Mode, PadBank, PanelControl};
 use crate::lcd::LcdFrame;
 
+const MIN_TEMPO_BPM_X100: u32 = 3000;
+const MAX_TEMPO_BPM_X100: u32 = 30000;
+const MIN_SEQUENCE_INDEX: u8 = 1;
+const MAX_SEQUENCE_INDEX: u8 = 99;
+const MIN_TRACK_INDEX: u8 = 1;
+const MAX_TRACK_INDEX: u8 = 64;
+const MIN_BAR_COUNT: u16 = 1;
+const MAX_BAR_COUNT: u16 = 999;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MainScreenField {
+    Sequence,
+    Track,
+    Tempo,
+    Bars,
+}
+
+impl MainScreenField {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Sequence => "sequence",
+            Self::Track => "track",
+            Self::Tempo => "tempo",
+            Self::Bars => "bars",
+        }
+    }
+
+    fn previous(self) -> Self {
+        match self {
+            Self::Sequence => Self::Bars,
+            Self::Track => Self::Sequence,
+            Self::Tempo => Self::Track,
+            Self::Bars => Self::Tempo,
+        }
+    }
+
+    fn next(self) -> Self {
+        match self {
+            Self::Sequence => Self::Track,
+            Self::Track => Self::Tempo,
+            Self::Tempo => Self::Bars,
+            Self::Bars => Self::Sequence,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MpcState {
     pub mode: Mode,
+    pub sequence_index: u8,
     pub sequence_name: String,
     pub tempo_bpm_x100: u32,
     pub playing: bool,
     pub recording: bool,
     pub selected_track: u8,
+    pub bar_count: u16,
+    pub selected_main_field: MainScreenField,
     pub pad_bank: PadBank,
     pub lcd: LcdFrame,
     pub event_count: u64,
@@ -18,17 +68,32 @@ pub struct MpcState {
 
 impl Default for MpcState {
     fn default() -> Self {
-        let sequence_name = "Sequence01".to_string();
+        let sequence_index = MIN_SEQUENCE_INDEX;
+        let sequence_name = sequence_name_for(sequence_index);
         let tempo_bpm_x100 = 12000;
+        let selected_track = MIN_TRACK_INDEX;
+        let bar_count = MIN_BAR_COUNT;
+        let selected_main_field = MainScreenField::Tempo;
 
         Self {
             mode: Mode::Main,
-            lcd: LcdFrame::main_screen(&sequence_name, tempo_bpm_x100, false),
+            lcd: LcdFrame::main_screen(
+                sequence_index,
+                &sequence_name,
+                selected_track,
+                tempo_bpm_x100,
+                false,
+                bar_count,
+                selected_main_field,
+            ),
+            sequence_index,
             sequence_name,
             tempo_bpm_x100,
             playing: false,
             recording: false,
-            selected_track: 1,
+            selected_track,
+            bar_count,
+            selected_main_field,
             pad_bank: PadBank::A,
             event_count: 0,
         }
@@ -55,7 +120,7 @@ impl MpcCore {
         match event {
             HardwareEvent::Press { control } => self.handle_press(control),
             HardwareEvent::Release { .. } => Vec::new(),
-            HardwareEvent::TurnDataWheel { delta } => self.adjust_tempo(delta),
+            HardwareEvent::TurnDataWheel { delta } => self.handle_data_wheel(delta),
             HardwareEvent::StrikePad {
                 bank,
                 pad,
@@ -134,14 +199,15 @@ impl MpcCore {
                     MachineOutput::LcdChanged,
                 ]
             }
-            PanelControl::CursorUp
-            | PanelControl::CursorDown
-            | PanelControl::CursorLeft
-            | PanelControl::CursorRight
-            | PanelControl::SoftKey(_)
-            | PanelControl::Numeric(_) => vec![MachineOutput::Ignored {
-                reason: format!("{control:?} has no mapped foundation behavior"),
-            }],
+            PanelControl::CursorLeft => self.move_main_field_left(),
+            PanelControl::CursorRight => self.move_main_field_right(),
+            PanelControl::SoftKey(index) => self.handle_soft_key(index),
+            PanelControl::CursorUp | PanelControl::CursorDown | PanelControl::Numeric(_) => {
+                Self::ignored(format!(
+                    "{}.{control:?}_unimplemented",
+                    mode_reason(self.state.mode)
+                ))
+            }
         }
     }
 
@@ -154,21 +220,119 @@ impl MpcCore {
         ]
     }
 
-    fn adjust_tempo(&mut self, delta: i32) -> Vec<MachineOutput> {
-        let current = i64::from(self.state.tempo_bpm_x100);
-        let delta = i64::from(delta) * 100;
-        let next = (current + delta).clamp(3000, 30000) as u32;
-        self.state.tempo_bpm_x100 = next;
+    fn handle_data_wheel(&mut self, delta: i32) -> Vec<MachineOutput> {
+        if self.state.mode != Mode::Main {
+            return Self::ignored(format!(
+                "{}.data_wheel_unmapped",
+                mode_reason(self.state.mode)
+            ));
+        }
+
+        match self.state.selected_main_field {
+            MainScreenField::Sequence => self.adjust_sequence(delta),
+            MainScreenField::Track => self.adjust_track(delta),
+            MainScreenField::Tempo => self.adjust_tempo(delta),
+            MainScreenField::Bars => self.adjust_bars(delta),
+        }
+
         self.refresh_lcd();
         vec![MachineOutput::LcdChanged]
+    }
+
+    fn move_main_field_left(&mut self) -> Vec<MachineOutput> {
+        if self.state.mode != Mode::Main {
+            return Self::ignored(format!(
+                "{}.cursor_left_unmapped",
+                mode_reason(self.state.mode)
+            ));
+        }
+
+        self.state.selected_main_field = self.state.selected_main_field.previous();
+        self.refresh_lcd();
+        vec![MachineOutput::LcdChanged]
+    }
+
+    fn move_main_field_right(&mut self) -> Vec<MachineOutput> {
+        if self.state.mode != Mode::Main {
+            return Self::ignored(format!(
+                "{}.cursor_right_unmapped",
+                mode_reason(self.state.mode)
+            ));
+        }
+
+        self.state.selected_main_field = self.state.selected_main_field.next();
+        self.refresh_lcd();
+        vec![MachineOutput::LcdChanged]
+    }
+
+    fn handle_soft_key(&mut self, index: u8) -> Vec<MachineOutput> {
+        if self.state.mode != Mode::Main {
+            return Self::ignored(format!(
+                "{}.soft_key.{index}_unmapped",
+                mode_reason(self.state.mode)
+            ));
+        }
+
+        match index {
+            2 => {
+                self.state.selected_main_field = MainScreenField::Track;
+                self.adjust_track(1);
+                self.refresh_lcd();
+                vec![MachineOutput::LcdChanged]
+            }
+            3 => {
+                self.state.selected_main_field = MainScreenField::Track;
+                self.adjust_track(-1);
+                self.refresh_lcd();
+                vec![MachineOutput::LcdChanged]
+            }
+            _ => Self::ignored(format!("main_screen.soft_key.{index}_unimplemented")),
+        }
+    }
+
+    fn adjust_sequence(&mut self, delta: i32) {
+        self.state.sequence_index = clamp_delta_u8(
+            self.state.sequence_index,
+            delta,
+            MIN_SEQUENCE_INDEX,
+            MAX_SEQUENCE_INDEX,
+        );
+        self.state.sequence_name = sequence_name_for(self.state.sequence_index);
+    }
+
+    fn adjust_track(&mut self, delta: i32) {
+        self.state.selected_track = clamp_delta_u8(
+            self.state.selected_track,
+            delta,
+            MIN_TRACK_INDEX,
+            MAX_TRACK_INDEX,
+        );
+    }
+
+    fn adjust_tempo(&mut self, delta: i32) {
+        let current = i64::from(self.state.tempo_bpm_x100);
+        let delta = i64::from(delta) * 100;
+        let next = (current + delta)
+            .clamp(i64::from(MIN_TEMPO_BPM_X100), i64::from(MAX_TEMPO_BPM_X100))
+            as u32;
+        self.state.tempo_bpm_x100 = next;
+    }
+
+    fn adjust_bars(&mut self, delta: i32) {
+        self.state.bar_count =
+            clamp_delta_u16(self.state.bar_count, delta, MIN_BAR_COUNT, MAX_BAR_COUNT);
     }
 
     fn refresh_lcd(&mut self) {
         self.state.lcd = match self.state.mode {
             Mode::Main => LcdFrame::main_screen(
+                self.state.sequence_index,
                 &self.state.sequence_name,
+                self.state.selected_track,
                 self.state.tempo_bpm_x100,
                 self.state.playing,
+                self.state.bar_count,
+                self.state.selected_main_field,
             ),
             Mode::Program => LcdFrame::mode_screen("PROGRAM", "Program: InitProgram"),
             Mode::Sample => LcdFrame::mode_screen("SAMPLE", "Sample record"),
@@ -178,5 +342,34 @@ impl MpcCore {
             Mode::Disk => LcdFrame::mode_screen("DISK", "Virtual disk"),
             Mode::Setup => LcdFrame::mode_screen("SETUP", "System settings"),
         };
+    }
+
+    fn ignored(reason: String) -> Vec<MachineOutput> {
+        vec![MachineOutput::Ignored { reason }]
+    }
+}
+
+fn sequence_name_for(index: u8) -> String {
+    format!("Sequence{index:02}")
+}
+
+fn clamp_delta_u8(current: u8, delta: i32, min: u8, max: u8) -> u8 {
+    (i64::from(current) + i64::from(delta)).clamp(i64::from(min), i64::from(max)) as u8
+}
+
+fn clamp_delta_u16(current: u16, delta: i32, min: u16, max: u16) -> u16 {
+    (i64::from(current) + i64::from(delta)).clamp(i64::from(min), i64::from(max)) as u16
+}
+
+fn mode_reason(mode: Mode) -> &'static str {
+    match mode {
+        Mode::Main => "main_screen",
+        Mode::Program => "program",
+        Mode::Sample => "sample",
+        Mode::Trim => "trim",
+        Mode::Song => "song",
+        Mode::Midi => "midi",
+        Mode::Disk => "disk",
+        Mode::Setup => "setup",
     }
 }

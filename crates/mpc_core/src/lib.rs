@@ -4,4 +4,4 @@ pub mod state;
 
 pub use events::{HardwareEvent, MachineOutput, Mode, PadBank, PanelControl};
 pub use lcd::LcdFrame;
-pub use state::{MpcCore, MpcState};
+pub use state::{MainScreenField, MpcCore, MpcState};

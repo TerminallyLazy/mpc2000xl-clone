@@ -1,5 +1,5 @@
 use anyhow::{Context, Result, bail};
-use mpc_core::{HardwareEvent, Mode, MpcCore};
+use mpc_core::{HardwareEvent, MainScreenField, Mode, MpcCore};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::Path;
@@ -20,6 +20,18 @@ pub struct ExpectedState {
     pub playing: bool,
     pub recording: bool,
     pub event_count: u64,
+    #[serde(default)]
+    pub selected_field: Option<MainScreenField>,
+    #[serde(default)]
+    pub selected_track: Option<u8>,
+    #[serde(default)]
+    pub tempo_bpm_x100: Option<u32>,
+    #[serde(default)]
+    pub sequence_index: Option<u8>,
+    #[serde(default)]
+    pub sequence_name: Option<String>,
+    #[serde(default)]
+    pub bar_count: Option<u16>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -81,6 +93,60 @@ pub fn run_fixture(fixture: &Fixture) -> FixtureReport {
             "event_count mismatch: expected {}, got {}",
             fixture.expect.event_count, state.event_count
         ));
+    }
+
+    if let Some(selected_field) = fixture.expect.selected_field {
+        if state.selected_main_field != selected_field {
+            details.push(format!(
+                "selected_field mismatch: expected {:?}, got {:?}",
+                selected_field, state.selected_main_field
+            ));
+        }
+    }
+
+    if let Some(selected_track) = fixture.expect.selected_track {
+        if state.selected_track != selected_track {
+            details.push(format!(
+                "selected_track mismatch: expected {}, got {}",
+                selected_track, state.selected_track
+            ));
+        }
+    }
+
+    if let Some(tempo_bpm_x100) = fixture.expect.tempo_bpm_x100 {
+        if state.tempo_bpm_x100 != tempo_bpm_x100 {
+            details.push(format!(
+                "tempo_bpm_x100 mismatch: expected {}, got {}",
+                tempo_bpm_x100, state.tempo_bpm_x100
+            ));
+        }
+    }
+
+    if let Some(sequence_index) = fixture.expect.sequence_index {
+        if state.sequence_index != sequence_index {
+            details.push(format!(
+                "sequence_index mismatch: expected {}, got {}",
+                sequence_index, state.sequence_index
+            ));
+        }
+    }
+
+    if let Some(sequence_name) = &fixture.expect.sequence_name {
+        if state.sequence_name != *sequence_name {
+            details.push(format!(
+                "sequence_name mismatch: expected {}, got {}",
+                sequence_name, state.sequence_name
+            ));
+        }
+    }
+
+    if let Some(bar_count) = fixture.expect.bar_count {
+        if state.bar_count != bar_count {
+            details.push(format!(
+                "bar_count mismatch: expected {}, got {}",
+                bar_count, state.bar_count
+            ));
+        }
     }
 
     FixtureReport {

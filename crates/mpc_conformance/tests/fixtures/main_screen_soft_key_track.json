@@ -1,0 +1,41 @@
+{
+  "id": "core.main.soft-key-track-step",
+  "name": "Track soft keys change selected track",
+  "source_refs": [
+    "docs/superpowers/specs/2026-06-13-mpc2000xl-full-app-product-design.md#front-panel-runtime",
+    "docs/superpowers/plans/2026-06-13-mpc2000xl-main-screen-editing.md#source-and-evidence-status"
+  ],
+  "events": [
+    {
+      "type": "press",
+      "control": {
+        "soft_key": 2
+      }
+    },
+    {
+      "type": "press",
+      "control": {
+        "soft_key": 2
+      }
+    },
+    {
+      "type": "press",
+      "control": {
+        "soft_key": 3
+      }
+    }
+  ],
+  "expect": {
+    "mode": "main",
+    "lcd_title": "MAIN",
+    "playing": false,
+    "recording": false,
+    "event_count": 3,
+    "selected_field": "track",
+    "selected_track": 2,
+    "tempo_bpm_x100": 12000,
+    "sequence_index": 1,
+    "sequence_name": "Sequence01",
+    "bar_count": 1
+  }
+}

@@ -196,6 +196,223 @@
       "conflict_notes": [
         "Manual, firmware, VMPC, and hardware evidence are not mapped yet; this remains an internal-spec seed."
       ]
+    },
+    {
+      "id": "core.main.cursor-focus",
+      "name": "MAIN cursor left/right changes selected edit field",
+      "area": "front_panel",
+      "state": "fixture-backed",
+      "evidence": [
+        {
+          "source_id": "main-screen-editing-slice-plan",
+          "source_category": "internal_spec",
+          "type": "plan",
+          "status": "mapped",
+          "ref": "docs/superpowers/plans/2026-06-13-mpc2000xl-main-screen-editing.md#behavior-slice"
+        },
+        {
+          "source_id": "conformance-lab-spec",
+          "source_category": "internal_spec",
+          "type": "spec",
+          "status": "mapped",
+          "ref": "docs/superpowers/specs/2026-06-13-mpc2000xl-conformance-lab-design.md#fixture-strategy"
+        }
+      ],
+      "source_coverage": [
+        {
+          "source_category": "manual",
+          "source_id": "owner-manual",
+          "status": "investigation",
+          "ref": null,
+          "note": "Exact owner-manual page mapping for MAIN cursor field traversal is pending."
+        },
+        {
+          "source_category": "internal_spec",
+          "source_id": "main-screen-editing-slice-plan",
+          "status": "mapped",
+          "ref": "docs/superpowers/plans/2026-06-13-mpc2000xl-main-screen-editing.md#source-and-evidence-status",
+          "note": "Current behavior is an internal-spec/manual-investigation slice toward the full app."
+        }
+      ],
+      "inputs": [
+        {
+          "channel": "front_panel",
+          "event": "press",
+          "control": "cursor_left"
+        },
+        {
+          "channel": "front_panel",
+          "event": "press",
+          "control": "cursor_right"
+        }
+      ],
+      "expected_outputs": {
+        "state": {
+          "mode": "main",
+          "selected_field_order": [
+            "sequence",
+            "track",
+            "tempo",
+            "bars"
+          ]
+        },
+        "lcd": {
+          "title": "MAIN",
+          "selected_field_marker": "updated"
+        },
+        "outputs": [
+          "LcdChanged"
+        ]
+      },
+      "tolerance": null,
+      "fixture_refs": [
+        "crates/mpc_core/tests/core_flow.rs",
+        "crates/mpc_conformance/tests/fixtures/main_screen_cursor_tempo.json"
+      ],
+      "conflict_notes": [
+        "Manual page mapping is incomplete; no proprietary screen art or copied manual content is stored."
+      ]
+    },
+    {
+      "id": "core.main.data-wheel-edit-selected-field",
+      "name": "MAIN data wheel edits selected field",
+      "area": "front_panel",
+      "state": "fixture-backed",
+      "evidence": [
+        {
+          "source_id": "main-screen-editing-slice-plan",
+          "source_category": "internal_spec",
+          "type": "plan",
+          "status": "mapped",
+          "ref": "docs/superpowers/plans/2026-06-13-mpc2000xl-main-screen-editing.md#behavior-slice"
+        },
+        {
+          "source_id": "full-app-product-spec",
+          "source_category": "internal_spec",
+          "type": "spec",
+          "status": "mapped",
+          "ref": "docs/superpowers/specs/2026-06-13-mpc2000xl-full-app-product-design.md#front-panel-runtime"
+        }
+      ],
+      "source_coverage": [
+        {
+          "source_category": "manual",
+          "source_id": "owner-manual",
+          "status": "investigation",
+          "ref": null,
+          "note": "Exact owner-manual page mapping for sequence, track, tempo, and bar edits is pending."
+        },
+        {
+          "source_category": "internal_spec",
+          "source_id": "main-screen-editing-slice-plan",
+          "status": "mapped",
+          "ref": "docs/superpowers/plans/2026-06-13-mpc2000xl-main-screen-editing.md#source-and-evidence-status",
+          "note": "Current ranges are deterministic internal-spec ranges until reference evidence is mapped."
+        }
+      ],
+      "inputs": [
+        {
+          "channel": "front_panel",
+          "event": "turn_data_wheel",
+          "delta": "signed"
+        }
+      ],
+      "expected_outputs": {
+        "state": {
+          "sequence_index": "1..=99",
+          "selected_track": "1..=64",
+          "tempo_bpm_x100": "3000..=30000",
+          "bar_count": "1..=999"
+        },
+        "lcd": {
+          "title": "MAIN",
+          "edited_values": "visible"
+        },
+        "outputs": [
+          "LcdChanged"
+        ]
+      },
+      "tolerance": null,
+      "fixture_refs": [
+        "crates/mpc_core/tests/core_flow.rs",
+        "crates/mpc_conformance/tests/fixtures/main_screen_cursor_tempo.json"
+      ],
+      "conflict_notes": [
+        "Tempo clamp reuses the foundation range; sequence, track, and bars are bounded internal behavior until exact reference evidence is mapped."
+      ]
+    },
+    {
+      "id": "core.main.soft-key-track-step",
+      "name": "MAIN Track+ and Track- soft keys change selected track",
+      "area": "front_panel",
+      "state": "fixture-backed",
+      "evidence": [
+        {
+          "source_id": "main-screen-editing-slice-plan",
+          "source_category": "internal_spec",
+          "type": "plan",
+          "status": "mapped",
+          "ref": "docs/superpowers/plans/2026-06-13-mpc2000xl-main-screen-editing.md#behavior-slice"
+        },
+        {
+          "source_id": "full-app-product-spec",
+          "source_category": "internal_spec",
+          "type": "spec",
+          "status": "mapped",
+          "ref": "docs/superpowers/specs/2026-06-13-mpc2000xl-full-app-product-design.md#front-panel-runtime"
+        }
+      ],
+      "source_coverage": [
+        {
+          "source_category": "manual",
+          "source_id": "owner-manual",
+          "status": "investigation",
+          "ref": null,
+          "note": "Exact owner-manual page mapping for MAIN Track+ and Track- soft keys is pending."
+        },
+        {
+          "source_category": "internal_spec",
+          "source_id": "main-screen-editing-slice-plan",
+          "status": "mapped",
+          "ref": "docs/superpowers/plans/2026-06-13-mpc2000xl-main-screen-editing.md#source-and-evidence-status",
+          "note": "Only soft keys 2 and 3 are implemented in this slice; other soft keys return structured Ignored output."
+        }
+      ],
+      "inputs": [
+        {
+          "channel": "front_panel",
+          "event": "press",
+          "control": "soft_key_2"
+        },
+        {
+          "channel": "front_panel",
+          "event": "press",
+          "control": "soft_key_3"
+        }
+      ],
+      "expected_outputs": {
+        "state": {
+          "mode": "main",
+          "selected_field": "track",
+          "selected_track": "1..=64"
+        },
+        "lcd": {
+          "title": "MAIN",
+          "selected_track": "visible"
+        },
+        "outputs": [
+          "LcdChanged",
+          "Ignored for unimplemented soft keys"
+        ]
+      },
+      "tolerance": null,
+      "fixture_refs": [
+        "crates/mpc_core/tests/core_flow.rs",
+        "crates/mpc_conformance/tests/fixtures/main_screen_soft_key_track.json"
+      ],
+      "conflict_notes": [
+        "Soft-key labels are internal LCD labels from the foundation app; exact manual page mapping remains pending."
+      ]
     }
   ]
 }
