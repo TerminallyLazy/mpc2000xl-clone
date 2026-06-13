@@ -1,8 +1,9 @@
 use mpc_core::{
     HardwareEvent, INTERNAL_PPQN, MachineOutput, MainScreenField, Mode, MpcCore,
-    PROJECT_SNAPSHOT_VERSION, PadAssignmentChange, PadBank, PanelControl, PlaybackMissReason,
-    ProgramEditField, ProgramPad, ProjectSnapshot, ProjectSnapshotError, SamplePlaybackIntent,
-    SamplePlaybackResolution, SequenceEvent, sequence_length_ticks_for_bars,
+    PROJECT_SNAPSHOT_VERSION, PadAssignment, PadAssignmentChange, PadBank, PanelControl,
+    PlaybackMissReason, ProgramEditField, ProgramPad, ProjectSnapshot, ProjectSnapshotError,
+    SamplePlaybackIntent, SamplePlaybackResolution, SequenceEvent, SyntheticSample,
+    sequence_length_ticks_for_bars,
 };
 
 #[test]
@@ -210,6 +211,290 @@ fn default_program_assigns_all_pad_banks_to_synthetic_samples() {
             assert_eq!(assignment.tune_cents, 0);
         }
     }
+}
+
+#[test]
+fn sample_catalog_default_selection_is_deterministic_and_lcd_reflects_metadata_only() {
+    let mut core = MpcCore::new();
+
+    assert_eq!(
+        core.state().selected_sample_id.as_deref(),
+        Some("synthetic_a_01")
+    );
+    let selected_sample = core
+        .state()
+        .selected_sample()
+        .expect("default catalog should select A01");
+    assert_eq!(selected_sample.index, 1);
+    assert_eq!(selected_sample.count, 64);
+    assert_eq!(selected_sample.sample.id, "synthetic_a_01");
+    assert_eq!(selected_sample.sample.name, "SYN-A01");
+    assert_eq!(
+        selected_sample.source_pad,
+        ProgramPad {
+            bank: PadBank::A,
+            pad_number: 1
+        }
+    );
+
+    let outputs = core.dispatch(HardwareEvent::Press {
+        control: PanelControl::Sample,
+    });
+
+    assert_eq!(core.state().mode, Mode::Sample);
+    assert_eq!(core.state().lcd.title, "SAMPLE");
+    assert!(core.state().lcd.lines[0].contains("Sample 01/64 SYN-A01"));
+    assert!(core.state().lcd.lines[1].contains("synthetic_a_01"));
+    assert!(core.state().lcd.lines[3].contains("Metadata only"));
+    assert!(
+        outputs
+            .iter()
+            .any(|output| matches!(output, MachineOutput::ModeChanged { mode: Mode::Sample }))
+    );
+    assert!(
+        outputs
+            .iter()
+            .any(|output| matches!(output, MachineOutput::LcdChanged))
+    );
+}
+
+#[test]
+fn sample_catalog_data_wheel_selects_next_previous_and_emits_outputs() {
+    let mut core = MpcCore::new();
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::Sample,
+    });
+
+    let outputs = core.dispatch(HardwareEvent::TurnDataWheel { delta: 1 });
+
+    assert_eq!(
+        core.state().selected_sample_id.as_deref(),
+        Some("synthetic_a_02")
+    );
+    assert!(core.state().lcd.lines[0].contains("Sample 02/64 SYN-A02"));
+    assert!(outputs.iter().any(|output| matches!(
+        output,
+        MachineOutput::SampleSelected { entry }
+            if entry.index == 2
+                && entry.count == 64
+                && entry.sample.id == "synthetic_a_02"
+                && entry.source_pad == ProgramPad { bank: PadBank::A, pad_number: 2 }
+    )));
+    assert!(
+        outputs
+            .iter()
+            .any(|output| matches!(output, MachineOutput::LcdChanged))
+    );
+
+    let outputs = core.dispatch(HardwareEvent::TurnDataWheel { delta: -1 });
+
+    assert_eq!(
+        core.state().selected_sample_id.as_deref(),
+        Some("synthetic_a_01")
+    );
+    assert!(outputs.iter().any(|output| matches!(
+        output,
+        MachineOutput::SampleSelected { entry }
+            if entry.index == 1 && entry.sample.id == "synthetic_a_01"
+    )));
+}
+
+#[test]
+fn sample_catalog_dedupes_by_sample_id_so_selection_identity_is_stable() {
+    let mut snapshot = MpcCore::new().export_project_snapshot();
+    snapshot.machine.mode = Mode::Sample;
+    snapshot.machine.selected_sample_id = Some("shared_sample".to_string());
+    snapshot.program.pad_assignments = vec![
+        PadAssignment {
+            pad: ProgramPad {
+                bank: PadBank::A,
+                pad_number: 1,
+            },
+            sample: SyntheticSample {
+                id: "shared_sample".to_string(),
+                name: "FIRST-NAME".to_string(),
+            },
+            level: 100,
+            pan: 0,
+            tune_cents: 0,
+        },
+        PadAssignment {
+            pad: ProgramPad {
+                bank: PadBank::A,
+                pad_number: 2,
+            },
+            sample: SyntheticSample {
+                id: "shared_sample".to_string(),
+                name: "SECOND-NAME".to_string(),
+            },
+            level: 100,
+            pan: 0,
+            tune_cents: 0,
+        },
+        PadAssignment {
+            pad: ProgramPad {
+                bank: PadBank::A,
+                pad_number: 3,
+            },
+            sample: SyntheticSample {
+                id: "unique_sample".to_string(),
+                name: "UNIQUE".to_string(),
+            },
+            level: 100,
+            pan: 0,
+            tune_cents: 0,
+        },
+    ];
+
+    let mut core = MpcCore::new();
+    core.restore_project_snapshot(snapshot)
+        .expect("duplicate sample ids should collapse in the catalog");
+
+    let catalog = core.state().sample_catalog();
+    assert_eq!(catalog.len(), 2);
+    assert_eq!(catalog[0].sample.id, "shared_sample");
+    assert_eq!(catalog[0].sample.name, "FIRST-NAME");
+    assert_eq!(catalog[0].source_pad.pad_number, 1);
+    assert_eq!(catalog[1].sample.id, "unique_sample");
+
+    let outputs = core.dispatch(HardwareEvent::TurnDataWheel { delta: 1 });
+
+    assert_eq!(
+        core.state().selected_sample_id.as_deref(),
+        Some("unique_sample")
+    );
+    assert!(core.state().lcd.lines[0].contains("UNIQUE"));
+    assert!(outputs.iter().any(|output| matches!(
+        output,
+        MachineOutput::SampleSelected { entry }
+            if entry.sample.id == "unique_sample" && entry.index == 2 && entry.count == 2
+    )));
+}
+
+#[test]
+fn sample_catalog_trim_shares_selection_with_sample_mode() {
+    let mut core = MpcCore::new();
+
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::Sample,
+    });
+    core.dispatch(HardwareEvent::TurnDataWheel { delta: 16 });
+    assert_eq!(
+        core.state().selected_sample_id.as_deref(),
+        Some("synthetic_b_01")
+    );
+
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::Trim,
+    });
+
+    assert_eq!(core.state().mode, Mode::Trim);
+    assert_eq!(
+        core.state().selected_sample_id.as_deref(),
+        Some("synthetic_b_01")
+    );
+    assert!(core.state().lcd.lines[0].contains("Trim 17/64 SYN-B01"));
+    assert!(core.state().lcd.lines[1].contains("Start 000000"));
+    assert!(core.state().lcd.lines[2].contains("Src B01"));
+}
+
+#[test]
+fn sample_catalog_empty_navigation_is_ignored_safely() {
+    let mut snapshot = MpcCore::new().export_project_snapshot();
+    snapshot.machine.mode = Mode::Sample;
+    snapshot.machine.selected_sample_id = None;
+    snapshot.program.pad_assignments.clear();
+
+    let mut core = MpcCore::new();
+    core.restore_project_snapshot(snapshot)
+        .expect("empty assignment catalog is valid metadata");
+
+    assert_eq!(core.state().mode, Mode::Sample);
+    assert_eq!(core.state().selected_sample_id, None);
+    assert!(core.state().selected_sample().is_none());
+    assert!(core.state().lcd.lines[0].contains("empty catalog"));
+
+    let outputs = core.dispatch(HardwareEvent::TurnDataWheel { delta: 1 });
+
+    assert_eq!(core.state().selected_sample_id, None);
+    assert_eq!(
+        outputs,
+        vec![MachineOutput::Ignored {
+            reason: "sample_catalog.empty".to_string()
+        }]
+    );
+}
+
+#[test]
+fn sample_catalog_project_snapshot_round_trip_preserves_selected_sample_identity() {
+    let mut core = MpcCore::new();
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::Sample,
+    });
+    core.dispatch(HardwareEvent::TurnDataWheel { delta: 49 });
+    assert_eq!(
+        core.state().selected_sample_id.as_deref(),
+        Some("synthetic_d_02")
+    );
+
+    let json = core
+        .to_project_json()
+        .expect("sample selection snapshot should encode");
+
+    let mut restored = MpcCore::new();
+    restored
+        .restore_project_json(&json)
+        .expect("sample selection snapshot should restore");
+
+    assert_eq!(restored.state().mode, Mode::Sample);
+    assert_eq!(
+        restored.state().selected_sample_id.as_deref(),
+        Some("synthetic_d_02")
+    );
+    let selected_sample = restored
+        .state()
+        .selected_sample()
+        .expect("restored sample selection should resolve");
+    assert_eq!(selected_sample.index, 50);
+    assert_eq!(selected_sample.sample.name, "SYN-D02");
+    assert!(restored.state().lcd.lines[0].contains("Sample 50/64 SYN-D02"));
+}
+
+#[test]
+fn sample_catalog_output_serializes_with_stable_shape() {
+    let mut core = MpcCore::new();
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::Sample,
+    });
+    let outputs = core.dispatch(HardwareEvent::TurnDataWheel { delta: 16 });
+    let sample_selected = outputs
+        .iter()
+        .find(|output| matches!(output, MachineOutput::SampleSelected { .. }))
+        .expect("wheel navigation should emit SampleSelected");
+
+    let json = serde_json::to_value(sample_selected).expect("output should serialize");
+
+    assert_eq!(
+        json,
+        serde_json::json!({
+            "type": "sample_selected",
+            "entry": {
+                "index": 17,
+                "count": 64,
+                "sample": {
+                    "id": "synthetic_b_01",
+                    "name": "SYN-B01"
+                },
+                "source_pad": {
+                    "bank": "b",
+                    "pad_number": 1
+                },
+                "start_frame": 0,
+                "end_frame": 67199,
+                "length_frames": 67200
+            }
+        })
+    );
 }
 
 #[test]

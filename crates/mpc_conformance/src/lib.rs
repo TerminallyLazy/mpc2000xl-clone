@@ -76,6 +76,14 @@ pub struct ExpectedState {
     #[serde(default)]
     pub selected_program_edit_field: Option<ProgramEditField>,
     #[serde(default)]
+    pub selected_sample_index: Option<usize>,
+    #[serde(default)]
+    pub sample_catalog_count: Option<usize>,
+    #[serde(default)]
+    pub selected_sample_id: Option<String>,
+    #[serde(default)]
+    pub selected_sample_name: Option<String>,
+    #[serde(default)]
     pub last_playback: Option<SamplePlaybackResolution>,
     #[serde(default)]
     pub last_recorded_sample_id: Option<String>,
@@ -398,6 +406,54 @@ fn validate_expected_state(
             details.push(format!(
                 "{prefix}selected_program_edit_field mismatch: expected {:?}, got {:?}",
                 selected_program_edit_field, state.selected_program_edit_field
+            ));
+        }
+    }
+
+    let selected_sample = state.selected_sample();
+    if let Some(selected_sample_index) = expected.selected_sample_index {
+        let actual = selected_sample.as_ref().map(|entry| entry.index);
+        if actual != Some(selected_sample_index) {
+            details.push(format!(
+                "{prefix}selected_sample_index mismatch: expected {}, got {:?}",
+                selected_sample_index, actual
+            ));
+        }
+    }
+
+    if let Some(sample_catalog_count) = expected.sample_catalog_count {
+        let actual = selected_sample
+            .as_ref()
+            .map(|entry| entry.count)
+            .unwrap_or_else(|| state.sample_catalog().len());
+        if actual != sample_catalog_count {
+            details.push(format!(
+                "{prefix}sample_catalog_count mismatch: expected {}, got {}",
+                sample_catalog_count, actual
+            ));
+        }
+    }
+
+    if let Some(selected_sample_id) = &expected.selected_sample_id {
+        let actual = selected_sample
+            .as_ref()
+            .map(|entry| entry.sample.id.as_str());
+        if actual != Some(selected_sample_id.as_str()) {
+            details.push(format!(
+                "{prefix}selected_sample_id mismatch: expected {}, got {:?}",
+                selected_sample_id, actual
+            ));
+        }
+    }
+
+    if let Some(selected_sample_name) = &expected.selected_sample_name {
+        let actual = selected_sample
+            .as_ref()
+            .map(|entry| entry.sample.name.as_str());
+        if actual != Some(selected_sample_name.as_str()) {
+            details.push(format!(
+                "{prefix}selected_sample_name mismatch: expected {}, got {:?}",
+                selected_sample_name, actual
             ));
         }
     }

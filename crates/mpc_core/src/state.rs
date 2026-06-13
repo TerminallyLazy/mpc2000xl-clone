@@ -5,8 +5,9 @@ use std::fmt;
 
 use crate::events::{
     HardwareEvent, MachineOutput, Mode, PadAssignment, PadAssignmentChange, PadBank, PanelControl,
-    PlaybackMissReason, Program, ProgramEditField, ProgramPad, SamplePlaybackIntent,
-    SamplePlaybackMiss, SamplePlaybackResolution, SequenceEvent, SyntheticSample,
+    PlaybackMissReason, Program, ProgramEditField, ProgramPad, SampleCatalogEntry,
+    SamplePlaybackIntent, SamplePlaybackMiss, SamplePlaybackResolution, SequenceEvent,
+    SyntheticSample,
 };
 use crate::lcd::LcdFrame;
 
@@ -36,6 +37,8 @@ const DEFAULT_PROGRAM_NAME: &str = "Program01";
 const DEFAULT_PAD_LEVEL: u8 = 100;
 const DEFAULT_PAD_PAN: i8 = 0;
 const DEFAULT_PAD_TUNE_CENTS: i16 = 0;
+const SAMPLE_BASE_LENGTH_FRAMES: u32 = 48_000;
+const SAMPLE_LENGTH_STEP_FRAMES: u32 = 1_200;
 const MAX_PAD_LEVEL: u8 = 127;
 const MIN_PAD_PAN: i8 = -50;
 const MAX_PAD_PAN: i8 = 50;
@@ -113,6 +116,8 @@ pub struct ProjectMachineSnapshot {
     pub selected_program_pad: ProgramPad,
     #[serde(default)]
     pub selected_program_edit_field: ProgramEditField,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selected_sample_id: Option<String>,
     pub playhead_ticks: u64,
     pub playhead_tick_remainder: u64,
     pub event_count: u64,
@@ -205,6 +210,7 @@ pub struct MpcState {
     pub current_program: Program,
     pub selected_program_pad: ProgramPad,
     pub selected_program_edit_field: ProgramEditField,
+    pub selected_sample_id: Option<String>,
     pub last_playback: Option<SamplePlaybackResolution>,
     pub playhead_ticks: u64,
     pub playhead_tick_remainder: u64,
@@ -226,6 +232,7 @@ impl Default for MpcState {
             bank: PadBank::A,
             pad_number: 1,
         };
+        let selected_sample_id = normalized_sample_id(&current_program, None);
 
         Self {
             mode: Mode::Main,
@@ -257,6 +264,7 @@ impl Default for MpcState {
             current_program,
             selected_program_pad,
             selected_program_edit_field: ProgramEditField::Pad,
+            selected_sample_id,
             last_playback: None,
             playhead_ticks: 0,
             playhead_tick_remainder: 0,
@@ -269,6 +277,15 @@ impl Default for MpcState {
 impl MpcState {
     pub fn sequence_length_ticks(&self) -> u64 {
         sequence_length_ticks_for_bars(self.bar_count)
+    }
+
+    pub fn sample_catalog(&self) -> Vec<SampleCatalogEntry> {
+        sample_catalog_for_program(&self.current_program)
+    }
+
+    pub fn selected_sample(&self) -> Option<SampleCatalogEntry> {
+        let catalog = self.sample_catalog();
+        selected_sample_entry(&catalog, self.selected_sample_id.as_deref()).cloned()
     }
 }
 
@@ -300,6 +317,7 @@ impl MpcCore {
                 pad_bank: self.state.pad_bank,
                 selected_program_pad: self.state.selected_program_pad,
                 selected_program_edit_field: self.state.selected_program_edit_field,
+                selected_sample_id: self.state.selected_sample_id.clone(),
                 playhead_ticks: self.state.playhead_ticks,
                 playhead_tick_remainder: self.state.playhead_tick_remainder,
                 event_count: self.state.event_count,
@@ -349,6 +367,10 @@ impl MpcCore {
         };
         self.state.selected_program_pad = snapshot.machine.selected_program_pad;
         self.state.selected_program_edit_field = snapshot.machine.selected_program_edit_field;
+        self.state.selected_sample_id = normalized_sample_id(
+            &self.state.current_program,
+            snapshot.machine.selected_sample_id.as_deref(),
+        );
         self.state.last_playback = snapshot.machine.last_playback;
         self.state.playhead_ticks = snapshot.machine.playhead_ticks;
         self.state.playhead_tick_remainder = snapshot.machine.playhead_tick_remainder;
@@ -500,6 +522,9 @@ impl MpcCore {
 
     fn set_mode(&mut self, mode: Mode) -> Vec<MachineOutput> {
         self.state.mode = mode;
+        if matches!(mode, Mode::Sample | Mode::Trim) {
+            self.ensure_selected_sample_selection();
+        }
         self.refresh_lcd();
         vec![
             MachineOutput::ModeChanged { mode },
@@ -541,6 +566,10 @@ impl MpcCore {
     fn handle_data_wheel(&mut self, delta: i32) -> Vec<MachineOutput> {
         if self.state.mode == Mode::Program {
             return self.adjust_selected_program_field(delta);
+        }
+
+        if matches!(self.state.mode, Mode::Sample | Mode::Trim) {
+            return self.adjust_selected_sample(delta);
         }
 
         if self.state.mode != Mode::Main {
@@ -632,6 +661,10 @@ impl MpcCore {
             return self.handle_program_soft_key(index);
         }
 
+        if matches!(self.state.mode, Mode::Sample | Mode::Trim) {
+            return self.handle_sample_soft_key(index);
+        }
+
         if self.state.mode != Mode::Main {
             return Self::ignored(format!(
                 "{}.soft_key.{index}_unmapped",
@@ -688,6 +721,19 @@ impl MpcCore {
         }
     }
 
+    fn handle_sample_soft_key(&mut self, index: u8) -> Vec<MachineOutput> {
+        match index {
+            1 => self.adjust_selected_sample(-1),
+            2 => self.adjust_selected_sample(1),
+            6 if self.state.mode == Mode::Sample => self.set_mode(Mode::Trim),
+            6 if self.state.mode == Mode::Trim => self.set_mode(Mode::Sample),
+            _ => Self::ignored(format!(
+                "{}.soft_key.{index}_unmapped",
+                mode_reason(self.state.mode)
+            )),
+        }
+    }
+
     fn adjust_sequence(&mut self, delta: i32) {
         self.state.sequence_index = clamp_delta_u8(
             self.state.sequence_index,
@@ -722,6 +768,10 @@ impl MpcCore {
     }
 
     fn refresh_lcd(&mut self) {
+        if matches!(self.state.mode, Mode::Sample | Mode::Trim) {
+            self.ensure_selected_sample_selection();
+        }
+
         self.state.lcd = match self.state.mode {
             Mode::Main => LcdFrame::main_screen(
                 self.state.sequence_index,
@@ -744,8 +794,14 @@ impl MpcCore {
                 self.state.selected_program_edit_field,
                 self.assignment_for(self.state.selected_program_pad),
             ),
-            Mode::Sample => LcdFrame::mode_screen("SAMPLE", "Sample record"),
-            Mode::Trim => LcdFrame::mode_screen("TRIM", "Trim sample"),
+            Mode::Sample => {
+                let selected_sample = self.state.selected_sample();
+                LcdFrame::sample_screen(selected_sample.as_ref())
+            }
+            Mode::Trim => {
+                let selected_sample = self.state.selected_sample();
+                LcdFrame::trim_screen(selected_sample.as_ref())
+            }
             Mode::Song => LcdFrame::mode_screen("SONG", "Song mode"),
             Mode::Midi => LcdFrame::mode_screen("MIDI", "MIDI sync/settings"),
             Mode::Disk => LcdFrame::mode_screen("DISK", "Virtual disk"),
@@ -755,6 +811,33 @@ impl MpcCore {
 
     fn ignored(reason: String) -> Vec<MachineOutput> {
         vec![MachineOutput::Ignored { reason }]
+    }
+
+    fn ensure_selected_sample_selection(&mut self) {
+        self.state.selected_sample_id = normalized_sample_id(
+            &self.state.current_program,
+            self.state.selected_sample_id.as_deref(),
+        );
+    }
+
+    fn adjust_selected_sample(&mut self, delta: i32) -> Vec<MachineOutput> {
+        let catalog = self.state.sample_catalog();
+        if catalog.is_empty() {
+            self.state.selected_sample_id = None;
+            return Self::ignored("sample_catalog.empty".to_string());
+        }
+
+        let current_index =
+            selected_sample_position(&catalog, self.state.selected_sample_id.as_deref())
+                .unwrap_or(0);
+        let next_index = clamp_delta_usize(current_index, delta, 0, catalog.len() - 1);
+        let entry = catalog[next_index].clone();
+        self.state.selected_sample_id = Some(entry.sample.id.clone());
+        self.refresh_lcd();
+        vec![
+            MachineOutput::SampleSelected { entry },
+            MachineOutput::LcdChanged,
+        ]
     }
 
     fn handle_pad_strike(&mut self, bank: PadBank, pad: u8, velocity: u8) -> Vec<MachineOutput> {
@@ -1069,6 +1152,10 @@ impl MpcCore {
             .current_program
             .pad_assignments
             .retain(|assignment| assignment.pad != pad);
+        self.state.selected_sample_id = normalized_sample_id(
+            &self.state.current_program,
+            self.state.selected_sample_id.as_deref(),
+        );
         self.refresh_lcd();
         vec![
             MachineOutput::PadAssignmentChanged {
@@ -1096,6 +1183,10 @@ impl MpcCore {
             .current_program
             .pad_assignments
             .sort_by_key(|existing| existing.pad);
+        self.state.selected_sample_id = normalized_sample_id(
+            &self.state.current_program,
+            self.state.selected_sample_id.as_deref(),
+        );
         self.refresh_lcd();
         vec![
             MachineOutput::PadAssignmentChanged {
@@ -1187,6 +1278,7 @@ fn validate_machine_json_fields(value: &Value) -> Result<(), ProjectSnapshotErro
             "pad_bank",
             "selected_program_pad",
             "selected_program_edit_field",
+            "selected_sample_id",
             "playhead_ticks",
             "playhead_tick_remainder",
             "event_count",
@@ -1477,6 +1569,9 @@ fn validate_project_snapshot(snapshot: &ProjectSnapshot) -> Result<(), ProjectSn
         "machine.selected_program_pad",
         snapshot.machine.selected_program_pad,
     )?;
+    if let Some(selected_sample_id) = &snapshot.machine.selected_sample_id {
+        validate_non_empty("machine.selected_sample_id", selected_sample_id)?;
+    }
     validate_playhead_remainder(snapshot.machine.playhead_tick_remainder)?;
     if snapshot.machine.playhead_ticks == u64::MAX && snapshot.machine.playhead_tick_remainder != 0
     {
@@ -1821,6 +1916,84 @@ pub fn sequence_length_ticks_for_bars(bar_count: u16) -> u64 {
         .saturating_mul(u64::from(FOUNDATION_BEATS_PER_BAR))
 }
 
+fn sample_catalog_for_program(program: &Program) -> Vec<SampleCatalogEntry> {
+    let mut assignments = program.pad_assignments.clone();
+    assignments.sort_by_key(|assignment| assignment.pad);
+
+    let mut seen_sample_ids = BTreeSet::new();
+    let mut entries = Vec::new();
+    for assignment in assignments {
+        if !seen_sample_ids.insert(assignment.sample.id.clone()) {
+            continue;
+        }
+
+        let length_frames = sample_length_frames(assignment.pad);
+        entries.push(SampleCatalogEntry {
+            index: 0,
+            count: 0,
+            sample: assignment.sample,
+            source_pad: assignment.pad,
+            start_frame: 0,
+            end_frame: length_frames.saturating_sub(1),
+            length_frames,
+        });
+    }
+
+    let count = entries.len();
+    for (index, entry) in entries.iter_mut().enumerate() {
+        entry.index = index + 1;
+        entry.count = count;
+    }
+
+    entries
+}
+
+fn normalized_sample_id(program: &Program, requested_id: Option<&str>) -> Option<String> {
+    let catalog = sample_catalog_for_program(program);
+    selected_sample_entry(&catalog, requested_id)
+        .or_else(|| catalog.first())
+        .map(|entry| entry.sample.id.clone())
+}
+
+fn selected_sample_entry<'a>(
+    catalog: &'a [SampleCatalogEntry],
+    selected_sample_id: Option<&str>,
+) -> Option<&'a SampleCatalogEntry> {
+    selected_sample_id
+        .and_then(|sample_id| {
+            catalog
+                .iter()
+                .find(|entry| entry.sample.id.as_str() == sample_id)
+        })
+        .or_else(|| catalog.first())
+}
+
+fn selected_sample_position(
+    catalog: &[SampleCatalogEntry],
+    selected_sample_id: Option<&str>,
+) -> Option<usize> {
+    selected_sample_id.and_then(|sample_id| {
+        catalog
+            .iter()
+            .position(|entry| entry.sample.id.as_str() == sample_id)
+    })
+}
+
+fn sample_length_frames(pad: ProgramPad) -> u32 {
+    SAMPLE_BASE_LENGTH_FRAMES
+        .saturating_add(pad_linear_index(pad).saturating_mul(SAMPLE_LENGTH_STEP_FRAMES))
+}
+
+fn pad_linear_index(pad: ProgramPad) -> u32 {
+    let bank_offset = match pad.bank {
+        PadBank::A => 0,
+        PadBank::B => 16,
+        PadBank::C => 32,
+        PadBank::D => 48,
+    };
+    bank_offset + u32::from(pad.pad_number.saturating_sub(1))
+}
+
 fn default_program() -> Program {
     let pad_assignments = PAD_BANKS
         .iter()
@@ -1864,6 +2037,10 @@ fn clamp_delta_u8(current: u8, delta: i32, min: u8, max: u8) -> u8 {
 
 fn clamp_delta_u16(current: u16, delta: i32, min: u16, max: u16) -> u16 {
     (i64::from(current) + i64::from(delta)).clamp(i64::from(min), i64::from(max)) as u16
+}
+
+fn clamp_delta_usize(current: usize, delta: i32, min: usize, max: usize) -> usize {
+    (current as i128 + i128::from(delta)).clamp(min as i128, max as i128) as usize
 }
 
 fn clamp_delta_i8(current: i8, delta: i32, min: i8, max: i8) -> i8 {

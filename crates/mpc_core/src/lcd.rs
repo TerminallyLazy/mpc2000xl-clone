@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::events::{PadAssignment, Program, ProgramEditField, ProgramPad};
+use crate::events::{PadAssignment, Program, ProgramEditField, ProgramPad, SampleCatalogEntry};
 use crate::state::MainScreenField;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -169,6 +169,104 @@ impl LcdFrame {
             ],
         }
     }
+
+    pub fn sample_screen(selected_sample: Option<&SampleCatalogEntry>) -> Self {
+        match selected_sample {
+            Some(entry) => Self {
+                title: "SAMPLE".to_string(),
+                lines: [
+                    format!(
+                        "Sample {:02}/{:02} {}",
+                        entry.index.min(99),
+                        entry.count.min(99),
+                        entry.sample.name
+                    ),
+                    format!("ID {}", entry.sample.id),
+                    format!(
+                        "Pad {} Len {:06}",
+                        pad_label(entry.source_pad),
+                        entry.length_frames.min(999_999)
+                    ),
+                    "Metadata only - no audio bytes".to_string(),
+                ],
+                soft_keys: sample_soft_keys(),
+            },
+            None => Self {
+                title: "SAMPLE".to_string(),
+                lines: [
+                    "Sample 00/00 empty catalog".to_string(),
+                    "ID none".to_string(),
+                    "Pad -- Len ------".to_string(),
+                    "Metadata only - no audio bytes".to_string(),
+                ],
+                soft_keys: sample_soft_keys(),
+            },
+        }
+    }
+
+    pub fn trim_screen(selected_sample: Option<&SampleCatalogEntry>) -> Self {
+        match selected_sample {
+            Some(entry) => Self {
+                title: "TRIM".to_string(),
+                lines: [
+                    format!(
+                        "Trim {:02}/{:02} {}",
+                        entry.index.min(99),
+                        entry.count.min(99),
+                        entry.sample.name
+                    ),
+                    format!(
+                        "Start {:06} End {:06}",
+                        entry.start_frame.min(999_999),
+                        entry.end_frame.min(999_999)
+                    ),
+                    format!(
+                        "Len {:06} Src {}",
+                        entry.length_frames.min(999_999),
+                        pad_label(entry.source_pad)
+                    ),
+                    "Metadata only - no waveform".to_string(),
+                ],
+                soft_keys: trim_soft_keys(),
+            },
+            None => Self {
+                title: "TRIM".to_string(),
+                lines: [
+                    "Trim 00/00 empty catalog".to_string(),
+                    "Start ------ End ------".to_string(),
+                    "Len ------ Src --".to_string(),
+                    "Metadata only - no waveform".to_string(),
+                ],
+                soft_keys: trim_soft_keys(),
+            },
+        }
+    }
+}
+
+fn sample_soft_keys() -> [String; 6] {
+    [
+        "Prev".to_string(),
+        "Next".to_string(),
+        "F3".to_string(),
+        "F4".to_string(),
+        "F5".to_string(),
+        "Trim".to_string(),
+    ]
+}
+
+fn trim_soft_keys() -> [String; 6] {
+    [
+        "Prev".to_string(),
+        "Next".to_string(),
+        "F3".to_string(),
+        "F4".to_string(),
+        "F5".to_string(),
+        "Sample".to_string(),
+    ]
+}
+
+fn pad_label(pad: ProgramPad) -> String {
+    format!("{}{:02}", pad.bank.label(), pad.pad_number)
 }
 
 fn pan_text(pan: i8) -> String {

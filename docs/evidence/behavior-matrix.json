@@ -1829,6 +1829,97 @@
         "This is not a full MPC2000XL or JJ-OS erase mode clone; range, filter, all-track, confirmation, and undo semantics remain deferred.",
         "No proprietary manuals, service scans, firmware bytes, JJ-OS assets, factory samples, or copied third-party code are stored in the repo."
       ]
+    },
+    {
+      "id": "core.sample.catalog-navigation-foundation",
+      "name": "SAMPLE and TRIM navigate a metadata-only generated sample catalog",
+      "area": "sample",
+      "state": "fixture-backed-internal-spec",
+      "evidence": [
+        {
+          "source_id": "sample-catalog-navigation-slice-plan",
+          "source_category": "internal_spec",
+          "type": "plan",
+          "status": "mapped",
+          "ref": "docs/superpowers/plans/2026-06-13-mpc2000xl-sample-catalog-navigation.md#behavior-slice"
+        }
+      ],
+      "source_coverage": [
+        {
+          "source_category": "manual",
+          "source_id": "owner-manual",
+          "status": "investigation",
+          "ref": null,
+          "note": "Exact MPC2000XL sample record, sample list, and trim editing behavior is not mapped yet."
+        },
+        {
+          "source_category": "jjos",
+          "source_id": "jjos-unverified-boundary",
+          "status": "unverified",
+          "ref": null,
+          "note": "JJ-OS SAMPLE/TRIM behavior is not accepted as reference evidence for this slice."
+        },
+        {
+          "source_category": "internal_spec",
+          "source_id": "sample-catalog-navigation-slice-plan",
+          "status": "mapped",
+          "ref": "docs/superpowers/plans/2026-06-13-mpc2000xl-sample-catalog-navigation.md#source-and-evidence-status",
+          "note": "The current contract is rights-safe metadata catalog navigation."
+        }
+      ],
+      "inputs": [
+        {
+          "channel": "front_panel",
+          "event": "press",
+          "control": "sample"
+        },
+        {
+          "channel": "front_panel",
+          "event": "press",
+          "control": "trim"
+        },
+        {
+          "channel": "front_panel",
+          "event": "turn_data_wheel",
+          "mode": "sample_or_trim",
+          "policy": "delta clamps to catalog bounds"
+        },
+        {
+          "channel": "desktop",
+          "event": "button",
+          "control": "Prev sample / Next sample"
+        }
+      ],
+      "expected_outputs": {
+        "state": {
+          "catalog": "derived from current-program sample metadata, sorted by source pad and deduped by sample id",
+          "default_selection": "Program01 selects synthetic_a_01 / SYN-A01",
+          "selection": "SAMPLE and TRIM share machine.selected_sample_id",
+          "snapshot": "machine.selected_sample_id persists with serde-default current-reader backward compatibility; missing or stale ids normalize to first available sample; older-binary forward compatibility is deferred"
+        },
+        "outputs": [
+          "SampleSelected with SampleCatalogEntry metadata",
+          "LcdChanged after successful navigation",
+          "Ignored reason sample_catalog.empty when no assignments exist"
+        ],
+        "lcd": {
+          "sample": "index/count, id/name, source pad, deterministic length, metadata-only/no-audio-bytes notice",
+          "trim": "index/count, id/name, start/end/length placeholders, source pad, metadata-only/no-waveform notice"
+        },
+        "desktop": {
+          "status": "selected sample index/count/name/source pad/length",
+          "controls": "Prev sample and Next sample route through the data wheel"
+        }
+      },
+      "tolerance": null,
+      "fixture_refs": [
+        "crates/mpc_core/tests/core_flow.rs",
+        "crates/mpc_conformance/tests/fixtures/sample_catalog_navigation_b_trim_round_trip.json"
+      ],
+      "conflict_notes": [
+        "This is not real MPC2000XL or JJ-OS sample recording/import/trim editing.",
+        "No WAV bytes, factory samples, manuals, service scans, firmware bytes, JJ-OS assets, or copied third-party code are stored in the repo."
+      ]
     }
   ]
 }

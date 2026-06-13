@@ -40,6 +40,7 @@ This file tracks evidence sources without copying proprietary source pages, scan
 | sequence-loop-locate-slice-plan | internal_spec | plan | Deterministic locate-to-start and bounded sequence loop foundation | `docs/superpowers/plans/2026-06-13-mpc2000xl-sequence-loop-locate.md` |
 | pad-bank-switching-slice-plan | internal_spec | plan | Deterministic A-D pad bank selection and 64-pad program surface foundation | `docs/superpowers/plans/2026-06-13-mpc2000xl-pad-bank-switching.md` |
 | sequence-event-erase-slice-plan | internal_spec | plan | Deterministic MAIN F5 erase-latest-current-track sequence event foundation | `docs/superpowers/plans/2026-06-13-mpc2000xl-sequence-event-erase.md` |
+| sample-catalog-navigation-slice-plan | internal_spec | plan | Metadata-only SAMPLE/TRIM generated sample catalog navigation foundation | `docs/superpowers/plans/2026-06-13-mpc2000xl-sample-catalog-navigation.md` |
 
 ## Legal Boundary
 

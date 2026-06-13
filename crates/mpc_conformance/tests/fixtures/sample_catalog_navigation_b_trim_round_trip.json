@@ -1,0 +1,54 @@
+{
+  "id": "core.sample.catalog-navigation-b-trim-round-trip",
+  "name": "SAMPLE metadata catalog navigation selects a bank-B sample, shares it with TRIM, and persists identity",
+  "source_refs": [
+    "docs/superpowers/plans/2026-06-13-mpc2000xl-sample-catalog-navigation.md#source-and-evidence-status",
+    "docs/superpowers/plans/2026-06-13-mpc2000xl-pad-bank-switching.md#source-and-evidence-status",
+    "docs/superpowers/specs/2026-06-13-mpc2000xl-full-app-product-design.md#rights-and-source-boundary"
+  ],
+  "events": [
+    {
+      "type": "press",
+      "control": "sample"
+    },
+    {
+      "type": "turn_data_wheel",
+      "delta": 16
+    },
+    {
+      "type": "press",
+      "control": "trim"
+    }
+  ],
+  "expect": {
+    "mode": "trim",
+    "lcd_title": "TRIM",
+    "playing": false,
+    "recording": false,
+    "event_count": 3,
+    "current_program_index": 1,
+    "current_program_name": "Program01",
+    "pad_assignment_count": 64,
+    "selected_sample_index": 17,
+    "sample_catalog_count": 64,
+    "selected_sample_id": "synthetic_b_01",
+    "selected_sample_name": "SYN-B01"
+  },
+  "project_round_trip": {
+    "expect_snapshot_version": 1,
+    "expect": {
+      "mode": "trim",
+      "lcd_title": "TRIM",
+      "playing": false,
+      "recording": false,
+      "event_count": 3,
+      "current_program_index": 1,
+      "current_program_name": "Program01",
+      "pad_assignment_count": 64,
+      "selected_sample_index": 17,
+      "sample_catalog_count": 64,
+      "selected_sample_id": "synthetic_b_01",
+      "selected_sample_name": "SYN-B01"
+    }
+  }
+}

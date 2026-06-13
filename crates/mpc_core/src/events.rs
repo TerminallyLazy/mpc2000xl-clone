@@ -46,6 +46,17 @@ pub struct SyntheticSample {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SampleCatalogEntry {
+    pub index: usize,
+    pub count: usize,
+    pub sample: SyntheticSample,
+    pub source_pad: ProgramPad,
+    pub start_frame: u32,
+    pub end_frame: u32,
+    pub length_frames: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PadAssignment {
     pub pad: ProgramPad,
     pub sample: SyntheticSample,
@@ -255,6 +266,9 @@ pub enum MachineOutput {
     },
     SamplePlaybackMiss {
         miss: SamplePlaybackMiss,
+    },
+    SampleSelected {
+        entry: SampleCatalogEntry,
     },
     MidiNoteMapped {
         channel: u8,

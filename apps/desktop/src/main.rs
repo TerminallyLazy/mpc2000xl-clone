@@ -5,7 +5,7 @@ use mpc_audio::{
 };
 use mpc_core::{
     HardwareEvent, MachineOutput, Mode, MpcCore, MpcState, PadAssignmentChange, PadBank,
-    PanelControl, ProgramPad, SamplePlaybackResolution,
+    PanelControl, ProgramPad, SampleCatalogEntry, SamplePlaybackResolution,
 };
 use mpc_storage::{
     DEFAULT_PROJECT_FILE_PATH, load_project_file_with_report,
@@ -93,6 +93,7 @@ impl eframe::App for MpcDesktopApp {
             self.draw_midi_controls(ui);
             self.draw_sequence_status(ui);
             self.draw_program_status(ui);
+            self.draw_sample_status(ui);
             self.draw_audio_render_status(ui);
             self.draw_host_audio_status(ui);
             ui.add_space(16.0);
@@ -409,6 +410,20 @@ impl MpcDesktopApp {
             .find(|output| matches!(output, MachineOutput::Ignored { .. }))
         {
             return format!("Ignored: {reason}");
+        }
+
+        if let Some(MachineOutput::SampleSelected { entry }) = outputs
+            .iter()
+            .find(|output| matches!(output, MachineOutput::SampleSelected { .. }))
+        {
+            return format!(
+                "Selected sample {:02}/{:02} {} ({}, {} frames, metadata only)",
+                entry.index.min(99),
+                entry.count.min(99),
+                entry.sample.name,
+                program_pad_label(entry.source_pad),
+                entry.length_frames
+            );
         }
 
         if let Some(MachineOutput::PadAssignmentChanged {
@@ -761,6 +776,32 @@ impl MpcDesktopApp {
         }
     }
 
+    fn draw_sample_status(&mut self, ui: &mut egui::Ui) {
+        let state = self.core.state();
+        let selected_sample = state.selected_sample();
+        let sample_text = selected_sample_text(selected_sample.as_ref());
+        let sample_mode = matches!(state.mode, Mode::Sample | Mode::Trim);
+
+        ui.horizontal_wrapped(|ui| {
+            ui.label(sample_text);
+            ui.separator();
+            ui.label("Sample catalog: metadata only, no audio bytes");
+            ui.separator();
+            if ui
+                .add_enabled(sample_mode, egui::Button::new("Prev sample"))
+                .clicked()
+            {
+                self.dispatch_event(HardwareEvent::TurnDataWheel { delta: -1 });
+            }
+            if ui
+                .add_enabled(sample_mode, egui::Button::new("Next sample"))
+                .clicked()
+            {
+                self.dispatch_event(HardwareEvent::TurnDataWheel { delta: 1 });
+            }
+        });
+    }
+
     fn draw_audio_render_status(&self, ui: &mut egui::Ui) {
         ui.horizontal_wrapped(|ui| {
             ui.label(last_synthetic_render_text(
@@ -859,6 +900,11 @@ fn main_screen_status(state: &MpcState) -> String {
             state.selected_program_edit_field.label(),
             selected_assignment_text(state)
         ),
+        Mode::Sample | Mode::Trim => format!(
+            "LCD updated: {:?}, {}",
+            state.mode,
+            selected_sample_text(state.selected_sample().as_ref())
+        ),
         mode => format!("LCD updated: {mode:?}"),
     }
 }
@@ -898,6 +944,20 @@ fn selected_assignment_text(state: &MpcState) -> String {
             tune_text(assignment.tune_cents)
         ),
         None => "Assignment: unassigned".to_string(),
+    }
+}
+
+fn selected_sample_text(selected_sample: Option<&SampleCatalogEntry>) -> String {
+    match selected_sample {
+        Some(entry) => format!(
+            "Sample: {:02}/{:02} {} {} len {} frames",
+            entry.index.min(99),
+            entry.count.min(99),
+            entry.sample.name,
+            program_pad_label(entry.source_pad),
+            entry.length_frames
+        ),
+        None => "Sample: empty catalog".to_string(),
     }
 }
 
