@@ -67,6 +67,8 @@ Create `.gitignore`:
 /.superpowers/
 /.DS_Store
 *.log
+__pycache__/
+*.py[cod]
 
 # User-supplied firmware, manuals, samples, and local reference captures stay out of git.
 /local-assets/
