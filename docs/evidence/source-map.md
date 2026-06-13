@@ -33,6 +33,7 @@ This file tracks evidence sources without copying proprietary source pages, scan
 | jjos-unverified-boundary | jjos | investigation_boundary | JJ-OS support is not accepted as MPC2000XL evidence until a real MPC2000XL target is verified | `docs/superpowers/specs/2026-06-13-mpc2000xl-full-app-product-design.md#jj-os-evidence-boundary` |
 | full-app-product-spec | internal_spec | spec | Full app product design notes | `docs/superpowers/specs/2026-06-13-mpc2000xl-full-app-product-design.md` |
 | conformance-lab-spec | internal_spec | spec | Conformance lab design notes | `docs/superpowers/specs/2026-06-13-mpc2000xl-conformance-lab-design.md` |
+| sequence-playback-scheduling-slice-plan | internal_spec | plan | Deterministic recorded sequence playback scheduling foundation | `docs/superpowers/plans/2026-06-13-mpc2000xl-sequence-playback-scheduling.md` |
 
 ## Legal Boundary
 

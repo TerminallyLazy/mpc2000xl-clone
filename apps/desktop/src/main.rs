@@ -244,10 +244,12 @@ impl MpcDesktopApp {
     }
 
     fn handle_last_playback_intent(&mut self, outputs: &[MachineOutput]) -> Option<String> {
-        if let Some(MachineOutput::SamplePlaybackIntent { intent }) = outputs
-            .iter()
-            .find(|output| matches!(output, MachineOutput::SamplePlaybackIntent { .. }))
-        {
+        let mut playback_error = None;
+
+        for intent in outputs.iter().filter_map(|output| match output {
+            MachineOutput::SamplePlaybackIntent { intent } => Some(intent),
+            _ => None,
+        }) {
             let report = self.host_audio.play_intent_with_render_summary(intent);
             self.last_synthetic_render = report.render_summary;
             self.last_synthetic_render_error = None;
@@ -259,13 +261,16 @@ impl MpcDesktopApp {
             {
                 let message = format!("Synthetic render failed: {error}");
                 self.last_synthetic_render_error = Some(message.clone());
-                return Some(message);
+                playback_error = Some(message);
+                continue;
             }
 
-            host_audio_error_message(&report.event)
-        } else {
-            None
+            if let Some(message) = host_audio_error_message(&report.event) {
+                playback_error = Some(message);
+            }
         }
+
+        playback_error
     }
 
     fn status_from_outputs(outputs: &[MachineOutput], state: &MpcState) -> String {
@@ -316,6 +321,26 @@ impl MpcDesktopApp {
                 event.tick,
                 sample,
                 state.recorded_events.len()
+            );
+        }
+
+        if let Some(MachineOutput::SequenceEventPlayed { event }) = outputs
+            .iter()
+            .find(|output| matches!(output, MachineOutput::SequenceEventPlayed { .. }))
+        {
+            let sample = event
+                .playback
+                .as_ref()
+                .map(|intent| format!(" sample {}", intent.sample_name))
+                .unwrap_or_else(|| " unassigned".to_string());
+            return format!(
+                "Played Trk {:02} {:?}{:02} velocity {} at tick {}{}",
+                event.selected_track,
+                event.pad_bank,
+                event.pad_number,
+                event.velocity,
+                event.tick,
+                sample
             );
         }
 

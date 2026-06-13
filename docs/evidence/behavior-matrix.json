@@ -883,6 +883,86 @@
       ]
     },
     {
+      "id": "core.sequence.playback-scheduling",
+      "name": "Recorded sequence events schedule stored playback intents while playing",
+      "area": "sequencer",
+      "state": "fixture-backed-internal-spec",
+      "evidence": [
+        {
+          "source_id": "sequence-playback-scheduling-slice-plan",
+          "source_category": "internal_spec",
+          "type": "plan",
+          "status": "mapped",
+          "ref": "docs/superpowers/plans/2026-06-13-mpc2000xl-sequence-playback-scheduling.md#behavior-slice"
+        },
+        {
+          "source_id": "sequence-recording-slice-plan",
+          "source_category": "internal_spec",
+          "type": "plan",
+          "status": "mapped",
+          "ref": "docs/superpowers/plans/2026-06-13-mpc2000xl-sequence-recording.md#behavior-slice"
+        }
+      ],
+      "source_coverage": [
+        {
+          "source_category": "manual",
+          "source_id": "owner-manual",
+          "status": "investigation",
+          "ref": null,
+          "note": "Exact owner-manual mapping for sequence playback timing and event replay behavior is pending."
+        },
+        {
+          "source_category": "firmware",
+          "source_id": "mpc2000xl-os-local-reference",
+          "status": "investigation",
+          "ref": null,
+          "note": "No firmware or hardware trace has validated event crossing windows, PPQN, or latency behavior."
+        },
+        {
+          "source_category": "internal_spec",
+          "source_id": "sequence-playback-scheduling-slice-plan",
+          "status": "mapped",
+          "ref": "docs/superpowers/plans/2026-06-13-mpc2000xl-sequence-playback-scheduling.md#source-and-evidence-status",
+          "note": "Current scheduling is deterministic foundation behavior, not final MPC2000XL reference accuracy."
+        }
+      ],
+      "inputs": [
+        {
+          "channel": "clock",
+          "event": "tick",
+          "micros": "u64"
+        },
+        {
+          "channel": "sequence",
+          "event": "recorded_event",
+          "playback": "optional SamplePlaybackIntent snapshot"
+        }
+      ],
+      "expected_outputs": {
+        "state": {
+          "playing": "events schedule when previous_playhead_ticks < event.tick <= new_playhead_ticks",
+          "stopped": "ticks do not schedule playback",
+          "last_playback": "last scheduled SamplePlaybackIntent in the tick batch"
+        },
+        "outputs": [
+          "SequenceEventPlayed for scheduled events with playback metadata",
+          "SamplePlaybackIntent using stored recorded metadata",
+          "LcdChanged when visible playhead text changes"
+        ],
+        "desktop": {
+          "host_audio": "every SamplePlaybackIntent in the output batch is routed in order"
+        }
+      },
+      "tolerance": null,
+      "fixture_refs": [
+        "crates/mpc_core/tests/core_flow.rs",
+        "crates/mpc_conformance/tests/fixtures/sequence_playback_scheduled_recorded_event.json"
+      ],
+      "conflict_notes": [
+        "Looping, exact bar/beat/tick display, timing correction, and latency remain unmapped pending manual, firmware, or hardware evidence."
+      ]
+    },
+    {
       "id": "audio.host.disabled-ignore",
       "name": "Disabled host audio ignores playback without backend enqueue",
       "area": "audio_host",

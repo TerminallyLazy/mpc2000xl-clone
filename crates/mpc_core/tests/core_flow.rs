@@ -1,7 +1,8 @@
 use mpc_core::{
     HardwareEvent, INTERNAL_PPQN, MachineOutput, MainScreenField, Mode, MpcCore,
     PROJECT_SNAPSHOT_VERSION, PadAssignmentChange, PadBank, PanelControl, PlaybackMissReason,
-    ProgramPad, ProjectSnapshot, ProjectSnapshotError, SamplePlaybackResolution, SequenceEvent,
+    ProgramPad, ProjectSnapshot, ProjectSnapshotError, SamplePlaybackIntent,
+    SamplePlaybackResolution, SequenceEvent,
 };
 
 #[test]
@@ -276,6 +277,169 @@ fn tick_advances_playhead_only_while_playing() {
     });
     core.dispatch(HardwareEvent::Tick { micros: 500_000 });
     assert_eq!(core.state().playhead_ticks, after_large_tick);
+}
+
+#[test]
+fn sequence_playback_schedules_recorded_assigned_event_on_crossing_tick() {
+    let snapshot = snapshot_with_recorded_assigned_events_at_tick(&[(2, 82)]);
+    let recorded_event = snapshot.sequence.recorded_events[0].clone();
+    let mut core = restore_snapshot(snapshot);
+
+    assert_eq!(core.state().playhead_ticks, 0);
+
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::Play,
+    });
+    let outputs = core.dispatch(HardwareEvent::Tick { micros: 500_000 });
+    let intents = playback_intents(&outputs);
+
+    assert!(outputs.iter().any(|output| matches!(
+        output,
+        MachineOutput::SequenceEventPlayed { event } if event == &recorded_event
+    )));
+    assert_eq!(intents.len(), 1);
+    assert_eq!(intents[0].sample_id, "synthetic_a_02");
+    assert_eq!(intents[0].sample_name, "SYN-A02");
+    assert_eq!(intents[0].velocity, 82);
+    assert_eq!(intents[0].selected_track, 1);
+    assert_eq!(
+        core.state().last_playback,
+        Some(SamplePlaybackResolution::Intent {
+            intent: (*intents[0]).clone()
+        })
+    );
+}
+
+#[test]
+fn sequence_playback_schedules_multiple_recorded_events_in_recorded_order() {
+    let snapshot = snapshot_with_recorded_assigned_events_at_tick(&[(2, 70), (5, 88)]);
+    let mut core = restore_snapshot(snapshot);
+
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::Play,
+    });
+    let outputs = core.dispatch(HardwareEvent::Tick { micros: 500_000 });
+
+    let played_pads = outputs
+        .iter()
+        .filter_map(|output| match output {
+            MachineOutput::SequenceEventPlayed { event } => Some(event.pad_number),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let scheduled_sample_ids = playback_intents(&outputs)
+        .iter()
+        .map(|intent| intent.sample_id.as_str())
+        .collect::<Vec<_>>();
+
+    assert_eq!(played_pads, vec![2, 5]);
+    assert_eq!(
+        scheduled_sample_ids,
+        vec!["synthetic_a_02", "synthetic_a_05"]
+    );
+    assert!(matches!(
+        &core.state().last_playback,
+        Some(SamplePlaybackResolution::Intent { intent })
+            if intent.sample_id == "synthetic_a_05" && intent.velocity == 88
+    ));
+}
+
+#[test]
+fn sequence_playback_does_not_retrigger_on_zero_or_non_advancing_ticks() {
+    let snapshot = snapshot_with_recorded_assigned_events_at_tick(&[(3, 91)]);
+    let mut core = restore_snapshot(snapshot);
+
+    let stopped_outputs = core.dispatch(HardwareEvent::Tick { micros: 500_000 });
+    assert!(stopped_outputs.is_empty());
+    assert_eq!(core.state().playhead_ticks, 0);
+    assert_eq!(core.state().last_playback, None);
+
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::Play,
+    });
+
+    let zero_outputs = core.dispatch(HardwareEvent::Tick { micros: 0 });
+    assert!(playback_intents(&zero_outputs).is_empty());
+    assert_eq!(core.state().playhead_ticks, 0);
+
+    let non_advancing_outputs = core.dispatch(HardwareEvent::Tick { micros: 1 });
+    assert!(playback_intents(&non_advancing_outputs).is_empty());
+    assert_eq!(core.state().playhead_ticks, 0);
+
+    let crossing_outputs = core.dispatch(HardwareEvent::Tick { micros: 500_000 });
+    assert_eq!(playback_intents(&crossing_outputs).len(), 1);
+    assert_eq!(core.state().playhead_ticks, u64::from(INTERNAL_PPQN));
+
+    let same_position_outputs = core.dispatch(HardwareEvent::Tick { micros: 0 });
+    assert!(playback_intents(&same_position_outputs).is_empty());
+
+    let playhead_after_crossing = core.state().playhead_ticks;
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::Stop,
+    });
+    let stopped_after_playback_outputs = core.dispatch(HardwareEvent::Tick { micros: 500_000 });
+    assert!(stopped_after_playback_outputs.is_empty());
+    assert_eq!(core.state().playhead_ticks, playhead_after_crossing);
+}
+
+#[test]
+fn sequence_playback_uses_recorded_metadata_after_program_assignment_is_cleared() {
+    let mut core = MpcCore::new();
+
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::Rec,
+    });
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::Play,
+    });
+    core.dispatch(HardwareEvent::Tick { micros: 500_000 });
+    core.dispatch(HardwareEvent::StrikePad {
+        bank: PadBank::A,
+        pad: 4,
+        velocity: 70,
+    });
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::Stop,
+    });
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::Program,
+    });
+    core.dispatch(HardwareEvent::StrikePad {
+        bank: PadBank::A,
+        pad: 4,
+        velocity: 99,
+    });
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::SoftKey(1),
+    });
+
+    let mut snapshot = core.export_project_snapshot();
+    reset_snapshot_playhead(&mut snapshot, 0);
+    let mut restored = restore_snapshot(snapshot);
+
+    assert!(restored.state().current_program.pad_assignments.iter().all(
+        |assignment| assignment.pad
+            != ProgramPad {
+                bank: PadBank::A,
+                pad_number: 4,
+            }
+    ));
+
+    restored.dispatch(HardwareEvent::Press {
+        control: PanelControl::Play,
+    });
+    let outputs = restored.dispatch(HardwareEvent::Tick { micros: 500_000 });
+    let intents = playback_intents(&outputs);
+
+    assert_eq!(intents.len(), 1);
+    assert_eq!(intents[0].sample_id, "synthetic_a_04");
+    assert_eq!(intents[0].sample_name, "SYN-A04");
+    assert_eq!(intents[0].velocity, 70);
+    assert!(matches!(
+        &restored.state().last_playback,
+        Some(SamplePlaybackResolution::Intent { intent })
+            if intent.sample_id == "synthetic_a_04" && intent.velocity == 70
+    ));
 }
 
 #[test]
@@ -1000,6 +1164,55 @@ fn hardware_event_serializes_with_snake_case_tags() {
         json,
         r#"{"type":"strike_pad","bank":"d","pad":16,"velocity":127}"#
     );
+}
+
+fn snapshot_with_recorded_assigned_events_at_tick(events: &[(u8, u8)]) -> ProjectSnapshot {
+    let mut core = MpcCore::new();
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::Rec,
+    });
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::Play,
+    });
+    core.dispatch(HardwareEvent::Tick { micros: 500_000 });
+
+    for (pad, velocity) in events {
+        core.dispatch(HardwareEvent::StrikePad {
+            bank: PadBank::A,
+            pad: *pad,
+            velocity: *velocity,
+        });
+    }
+
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::Stop,
+    });
+    let mut snapshot = core.export_project_snapshot();
+    reset_snapshot_playhead(&mut snapshot, 0);
+    snapshot
+}
+
+fn reset_snapshot_playhead(snapshot: &mut ProjectSnapshot, playhead_ticks: u64) {
+    snapshot.machine.playhead_ticks = playhead_ticks;
+    snapshot.machine.playhead_tick_remainder = 0;
+    snapshot.machine.last_playback = None;
+}
+
+fn restore_snapshot(snapshot: ProjectSnapshot) -> MpcCore {
+    let mut core = MpcCore::new();
+    core.restore_project_snapshot(snapshot)
+        .expect("snapshot should restore");
+    core
+}
+
+fn playback_intents(outputs: &[MachineOutput]) -> Vec<&SamplePlaybackIntent> {
+    outputs
+        .iter()
+        .filter_map(|output| match output {
+            MachineOutput::SamplePlaybackIntent { intent } => Some(intent),
+            _ => None,
+        })
+        .collect()
 }
 
 fn recorded_project_snapshot() -> ProjectSnapshot {

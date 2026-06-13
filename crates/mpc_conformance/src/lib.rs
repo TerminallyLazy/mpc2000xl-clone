@@ -23,6 +23,12 @@ pub struct Fixture {
 pub struct ProjectRoundTripExpectation {
     #[serde(default)]
     pub post_restore_events: Vec<HardwareEvent>,
+    #[serde(default)]
+    pub restore_playhead_ticks: Option<u64>,
+    #[serde(default)]
+    pub restore_playhead_tick_remainder: Option<u64>,
+    #[serde(default)]
+    pub clear_last_playback_before_restore: bool,
     pub expect: ExpectedState,
     #[serde(default)]
     pub expect_snapshot_version: Option<u16>,
@@ -141,7 +147,7 @@ fn validate_project_round_trip(
     core: &MpcCore,
     expected: &ProjectRoundTripExpectation,
 ) {
-    let snapshot = core.export_project_snapshot();
+    let mut snapshot = core.export_project_snapshot();
     let expected_version = expected
         .expect_snapshot_version
         .unwrap_or(PROJECT_SNAPSHOT_VERSION);
@@ -152,7 +158,17 @@ fn validate_project_round_trip(
         ));
     }
 
-    let json = match core.to_project_json() {
+    if let Some(playhead_ticks) = expected.restore_playhead_ticks {
+        snapshot.machine.playhead_ticks = playhead_ticks;
+    }
+    if let Some(playhead_tick_remainder) = expected.restore_playhead_tick_remainder {
+        snapshot.machine.playhead_tick_remainder = playhead_tick_remainder;
+    }
+    if expected.clear_last_playback_before_restore {
+        snapshot.machine.last_playback = None;
+    }
+
+    let json = match serde_json::to_string_pretty(&snapshot) {
         Ok(json) => json,
         Err(error) => {
             details.push(format!("project_round_trip.encode error: {error}"));

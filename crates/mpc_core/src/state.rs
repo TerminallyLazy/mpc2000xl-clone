@@ -685,6 +685,7 @@ impl MpcCore {
         }
 
         let previous_lcd = self.state.lcd.clone();
+        let previous_playhead_ticks = self.state.playhead_ticks;
         let numerator = u128::from(micros)
             .saturating_mul(u128::from(self.state.tempo_bpm_x100))
             .saturating_mul(u128::from(INTERNAL_PPQN))
@@ -699,12 +700,39 @@ impl MpcCore {
             remainder as u64
         };
 
-        self.refresh_lcd();
-        if self.state.lcd != previous_lcd {
-            vec![MachineOutput::LcdChanged]
+        let scheduled_events = if previous_playhead_ticks < self.state.playhead_ticks {
+            self.state
+                .recorded_events
+                .iter()
+                .filter(|event| {
+                    previous_playhead_ticks < event.tick && event.tick <= self.state.playhead_ticks
+                })
+                .filter_map(|event| {
+                    event
+                        .playback
+                        .as_ref()
+                        .map(|intent| (event.clone(), intent.clone()))
+                })
+                .collect::<Vec<_>>()
         } else {
             Vec::new()
+        };
+
+        let mut outputs = Vec::new();
+        for (event, intent) in scheduled_events {
+            outputs.push(MachineOutput::SequenceEventPlayed { event });
+            outputs.push(MachineOutput::SamplePlaybackIntent {
+                intent: intent.clone(),
+            });
+            self.state.last_playback = Some(SamplePlaybackResolution::Intent { intent });
         }
+
+        self.refresh_lcd();
+        if self.state.lcd != previous_lcd {
+            outputs.push(MachineOutput::LcdChanged);
+        }
+
+        outputs
     }
 
     fn assignment_for(&self, pad: ProgramPad) -> Option<&PadAssignment> {
@@ -1168,11 +1196,7 @@ fn validate_project_snapshot(snapshot: &ProjectSnapshot) -> Result<(), ProjectSn
     }
 
     for (index, event) in snapshot.sequence.recorded_events.iter().enumerate() {
-        validate_sequence_event(
-            &format!("sequence.recorded_events[{index}]"),
-            event,
-            snapshot.machine.playhead_ticks,
-        )?;
+        validate_sequence_event(&format!("sequence.recorded_events[{index}]"), event)?;
     }
 
     Ok(())
@@ -1199,11 +1223,7 @@ fn validate_assignment(
     )
 }
 
-fn validate_sequence_event(
-    field: &str,
-    event: &SequenceEvent,
-    playhead_ticks: u64,
-) -> Result<(), ProjectSnapshotError> {
+fn validate_sequence_event(field: &str, event: &SequenceEvent) -> Result<(), ProjectSnapshotError> {
     validate_range_u8(
         &format!("{field}.selected_track"),
         event.selected_track,
@@ -1212,12 +1232,6 @@ fn validate_sequence_event(
     )?;
     validate_pad_number(&format!("{field}.pad_number"), event.pad_number)?;
     validate_velocity(&format!("{field}.velocity"), event.velocity)?;
-    if event.tick > playhead_ticks {
-        return Err(invalid_value(
-            &format!("{field}.tick"),
-            format!("must be <= playhead_ticks {playhead_ticks}"),
-        ));
-    }
 
     if let Some(playback) = &event.playback {
         validate_playback_intent(&format!("{field}.playback"), playback)?;

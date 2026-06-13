@@ -192,6 +192,9 @@ pub enum MachineOutput {
     SequenceEventRecorded {
         event: SequenceEvent,
     },
+    SequenceEventPlayed {
+        event: SequenceEvent,
+    },
     Ignored {
         reason: String,
     },
