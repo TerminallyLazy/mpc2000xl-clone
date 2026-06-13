@@ -46,6 +46,7 @@ const MIDI_MAX_CHANNEL: u8 = 16;
 const MIDI_MAX_NOTE: u8 = 127;
 const MIDI_MIN_MAPPED_NOTE: u8 = 36;
 const MIDI_MAX_MAPPED_NOTE: u8 = 51;
+const PAD_BANKS: [PadBank; 4] = [PadBank::A, PadBank::B, PadBank::C, PadBank::D];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -481,6 +482,10 @@ impl MpcCore {
             }
             PanelControl::LocateStart => self.locate_start(),
             PanelControl::ToggleLoop => self.toggle_loop(),
+            PanelControl::PadBankA => self.select_pad_bank(PadBank::A),
+            PanelControl::PadBankB => self.select_pad_bank(PadBank::B),
+            PanelControl::PadBankC => self.select_pad_bank(PadBank::C),
+            PanelControl::PadBankD => self.select_pad_bank(PadBank::D),
             PanelControl::CursorLeft => self.move_main_field_left(),
             PanelControl::CursorRight => self.move_main_field_right(),
             PanelControl::CursorUp => self.move_program_edit_field_up(),
@@ -519,6 +524,16 @@ impl MpcCore {
             MachineOutput::LoopChanged {
                 enabled: self.state.loop_enabled,
             },
+            MachineOutput::LcdChanged,
+        ]
+    }
+
+    fn select_pad_bank(&mut self, bank: PadBank) -> Vec<MachineOutput> {
+        self.state.pad_bank = bank;
+        self.state.selected_program_pad.bank = bank;
+        self.refresh_lcd();
+        vec![
+            MachineOutput::BankChanged { bank },
             MachineOutput::LcdChanged,
         ]
     }
@@ -1783,12 +1798,11 @@ pub fn sequence_length_ticks_for_bars(bar_count: u16) -> u64 {
 }
 
 fn default_program() -> Program {
-    let pad_assignments = (1..=16)
-        .map(|pad_number| {
-            generated_assignment(ProgramPad {
-                bank: PadBank::A,
-                pad_number,
-            })
+    let pad_assignments = PAD_BANKS
+        .iter()
+        .copied()
+        .flat_map(|bank| {
+            (1..=16).map(move |pad_number| generated_assignment(ProgramPad { bank, pad_number }))
         })
         .collect();
 

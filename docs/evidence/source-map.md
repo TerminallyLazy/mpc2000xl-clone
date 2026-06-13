@@ -38,6 +38,7 @@ This file tracks evidence sources without copying proprietary source pages, scan
 | midi-note-input-slice-plan | internal_spec | plan | Deterministic MIDI note-on/note-off input mapping foundation | `docs/superpowers/plans/2026-06-13-mpc2000xl-midi-note-input.md` |
 | program-pad-parameter-editing-slice-plan | internal_spec | plan | PROGRAM pad Level/Pan/Tune editing and render propagation foundation | `docs/superpowers/plans/2026-06-13-mpc2000xl-program-pad-parameter-editing.md` |
 | sequence-loop-locate-slice-plan | internal_spec | plan | Deterministic locate-to-start and bounded sequence loop foundation | `docs/superpowers/plans/2026-06-13-mpc2000xl-sequence-loop-locate.md` |
+| pad-bank-switching-slice-plan | internal_spec | plan | Deterministic A-D pad bank selection and 64-pad program surface foundation | `docs/superpowers/plans/2026-06-13-mpc2000xl-pad-bank-switching.md` |
 
 ## Legal Boundary
 

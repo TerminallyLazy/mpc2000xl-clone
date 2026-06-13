@@ -47,7 +47,7 @@
     "playhead_ticks": 96,
     "current_program_index": 1,
     "current_program_name": "Program01",
-    "pad_assignment_count": 16,
+    "pad_assignment_count": 64,
     "selected_program_pad": {
       "bank": "a",
       "pad_number": 3
@@ -112,7 +112,7 @@
       "playhead_ticks": 96,
       "current_program_index": 1,
       "current_program_name": "Program01",
-      "pad_assignment_count": 16,
+      "pad_assignment_count": 64,
       "selected_program_pad": {
         "bank": "a",
         "pad_number": 3

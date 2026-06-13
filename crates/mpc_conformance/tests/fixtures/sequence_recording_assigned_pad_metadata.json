@@ -32,7 +32,7 @@
     "playhead_ticks": 0,
     "current_program_index": 1,
     "current_program_name": "Program01",
-    "pad_assignment_count": 16,
+    "pad_assignment_count": 64,
     "last_recorded_sample_id": "synthetic_a_03",
     "last_recorded_sample_name": "SYN-A03",
     "last_playback": {

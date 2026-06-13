@@ -489,6 +489,13 @@ impl MpcDesktopApp {
             );
         }
 
+        if let Some(MachineOutput::BankChanged { bank }) = outputs
+            .iter()
+            .find(|output| matches!(output, MachineOutput::BankChanged { .. }))
+        {
+            return format!("Pad bank {} selected", bank.label());
+        }
+
         if let Some(MachineOutput::SequenceEventPlayed { event }) = outputs
             .iter()
             .find(|output| matches!(output, MachineOutput::SequenceEventPlayed { .. }))
@@ -694,6 +701,8 @@ impl MpcDesktopApp {
         ui.horizontal_wrapped(|ui| {
             ui.label(program_text);
             ui.separator();
+            ui.label(format!("Active bank: {}", state.pad_bank.label()));
+            ui.separator();
             ui.label(format!("Selected pad: {}", program_pad_label(selected_pad)));
             ui.separator();
             ui.label(format!(
@@ -747,24 +756,32 @@ impl MpcDesktopApp {
     }
 
     fn draw_pads(&mut self, ui: &mut egui::Ui) {
+        let active_bank = self.core.state().pad_bank;
         let selected_program_pad = self.core.state().selected_program_pad;
         let program_mode = self.core.state().mode == Mode::Program;
+        ui.horizontal(|ui| {
+            self.bank_button(ui, "A", PadBank::A, PanelControl::PadBankA);
+            self.bank_button(ui, "B", PadBank::B, PanelControl::PadBankB);
+            self.bank_button(ui, "C", PadBank::C, PanelControl::PadBankC);
+            self.bank_button(ui, "D", PadBank::D, PanelControl::PadBankD);
+        });
+        ui.add_space(8.0);
         egui::Grid::new("pads")
             .num_columns(4)
             .spacing([10.0, 10.0])
             .show(ui, |ui| {
                 for pad in 1..=16 {
                     let pad_address = ProgramPad {
-                        bank: PadBank::A,
+                        bank: active_bank,
                         pad_number: pad,
                     };
                     let selected = program_mode && selected_program_pad == pad_address;
                     if ui
-                        .selectable_label(selected, format!("PAD {pad:02}"))
+                        .selectable_label(selected, program_pad_label(pad_address))
                         .clicked()
                     {
                         self.dispatch_event(HardwareEvent::StrikePad {
-                            bank: PadBank::A,
+                            bank: active_bank,
                             pad,
                             velocity: 100,
                         });
@@ -774,6 +791,19 @@ impl MpcDesktopApp {
                     }
                 }
             });
+    }
+
+    fn bank_button(
+        &mut self,
+        ui: &mut egui::Ui,
+        label: &str,
+        bank: PadBank,
+        control: PanelControl,
+    ) {
+        let selected = self.core.state().pad_bank == bank;
+        if ui.selectable_label(selected, label).clicked() {
+            self.dispatch_event(HardwareEvent::Press { control });
+        }
     }
 }
 
@@ -793,7 +823,8 @@ fn main_screen_status(state: &MpcState) -> String {
             state.recorded_events.len()
         ),
         Mode::Program => format!(
-            "LCD updated: PROGRAM {} field {}, {}",
+            "LCD updated: PROGRAM bank {} {} field {}, {}",
+            state.pad_bank.label(),
             program_pad_label(state.selected_program_pad),
             state.selected_program_edit_field.label(),
             selected_assignment_text(state)

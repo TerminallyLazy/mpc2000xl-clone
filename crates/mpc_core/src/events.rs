@@ -181,6 +181,10 @@ pub enum PanelControl {
     Overdub,
     LocateStart,
     ToggleLoop,
+    PadBankA,
+    PadBankB,
+    PadBankC,
+    PadBankD,
     CursorUp,
     CursorDown,
     CursorLeft,
@@ -237,6 +241,9 @@ pub enum MachineOutput {
     },
     LoopChanged {
         enabled: bool,
+    },
+    BankChanged {
+        bank: PadBank,
     },
     PadTriggered {
         bank: PadBank,

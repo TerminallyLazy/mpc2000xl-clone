@@ -41,7 +41,7 @@
     "playhead_ticks": 96,
     "current_program_index": 1,
     "current_program_name": "Program01",
-    "pad_assignment_count": 16,
+    "pad_assignment_count": 64,
     "last_recorded_sample_id": "synthetic_a_06",
     "last_recorded_sample_name": "SYN-A06",
     "last_recorded_event": {
@@ -91,7 +91,7 @@
       "playhead_ticks": 96,
       "current_program_index": 1,
       "current_program_name": "Program01",
-      "pad_assignment_count": 16,
+      "pad_assignment_count": 64,
       "last_playback": {
         "type": "intent",
         "intent": {

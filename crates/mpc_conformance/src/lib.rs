@@ -1,7 +1,7 @@
 use anyhow::{Context, Result, bail};
 use mpc_audio::{AudioRenderSettings, AudioSourceKind, ChannelBalance, render_intent};
 use mpc_core::{
-    HardwareEvent, MainScreenField, Mode, MpcCore, MpcState, PROJECT_SNAPSHOT_VERSION,
+    HardwareEvent, MainScreenField, Mode, MpcCore, MpcState, PROJECT_SNAPSHOT_VERSION, PadBank,
     ProgramEditField, ProgramPad, SamplePlaybackResolution, SequenceEvent,
 };
 use serde::{Deserialize, Serialize};
@@ -45,6 +45,8 @@ pub struct ExpectedState {
     pub selected_field: Option<MainScreenField>,
     #[serde(default)]
     pub selected_track: Option<u8>,
+    #[serde(default)]
+    pub pad_bank: Option<PadBank>,
     #[serde(default)]
     pub tempo_bpm_x100: Option<u32>,
     #[serde(default)]
@@ -257,6 +259,15 @@ fn validate_expected_state(
             details.push(format!(
                 "{prefix}selected_track mismatch: expected {}, got {}",
                 selected_track, state.selected_track
+            ));
+        }
+    }
+
+    if let Some(pad_bank) = expected.pad_bank {
+        if state.pad_bank != pad_bank {
+            details.push(format!(
+                "{prefix}pad_bank mismatch: expected {:?}, got {:?}",
+                pad_bank, state.pad_bank
             ));
         }
     }

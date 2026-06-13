@@ -29,12 +29,43 @@
     "selected_track": 1,
     "recorded_event_count": 1,
     "playhead_ticks": 96,
+    "last_recorded_sample_id": "synthetic_c_04",
+    "last_recorded_sample_name": "SYN-C04",
+    "last_playback": {
+      "type": "intent",
+      "intent": {
+        "selected_track": 1,
+        "program_index": 1,
+        "program_name": "Program01",
+        "bank": "c",
+        "pad_number": 4,
+        "sample_id": "synthetic_c_04",
+        "sample_name": "SYN-C04",
+        "velocity": 64,
+        "level": 100,
+        "pan": 0,
+        "tune_cents": 0
+      }
+    },
     "last_recorded_event": {
       "selected_track": 1,
       "pad_bank": "c",
       "pad_number": 4,
       "velocity": 64,
-      "tick": 96
+      "tick": 96,
+      "playback": {
+        "selected_track": 1,
+        "program_index": 1,
+        "program_name": "Program01",
+        "bank": "c",
+        "pad_number": 4,
+        "sample_id": "synthetic_c_04",
+        "sample_name": "SYN-C04",
+        "velocity": 64,
+        "level": 100,
+        "pan": 0,
+        "tune_cents": 0
+      }
     }
   }
 }
