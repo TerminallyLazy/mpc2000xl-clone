@@ -1,6 +1,9 @@
+use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use cpal::{FromSample, Sample, SampleFormat, SizedSample};
 use mpc_core::{CountInClickIntent, PadBank, SamplePlaybackIntent, SampleReleaseIntent};
 use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::VecDeque;
+use std::sync::{Arc, Mutex};
 
 pub const DEFAULT_SAMPLE_RATE_HZ: u32 = 44_100;
 pub const DEFAULT_FRAME_COUNT: usize = 512;
@@ -17,6 +20,14 @@ pub const MAX_RENDER_FRAMES: usize = MAX_SAMPLE_RATE_HZ as usize;
 /// Deterministic capture backends store render summaries only, but construction
 /// still clamps requested history to avoid unchecked upfront allocation.
 pub const MAX_CAPTURE_AUDIO_BACKEND_CAPTURES: usize = 1_024;
+/// Default host-device queue capacity, in stereo frames, for the first real
+/// output-device foundation.
+pub const DEFAULT_DEVICE_AUDIO_QUEUE_FRAMES: usize = DEFAULT_SAMPLE_RATE_HZ as usize * 2;
+/// Upper guardrail for the host-device queue so a stalled device cannot retain
+/// unbounded generated PCM in memory.
+pub const MAX_DEVICE_AUDIO_QUEUE_FRAMES: usize = MAX_SAMPLE_RATE_HZ as usize * 10;
+/// Number of recent CPAL stream callback errors retained for desktop status.
+pub const MAX_DEVICE_AUDIO_STREAM_ERRORS: usize = 8;
 /// Internal foundation policy for deterministic host-audio voice accounting.
 ///
 /// This is not accepted MPC2000XL hardware evidence and must not be presented as
@@ -35,6 +46,7 @@ const FNV_PRIME: u32 = 16_777_619;
 const COUNT_IN_CLICK_ACCENT_PEAK: i32 = 24_000;
 const COUNT_IN_CLICK_NORMAL_PEAK: i32 = 14_000;
 const COUNT_IN_CLICK_ACTIVE_RATE_DIVISOR: usize = 250;
+const DEVICE_AUDIO_BACKEND_NAME: &str = "device";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AudioRenderSettings {
@@ -707,6 +719,341 @@ impl HostAudioBackend for CaptureAudioBackend {
             rendered.frames.len(),
         ))
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeviceAudioBackendConfig {
+    pub max_queued_frames: usize,
+}
+
+impl Default for DeviceAudioBackendConfig {
+    fn default() -> Self {
+        Self {
+            max_queued_frames: DEFAULT_DEVICE_AUDIO_QUEUE_FRAMES,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeviceAudioBackendStatus {
+    pub backend_name: String,
+    pub device_name: String,
+    pub sample_rate_hz: u32,
+    pub channels: u16,
+    pub sample_format: String,
+    pub queued_frame_count: usize,
+    pub max_queued_frame_count: usize,
+    pub total_enqueued_frame_count: u64,
+    pub total_callback_frame_count: u64,
+    pub underrun_frame_count: u64,
+    pub recent_stream_errors: Vec<String>,
+}
+
+pub struct DeviceAudioBackend {
+    backend_name: String,
+    device_name: String,
+    sample_rate_hz: u32,
+    channels: u16,
+    sample_format: String,
+    shared: Arc<Mutex<DeviceAudioOutputQueue>>,
+    _stream: cpal::Stream,
+}
+
+impl std::fmt::Debug for DeviceAudioBackend {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("DeviceAudioBackend")
+            .field("backend_name", &self.backend_name)
+            .field("device_name", &self.device_name)
+            .field("sample_rate_hz", &self.sample_rate_hz)
+            .field("channels", &self.channels)
+            .field("sample_format", &self.sample_format)
+            .field("status", &self.status())
+            .finish_non_exhaustive()
+    }
+}
+
+impl DeviceAudioBackend {
+    pub fn open_default(config: DeviceAudioBackendConfig) -> Result<Self, HostAudioBackendError> {
+        let host = cpal::default_host();
+        let device = host
+            .default_output_device()
+            .ok_or_else(|| device_audio_backend_error("default output device is not available"))?;
+        let device_name = device
+            .id()
+            .map(|id| id.to_string())
+            .unwrap_or_else(|error| format!("unknown output device ({error})"));
+        let supported_config = device.default_output_config().map_err(|error| {
+            device_audio_backend_error(format!("default output config failed: {error}"))
+        })?;
+        let sample_format = supported_config.sample_format();
+        let stream_config = supported_config.config();
+        let sample_rate_hz = stream_config.sample_rate;
+        if !(MIN_SAMPLE_RATE_HZ..=MAX_SAMPLE_RATE_HZ).contains(&sample_rate_hz) {
+            return Err(device_audio_backend_error(format!(
+                "default output sample rate {sample_rate_hz} Hz is outside renderer bounds {MIN_SAMPLE_RATE_HZ}..={MAX_SAMPLE_RATE_HZ} Hz"
+            )));
+        }
+        let channels = stream_config.channels;
+        let sample_format_text = format!("{sample_format:?}");
+        let shared = Arc::new(Mutex::new(DeviceAudioOutputQueue::new(
+            config.max_queued_frames,
+        )));
+        let stream =
+            build_device_output_stream(&device, stream_config, sample_format, Arc::clone(&shared))?;
+        stream
+            .play()
+            .map_err(|error| device_audio_backend_error(format!("stream play failed: {error}")))?;
+
+        Ok(Self {
+            backend_name: DEVICE_AUDIO_BACKEND_NAME.to_string(),
+            device_name,
+            sample_rate_hz,
+            channels,
+            sample_format: sample_format_text,
+            shared,
+            _stream: stream,
+        })
+    }
+
+    pub fn status(&self) -> DeviceAudioBackendStatus {
+        let snapshot = match self.shared.lock() {
+            Ok(queue) => queue.status(),
+            Err(_) => DeviceAudioOutputQueueStatus::poisoned(),
+        };
+
+        DeviceAudioBackendStatus {
+            backend_name: self.backend_name.clone(),
+            device_name: self.device_name.clone(),
+            sample_rate_hz: self.sample_rate_hz,
+            channels: self.channels,
+            sample_format: self.sample_format.clone(),
+            queued_frame_count: snapshot.queued_frame_count,
+            max_queued_frame_count: snapshot.max_queued_frame_count,
+            total_enqueued_frame_count: snapshot.total_enqueued_frame_count,
+            total_callback_frame_count: snapshot.total_callback_frame_count,
+            underrun_frame_count: snapshot.underrun_frame_count,
+            recent_stream_errors: snapshot.recent_stream_errors,
+        }
+    }
+}
+
+impl HostAudioBackend for DeviceAudioBackend {
+    fn backend_name(&self) -> &str {
+        &self.backend_name
+    }
+
+    fn enqueue_render(
+        &mut self,
+        rendered: &RenderedAudio,
+    ) -> Result<HostAudioBackendReceipt, HostAudioBackendError> {
+        let mut queue = self
+            .shared
+            .lock()
+            .map_err(|_| device_audio_backend_error("device output queue lock poisoned"))?;
+        validate_device_render_sample_rate(rendered, self.sample_rate_hz)?;
+        queue.enqueue_render(rendered)?;
+        Ok(HostAudioBackendReceipt::queued(rendered.frames.len()))
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DeviceAudioOutputQueueStatus {
+    queued_frame_count: usize,
+    max_queued_frame_count: usize,
+    total_enqueued_frame_count: u64,
+    total_callback_frame_count: u64,
+    underrun_frame_count: u64,
+    recent_stream_errors: Vec<String>,
+}
+
+impl DeviceAudioOutputQueueStatus {
+    fn poisoned() -> Self {
+        Self {
+            queued_frame_count: 0,
+            max_queued_frame_count: 0,
+            total_enqueued_frame_count: 0,
+            total_callback_frame_count: 0,
+            underrun_frame_count: 0,
+            recent_stream_errors: vec!["device output queue lock poisoned".to_string()],
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DeviceAudioOutputQueue {
+    max_queued_frames: usize,
+    frames: VecDeque<AudioFrame>,
+    total_enqueued_frame_count: u64,
+    total_callback_frame_count: u64,
+    underrun_frame_count: u64,
+    recent_stream_errors: VecDeque<String>,
+}
+
+impl DeviceAudioOutputQueue {
+    fn new(max_queued_frames: usize) -> Self {
+        let max_queued_frames = max_queued_frames.max(1).min(MAX_DEVICE_AUDIO_QUEUE_FRAMES);
+        Self {
+            max_queued_frames,
+            frames: VecDeque::with_capacity(max_queued_frames.min(DEFAULT_FRAME_COUNT)),
+            total_enqueued_frame_count: 0,
+            total_callback_frame_count: 0,
+            underrun_frame_count: 0,
+            recent_stream_errors: VecDeque::with_capacity(MAX_DEVICE_AUDIO_STREAM_ERRORS),
+        }
+    }
+
+    fn enqueue_render(&mut self, rendered: &RenderedAudio) -> Result<(), HostAudioBackendError> {
+        let requested_frames = rendered.frames.len();
+        if self.frames.len().saturating_add(requested_frames) > self.max_queued_frames {
+            return Err(device_audio_backend_error(format!(
+                "device output queue full: queued {} frame(s), requested {} frame(s), capacity {} frame(s)",
+                self.frames.len(),
+                requested_frames,
+                self.max_queued_frames
+            )));
+        }
+
+        self.frames.extend(rendered.frames.iter().copied());
+        self.total_enqueued_frame_count = self
+            .total_enqueued_frame_count
+            .saturating_add(u64::try_from(requested_frames).unwrap_or(u64::MAX));
+        Ok(())
+    }
+
+    fn write_output<T>(&mut self, output: &mut [T], channels: usize)
+    where
+        T: Sample + FromSample<f32>,
+    {
+        let channels = channels.max(1);
+        for output_frame in output.chunks_mut(channels) {
+            let (left, right) = self
+                .frames
+                .pop_front()
+                .map(audio_frame_to_f32_pair)
+                .unwrap_or_else(|| {
+                    self.underrun_frame_count = self.underrun_frame_count.saturating_add(1);
+                    (0.0, 0.0)
+                });
+            let mono = ((left + right) * 0.5).clamp(-1.0, 1.0);
+            for (channel_index, sample) in output_frame.iter_mut().enumerate() {
+                let value = match (channels, channel_index) {
+                    (1, 0) => mono,
+                    (_, 0) => left,
+                    (_, 1) => right,
+                    _ => 0.0,
+                };
+                *sample = T::from_sample(value);
+            }
+            self.total_callback_frame_count = self.total_callback_frame_count.saturating_add(1);
+        }
+    }
+
+    fn record_stream_error(&mut self, error: String) {
+        if self.recent_stream_errors.len() == MAX_DEVICE_AUDIO_STREAM_ERRORS {
+            self.recent_stream_errors.pop_front();
+        }
+        self.recent_stream_errors.push_back(error);
+    }
+
+    fn status(&self) -> DeviceAudioOutputQueueStatus {
+        DeviceAudioOutputQueueStatus {
+            queued_frame_count: self.frames.len(),
+            max_queued_frame_count: self.max_queued_frames,
+            total_enqueued_frame_count: self.total_enqueued_frame_count,
+            total_callback_frame_count: self.total_callback_frame_count,
+            underrun_frame_count: self.underrun_frame_count,
+            recent_stream_errors: self.recent_stream_errors.iter().cloned().collect(),
+        }
+    }
+}
+
+fn build_device_output_stream(
+    device: &cpal::Device,
+    config: cpal::StreamConfig,
+    sample_format: SampleFormat,
+    shared: Arc<Mutex<DeviceAudioOutputQueue>>,
+) -> Result<cpal::Stream, HostAudioBackendError> {
+    match sample_format {
+        SampleFormat::F32 => build_typed_device_output_stream::<f32>(device, config, shared),
+        SampleFormat::I16 => build_typed_device_output_stream::<i16>(device, config, shared),
+        SampleFormat::U16 => build_typed_device_output_stream::<u16>(device, config, shared),
+        sample_format => Err(device_audio_backend_error(format!(
+            "unsupported default output sample format {sample_format:?}"
+        ))),
+    }
+}
+
+fn build_typed_device_output_stream<T>(
+    device: &cpal::Device,
+    config: cpal::StreamConfig,
+    shared: Arc<Mutex<DeviceAudioOutputQueue>>,
+) -> Result<cpal::Stream, HostAudioBackendError>
+where
+    T: SizedSample + FromSample<f32>,
+{
+    let channels = usize::from(config.channels);
+    let error_shared = Arc::clone(&shared);
+    device
+        .build_output_stream(
+            config,
+            move |output: &mut [T], _| write_device_output(output, channels, &shared),
+            move |error| record_device_stream_error(&error_shared, error.to_string()),
+            None,
+        )
+        .map_err(|error| device_audio_backend_error(format!("build output stream failed: {error}")))
+}
+
+fn write_device_output<T>(
+    output: &mut [T],
+    channels: usize,
+    shared: &Arc<Mutex<DeviceAudioOutputQueue>>,
+) where
+    T: Sample + FromSample<f32>,
+{
+    match shared.lock() {
+        Ok(mut queue) => queue.write_output(output, channels),
+        Err(_) => {
+            for sample in output.iter_mut() {
+                *sample = T::from_sample(0.0);
+            }
+        }
+    }
+}
+
+fn record_device_stream_error(shared: &Arc<Mutex<DeviceAudioOutputQueue>>, error: String) {
+    if let Ok(mut queue) = shared.lock() {
+        queue.record_stream_error(error);
+    }
+}
+
+fn validate_device_render_sample_rate(
+    rendered: &RenderedAudio,
+    device_sample_rate_hz: u32,
+) -> Result<(), HostAudioBackendError> {
+    if rendered.settings.sample_rate_hz == device_sample_rate_hz {
+        return Ok(());
+    }
+
+    Err(device_audio_backend_error(format!(
+        "device output sample-rate mismatch: rendered {} Hz, device {} Hz",
+        rendered.settings.sample_rate_hz, device_sample_rate_hz
+    )))
+}
+
+fn audio_frame_to_f32_pair(frame: AudioFrame) -> (f32, f32) {
+    (
+        i16_sample_to_f32(frame.left),
+        i16_sample_to_f32(frame.right),
+    )
+}
+
+fn i16_sample_to_f32(sample: i16) -> f32 {
+    (f32::from(sample) / f32::from(i16::MAX)).clamp(-1.0, 1.0)
+}
+
+fn device_audio_backend_error(message: impl Into<String>) -> HostAudioBackendError {
+    HostAudioBackendError::backend_unavailable(DEVICE_AUDIO_BACKEND_NAME, message)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1686,6 +2033,110 @@ mod tests {
             backend.captured_renders().capacity(),
             MAX_CAPTURE_AUDIO_BACKEND_CAPTURES
         );
+    }
+
+    #[test]
+    fn device_audio_queue_clamps_capacity_and_reports_status() {
+        let queue = DeviceAudioOutputQueue::new(usize::MAX);
+        let status = queue.status();
+
+        assert_eq!(status.max_queued_frame_count, MAX_DEVICE_AUDIO_QUEUE_FRAMES);
+        assert_eq!(status.queued_frame_count, 0);
+        assert_eq!(status.total_enqueued_frame_count, 0);
+        assert_eq!(status.total_callback_frame_count, 0);
+        assert_eq!(status.underrun_frame_count, 0);
+        assert!(status.recent_stream_errors.is_empty());
+    }
+
+    #[test]
+    fn device_audio_queue_enqueues_and_drains_stereo_f32_frames() {
+        let rendered = render(&test_intent(100, 100, -50), settings(44_100, 4));
+        let expected_frames = rendered.frames.clone();
+        let mut queue = DeviceAudioOutputQueue::new(8);
+
+        queue
+            .enqueue_render(&rendered)
+            .expect("render should fit in queue");
+        assert_eq!(queue.status().queued_frame_count, 4);
+        assert_eq!(queue.status().total_enqueued_frame_count, 4);
+
+        let mut output = [0.0_f32; 8];
+        queue.write_output(&mut output, 2);
+
+        assert_eq!(queue.status().queued_frame_count, 0);
+        assert_eq!(queue.status().total_callback_frame_count, 4);
+        assert_eq!(queue.status().underrun_frame_count, 0);
+        assert_eq!(output[0], i16_sample_to_f32(expected_frames[0].left));
+        assert_eq!(output[1], i16_sample_to_f32(expected_frames[0].right));
+        assert_eq!(output[6], i16_sample_to_f32(expected_frames[3].left));
+        assert_eq!(output[7], i16_sample_to_f32(expected_frames[3].right));
+    }
+
+    #[test]
+    fn device_audio_queue_mixes_mono_and_counts_underrun_silence() {
+        let mut queue = DeviceAudioOutputQueue::new(4);
+        queue
+            .enqueue_render(&RenderedAudio {
+                settings: settings(44_100, 1),
+                summary: render(&test_intent(100, 100, 0), settings(44_100, 1)).summary,
+                frames: vec![AudioFrame {
+                    left: i16::MAX,
+                    right: 0,
+                }],
+            })
+            .expect("single frame should fit");
+
+        let mut output = [1.0_f32; 2];
+        queue.write_output(&mut output, 1);
+
+        assert_eq!(output[0], 0.5);
+        assert_eq!(output[1], 0.0);
+        assert_eq!(queue.status().queued_frame_count, 0);
+        assert_eq!(queue.status().total_callback_frame_count, 2);
+        assert_eq!(queue.status().underrun_frame_count, 1);
+    }
+
+    #[test]
+    fn device_audio_queue_rejects_overflow_without_retaining_partial_render() {
+        let rendered = render(&test_intent(100, 100, 0), settings(44_100, 2));
+        let mut queue = DeviceAudioOutputQueue::new(1);
+
+        let error = queue
+            .enqueue_render(&rendered)
+            .expect_err("oversized render should be rejected");
+
+        assert!(error.to_string().contains("device output queue full"));
+        assert_eq!(queue.status().queued_frame_count, 0);
+        assert_eq!(queue.status().total_enqueued_frame_count, 0);
+    }
+
+    #[test]
+    fn device_audio_rejects_render_sample_rate_mismatch() {
+        let rendered = render(&test_intent(100, 100, 0), settings(44_100, 2));
+
+        validate_device_render_sample_rate(&rendered, 44_100)
+            .expect("matching device sample rate should be accepted");
+        let error = validate_device_render_sample_rate(&rendered, 48_000)
+            .expect_err("mismatched device sample rate should be rejected");
+
+        let message = error.to_string();
+        assert!(message.contains("sample-rate mismatch"));
+        assert!(message.contains("44100 Hz"));
+        assert!(message.contains("48000 Hz"));
+    }
+
+    #[test]
+    fn device_audio_queue_retains_bounded_recent_stream_errors() {
+        let mut queue = DeviceAudioOutputQueue::new(4);
+
+        for index in 0..(MAX_DEVICE_AUDIO_STREAM_ERRORS + 2) {
+            queue.record_stream_error(format!("stream-error-{index}"));
+        }
+
+        let errors = queue.status().recent_stream_errors;
+        assert_eq!(errors.len(), MAX_DEVICE_AUDIO_STREAM_ERRORS);
+        assert_eq!(errors.first().map(String::as_str), Some("stream-error-2"));
+        assert_eq!(errors.last().map(String::as_str), Some("stream-error-9"));
     }
 
     #[test]

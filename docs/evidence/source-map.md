@@ -57,6 +57,7 @@ This file tracks evidence sources without copying proprietary source pages, scan
 | timing-correct-foundation-slice-plan | internal_spec | plan | TIMING CORRECT deterministic quantize and swing recording foundation | `docs/superpowers/plans/2026-06-13-mpc2000xl-timing-correct-foundation.md` |
 | metronome-click-audio-foundation-slice-plan | internal_spec | plan | Deterministic count-in click audio rendering and host-audio routing foundation | `docs/superpowers/plans/2026-06-14-mpc2000xl-metronome-click-audio-foundation.md` |
 | host-audio-voice-lifecycle-foundation-slice-plan | internal_spec | plan | Deterministic host-audio voice lifecycle and polyphony accounting foundation | `docs/superpowers/plans/2026-06-14-mpc2000xl-host-audio-voice-lifecycle-foundation.md` |
+| host-audio-device-output-foundation-slice-plan | internal_spec | plan | Optional default host output-device backend foundation | `docs/superpowers/plans/2026-06-14-mpc2000xl-host-audio-device-output-foundation.md` |
 
 ## Legal Boundary
 

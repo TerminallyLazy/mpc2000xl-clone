@@ -1755,6 +1755,113 @@
       ]
     },
     {
+      "id": "audio.host.device-output-foundation",
+      "name": "Optional host audio default output device backend",
+      "area": "audio_host",
+      "state": "unit-backed-internal-spec",
+      "evidence": [
+        {
+          "source_id": "host-audio-device-output-foundation-slice-plan",
+          "source_category": "internal_spec",
+          "type": "plan",
+          "status": "mapped",
+          "ref": "docs/superpowers/plans/2026-06-14-mpc2000xl-host-audio-device-output-foundation.md#behavior-slice"
+        },
+        {
+          "source_id": "host-audio-plumbing-slice-plan",
+          "source_category": "internal_spec",
+          "type": "plan",
+          "status": "mapped",
+          "ref": "docs/superpowers/plans/2026-06-13-mpc2000xl-host-audio-plumbing.md#device-abstraction"
+        }
+      ],
+      "source_coverage": [
+        {
+          "source_category": "manual",
+          "source_id": "owner-manual",
+          "status": "investigation",
+          "ref": null,
+          "note": "Exact MPC2000XL output-device semantics, output levels, latency, and analog routing are not mapped yet."
+        },
+        {
+          "source_category": "firmware",
+          "source_id": "mpc2000xl-os-local-reference",
+          "status": "investigation",
+          "ref": null,
+          "note": "No firmware or hardware trace validates host callback timing, scheduler latency, or device output behavior."
+        },
+        {
+          "source_category": "schematic",
+          "source_id": "operation-schematic",
+          "status": "investigation",
+          "ref": null,
+          "note": "No DAC, analog output, jack routing, or service-path evidence is mapped to this host-device backend."
+        },
+        {
+          "source_category": "jjos",
+          "source_id": "jjos-unverified-boundary",
+          "status": "conflict-note",
+          "ref": "docs/superpowers/specs/2026-06-13-mpc2000xl-full-app-product-design.md#jj-os-evidence-boundary",
+          "note": "JJ-OS audio output behavior is not accepted as MPC2000XL evidence for this foundation slice."
+        },
+        {
+          "source_category": "internal_spec",
+          "source_id": "host-audio-device-output-foundation-slice-plan",
+          "status": "mapped",
+          "ref": "docs/superpowers/plans/2026-06-14-mpc2000xl-host-audio-device-output-foundation.md#deterministic-contract",
+          "note": "The device backend is optional host output plumbing with bounded queueing and structured failures."
+        }
+      ],
+      "inputs": [
+        {
+          "channel": "desktop_host_audio",
+          "event": "select_default_device_backend",
+          "policy": "attempts to open the platform default output device through CPAL and keeps capture backend as deterministic fallback"
+        },
+        {
+          "channel": "host_audio",
+          "event": "rendered_audio_enqueue",
+          "policy": "accepted rendered buffers are enqueued only if the whole buffer fits the bounded device queue"
+        },
+        {
+          "channel": "device_callback",
+          "event": "output_buffer_request",
+          "policy": "drains queued stereo frames, mixes mono when needed, fills extra channels and underruns with silence"
+        }
+      ],
+      "expected_outputs": {
+        "backend": {
+          "backend_name": "device",
+          "dependency": "cpal 0.18.1",
+          "default_device": "opened on explicit desktop selection only",
+          "sample_formats": "f32, i16, and u16 supported in this foundation slice",
+          "sample_rate_policy": "desktop rebuilds render settings at the opened device sample rate; backend rejects mismatched rendered buffers because this slice has no resampler",
+          "unsupported_sample_format": "structured HostAudioBackendError without panic"
+        },
+        "queue": {
+          "capacity": "bounded by DEFAULT_DEVICE_AUDIO_QUEUE_FRAMES and MAX_DEVICE_AUDIO_QUEUE_FRAMES",
+          "enqueue": "all-or-nothing; overflow rejects without partial retention",
+          "receipt": "queued but not played because output callback playback is asynchronous",
+          "status": "queued frames, total enqueued frames, callback frames, underruns, and recent stream errors"
+        },
+        "desktop": {
+          "selector": "capture or default device",
+          "fallback": "capture remains default and deterministic",
+          "status": "device id, sample rate, channels, sample format, queue depth, callback count, underruns, and stream error count are visible"
+        }
+      },
+      "tolerance": "No MPC2000XL latency or DAC tolerance is claimed; host callback timing remains platform-dependent.",
+      "fixture_refs": [
+        "crates/mpc_audio/src/lib.rs",
+        "apps/desktop/src/main.rs",
+        "docs/superpowers/plans/2026-06-14-mpc2000xl-host-audio-device-output-foundation.md"
+      ],
+      "conflict_notes": [
+        "This is host-device plumbing toward a usable desktop instrument, not exact MPC2000XL DAC/output behavior.",
+        "No proprietary samples, recordings, firmware bytes, service scans, manuals, native device traces, or binary audio fixtures are stored in the repo."
+      ]
+    },
+    {
       "id": "audio.metronome.count-in-click-render-routing",
       "name": "Count-in metronome click intents render deterministic PCM and route through host audio",
       "area": "audio_host",

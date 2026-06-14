@@ -1,7 +1,9 @@
 use eframe::egui;
 use mpc_audio::{
-    AudioRenderKind, AudioRenderSettings, AudioRenderSummary, CaptureAudioBackend, HostAudioEngine,
-    HostAudioError, HostAudioEvent, HostAudioPlaybackReport, HostAudioState,
+    AudioRenderKind, AudioRenderSettings, AudioRenderSummary, CaptureAudioBackend,
+    DeviceAudioBackend, DeviceAudioBackendConfig, DeviceAudioBackendStatus, HostAudioBackend,
+    HostAudioBackendError, HostAudioEngine, HostAudioError, HostAudioEvent,
+    HostAudioPlaybackReport, HostAudioState,
 };
 use mpc_core::{
     DiskOperation, HardwareEvent, MachineOutput, MidiSettingsField, Mode, MpcCore, MpcState,
@@ -34,7 +36,7 @@ fn main() -> eframe::Result<()> {
 
 struct MpcDesktopApp {
     core: MpcCore,
-    host_audio: HostAudioEngine<CaptureAudioBackend>,
+    host_audio: HostAudioEngine<DesktopAudioBackend>,
     host_midi: HostMidiEngine<CaptureMidiBackend>,
     last_status: String,
     last_synthetic_render: Option<AudioRenderSummary>,
@@ -52,12 +54,49 @@ struct MpcDesktopApp {
     midi_velocity: u8,
 }
 
+enum DesktopAudioBackend {
+    Capture(CaptureAudioBackend),
+    Device(DeviceAudioBackend),
+}
+
+impl DesktopAudioBackend {
+    fn capture() -> Self {
+        Self::Capture(CaptureAudioBackend::new(8))
+    }
+
+    fn device_status(&self) -> Option<DeviceAudioBackendStatus> {
+        match self {
+            Self::Capture(_) => None,
+            Self::Device(backend) => Some(backend.status()),
+        }
+    }
+}
+
+impl HostAudioBackend for DesktopAudioBackend {
+    fn backend_name(&self) -> &str {
+        match self {
+            Self::Capture(backend) => backend.backend_name(),
+            Self::Device(backend) => backend.backend_name(),
+        }
+    }
+
+    fn enqueue_render(
+        &mut self,
+        rendered: &mpc_audio::RenderedAudio,
+    ) -> Result<mpc_audio::HostAudioBackendReceipt, HostAudioBackendError> {
+        match self {
+            Self::Capture(backend) => backend.enqueue_render(rendered),
+            Self::Device(backend) => backend.enqueue_render(rendered),
+        }
+    }
+}
+
 impl Default for MpcDesktopApp {
     fn default() -> Self {
         Self {
             core: MpcCore::new(),
             host_audio: HostAudioEngine::new(
-                CaptureAudioBackend::new(8),
+                DesktopAudioBackend::capture(),
                 AudioRenderSettings::preview(),
             )
             .expect("desktop host audio preview settings should satisfy guardrails"),
@@ -1336,11 +1375,28 @@ impl MpcDesktopApp {
                 self.host_audio.set_enabled(enabled);
             }
 
+            ui.separator();
+            let capture_selected =
+                matches!(self.host_audio.backend(), DesktopAudioBackend::Capture(_));
+            if ui.selectable_label(capture_selected, "Capture").clicked() {
+                self.switch_host_audio_to_capture();
+            }
+            let device_selected =
+                matches!(self.host_audio.backend(), DesktopAudioBackend::Device(_));
+            if ui
+                .selectable_label(device_selected, "Default device")
+                .clicked()
+            {
+                self.switch_host_audio_to_default_device();
+            }
+
             let state = self.host_audio.state();
             ui.separator();
             ui.label(host_audio_state_text(&state));
             ui.separator();
             ui.label(last_host_audio_event_text(state.last_event.as_ref()));
+            ui.separator();
+            ui.label(host_audio_backend_detail_text(self.host_audio.backend()));
         });
     }
 
@@ -1408,6 +1464,70 @@ impl MpcDesktopApp {
         if ui.selectable_label(selected, label).clicked() {
             self.dispatch_event(HardwareEvent::Press { control });
         }
+    }
+
+    fn switch_host_audio_to_capture(&mut self) {
+        if matches!(self.host_audio.backend(), DesktopAudioBackend::Capture(_)) {
+            return;
+        }
+
+        self.replace_host_audio_backend(
+            DesktopAudioBackend::capture(),
+            self.host_audio.render_settings(),
+            "Host audio backend: capture".to_string(),
+        );
+    }
+
+    fn switch_host_audio_to_default_device(&mut self) {
+        if matches!(self.host_audio.backend(), DesktopAudioBackend::Device(_)) {
+            return;
+        }
+
+        match DeviceAudioBackend::open_default(DeviceAudioBackendConfig::default()) {
+            Ok(backend) => {
+                let status = backend.status();
+                let current_render_settings = self.host_audio.render_settings();
+                let device_render_settings = match AudioRenderSettings::new(
+                    status.sample_rate_hz,
+                    current_render_settings.frame_count,
+                ) {
+                    Ok(settings) => settings,
+                    Err(error) => {
+                        self.last_status =
+                            format!("Host audio device render settings unsupported: {error}");
+                        return;
+                    }
+                };
+                self.replace_host_audio_backend(
+                    DesktopAudioBackend::Device(backend),
+                    device_render_settings,
+                    format!(
+                        "Host audio backend: default device {} {} Hz {} ch {}",
+                        status.device_name,
+                        status.sample_rate_hz,
+                        status.channels,
+                        status.sample_format
+                    ),
+                );
+            }
+            Err(error) => {
+                self.last_status = format!("Host audio device unavailable: {error}");
+            }
+        }
+    }
+
+    fn replace_host_audio_backend(
+        &mut self,
+        backend: DesktopAudioBackend,
+        render_settings: AudioRenderSettings,
+        status: String,
+    ) {
+        let enabled = self.host_audio.is_enabled();
+        let mut host_audio = HostAudioEngine::new(backend, render_settings)
+            .expect("desktop host audio render settings should remain valid");
+        host_audio.set_enabled(enabled);
+        self.host_audio = host_audio;
+        self.last_status = status;
     }
 }
 
@@ -1730,6 +1850,29 @@ fn host_audio_state_text(state: &HostAudioState) -> String {
         state.released_voice_count,
         state.choked_voice_count,
         state.stolen_voice_count
+    )
+}
+
+fn host_audio_backend_detail_text(backend: &DesktopAudioBackend) -> String {
+    match backend.device_status() {
+        Some(status) => device_audio_backend_status_text(&status),
+        None => "Host audio backend detail: capture retains summaries only".to_string(),
+    }
+}
+
+fn device_audio_backend_status_text(status: &DeviceAudioBackendStatus) -> String {
+    let stream_errors = status.recent_stream_errors.len();
+    format!(
+        "Host audio device: {} {} Hz {} ch {} queued {}/{} cb {} underrun {} errors {}",
+        status.device_name,
+        status.sample_rate_hz,
+        status.channels,
+        status.sample_format,
+        status.queued_frame_count,
+        status.max_queued_frame_count,
+        status.total_callback_frame_count,
+        status.underrun_frame_count,
+        stream_errors
     )
 }
 

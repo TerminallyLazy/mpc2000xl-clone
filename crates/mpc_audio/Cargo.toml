@@ -7,6 +7,7 @@ rust-version.workspace = true
 authors.workspace = true
 
 [dependencies]
+cpal.workspace = true
 mpc_core = { path = "../mpc_core" }
 serde.workspace = true
 
