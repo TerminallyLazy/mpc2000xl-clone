@@ -8,8 +8,8 @@ use crate::events::{
     PadAssignmentChange, PadBank, PanelControl, PlaybackMissReason, Program, ProgramEditField,
     ProgramPad, SampleCatalogEntry, SamplePlaybackIntent, SamplePlaybackMiss,
     SamplePlaybackResolution, SampleTrim, SequenceEvent, SetupField, SetupPreferences,
-    SongEditField, SongStep, SyntheticSample, TrimEditField, generated_sample_length_frames,
-    sample_window_length_frames,
+    SongEditField, SongStep, SyntheticSample, TimingCorrectField, TimingCorrectSettings,
+    TrimEditField, generated_sample_length_frames, sample_window_length_frames,
 };
 use crate::lcd::LcdFrame;
 
@@ -58,6 +58,8 @@ const MIN_SETUP_COUNT_IN_BARS: u8 = 0;
 const MAX_SETUP_COUNT_IN_BARS: u8 = 4;
 const MIN_SETUP_LCD_CONTRAST: u8 = 0;
 const MAX_SETUP_LCD_CONTRAST: u8 = 10;
+const MIN_TIMING_CORRECT_SWING_PERCENT: u8 = 50;
+const MAX_TIMING_CORRECT_SWING_PERCENT: u8 = 75;
 const PAD_BANKS: [PadBank; 4] = [PadBank::A, PadBank::B, PadBank::C, PadBank::D];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -144,6 +146,8 @@ pub struct ProjectMachineSnapshot {
     pub selected_midi_settings_field: MidiSettingsField,
     #[serde(default)]
     pub selected_disk_operation: DiskOperation,
+    #[serde(default)]
+    pub selected_timing_correct_field: TimingCorrectField,
     pub playhead_ticks: u64,
     pub playhead_tick_remainder: u64,
     pub event_count: u64,
@@ -162,6 +166,8 @@ pub struct ProjectSequenceSnapshot {
     pub bar_count: u16,
     #[serde(default)]
     pub loop_enabled: bool,
+    #[serde(default)]
+    pub timing_correct: TimingCorrectSettings,
     pub recorded_events: Vec<SequenceEvent>,
 }
 
@@ -283,6 +289,8 @@ pub struct MpcState {
     pub midi_base_note: u8,
     pub selected_midi_settings_field: MidiSettingsField,
     pub selected_disk_operation: DiskOperation,
+    pub timing_correct: TimingCorrectSettings,
+    pub selected_timing_correct_field: TimingCorrectField,
     pub setup_preferences: SetupPreferences,
     pub selected_setup_field: SetupField,
     pub song_steps: Vec<SongStep>,
@@ -351,6 +359,8 @@ impl Default for MpcState {
             midi_base_note: DEFAULT_MIDI_BASE_NOTE,
             selected_midi_settings_field: MidiSettingsField::InputChannel,
             selected_disk_operation: DiskOperation::SaveProject,
+            timing_correct: TimingCorrectSettings::default(),
+            selected_timing_correct_field: TimingCorrectField::Division,
             setup_preferences: SetupPreferences::default(),
             selected_setup_field: SetupField::Metronome,
             song_steps: default_song_steps(),
@@ -418,6 +428,7 @@ impl MpcCore {
                 midi_base_note: self.state.midi_base_note,
                 selected_midi_settings_field: self.state.selected_midi_settings_field,
                 selected_disk_operation: self.state.selected_disk_operation,
+                selected_timing_correct_field: self.state.selected_timing_correct_field,
                 playhead_ticks: self.state.playhead_ticks,
                 playhead_tick_remainder: self.state.playhead_tick_remainder,
                 event_count: self.state.event_count,
@@ -431,6 +442,7 @@ impl MpcCore {
                 muted_tracks: self.state.muted_tracks.clone(),
                 bar_count: self.state.bar_count,
                 loop_enabled: self.state.loop_enabled,
+                timing_correct: self.state.timing_correct,
                 recorded_events: self.state.recorded_events.clone(),
             },
             program: ProjectProgramSnapshot {
@@ -493,6 +505,8 @@ impl MpcCore {
         self.state.midi_base_note = snapshot.machine.midi_base_note;
         self.state.selected_midi_settings_field = snapshot.machine.selected_midi_settings_field;
         self.state.selected_disk_operation = snapshot.machine.selected_disk_operation;
+        self.state.timing_correct = snapshot.sequence.timing_correct;
+        self.state.selected_timing_correct_field = snapshot.machine.selected_timing_correct_field;
         self.state.setup_preferences = snapshot.setup.preferences;
         self.state.selected_setup_field = snapshot.setup.selected_field;
         self.state.song_steps = snapshot.song.steps;
@@ -581,6 +595,7 @@ impl MpcCore {
             PanelControl::Trim => self.set_mode(Mode::Trim),
             PanelControl::Song => self.set_mode(Mode::Song),
             PanelControl::Midi => self.set_mode(Mode::Midi),
+            PanelControl::TimingCorrect => self.set_mode(Mode::TimingCorrect),
             PanelControl::Disk => self.set_mode(Mode::Disk),
             PanelControl::Setup => self.set_mode(Mode::Setup),
             PanelControl::Play => {
@@ -699,6 +714,10 @@ impl MpcCore {
             return self.adjust_midi_settings(delta);
         }
 
+        if self.state.mode == Mode::TimingCorrect {
+            return self.adjust_timing_correct(delta);
+        }
+
         if self.state.mode == Mode::Disk {
             return self.adjust_disk_operation(delta);
         }
@@ -758,6 +777,13 @@ impl MpcCore {
             ];
         }
 
+        if self.state.mode == Mode::TimingCorrect {
+            self.state.selected_timing_correct_field =
+                self.state.selected_timing_correct_field.previous();
+            self.refresh_lcd();
+            return self.timing_correct_changed_outputs();
+        }
+
         if self.state.mode == Mode::Disk {
             return self.select_disk_operation(self.state.selected_disk_operation.previous());
         }
@@ -809,6 +835,13 @@ impl MpcCore {
                 },
                 MachineOutput::LcdChanged,
             ];
+        }
+
+        if self.state.mode == Mode::TimingCorrect {
+            self.state.selected_timing_correct_field =
+                self.state.selected_timing_correct_field.next();
+            self.refresh_lcd();
+            return self.timing_correct_changed_outputs();
         }
 
         if self.state.mode == Mode::Disk {
@@ -1095,6 +1128,50 @@ impl MpcCore {
         ]
     }
 
+    fn adjust_timing_correct(&mut self, delta: i32) -> Vec<MachineOutput> {
+        if delta == 0 {
+            return Self::ignored(format!(
+                "timing_correct.{}.zero_delta_ignored",
+                self.state.selected_timing_correct_field.label()
+            ));
+        }
+
+        match self.state.selected_timing_correct_field {
+            TimingCorrectField::Division => {
+                self.state.timing_correct.division = if delta.is_positive() {
+                    self.state.timing_correct.division.next()
+                } else {
+                    self.state.timing_correct.division.previous()
+                };
+            }
+            TimingCorrectField::Swing => {
+                let next = clamp_delta_u8(
+                    self.state.timing_correct.swing_percent,
+                    delta,
+                    MIN_TIMING_CORRECT_SWING_PERCENT,
+                    MAX_TIMING_CORRECT_SWING_PERCENT,
+                );
+                if next == self.state.timing_correct.swing_percent {
+                    return Self::ignored("timing_correct.swing.boundary".to_string());
+                }
+                self.state.timing_correct.swing_percent = next;
+            }
+        }
+
+        self.refresh_lcd();
+        self.timing_correct_changed_outputs()
+    }
+
+    fn timing_correct_changed_outputs(&self) -> Vec<MachineOutput> {
+        vec![
+            MachineOutput::TimingCorrectChanged {
+                settings: self.state.timing_correct,
+                selected_field: self.state.selected_timing_correct_field,
+            },
+            MachineOutput::LcdChanged,
+        ]
+    }
+
     fn select_song_step_by_delta(
         &mut self,
         delta: i32,
@@ -1346,6 +1423,10 @@ impl MpcCore {
                 self.state.midi_base_note,
                 self.state.selected_midi_settings_field,
             ),
+            Mode::TimingCorrect => LcdFrame::timing_correct_screen(
+                self.state.timing_correct,
+                self.state.selected_timing_correct_field,
+            ),
             Mode::Disk => LcdFrame::disk_screen(self.state.selected_disk_operation),
             Mode::Setup => LcdFrame::setup_screen(
                 self.state.setup_preferences,
@@ -1504,18 +1585,32 @@ impl MpcCore {
         self.state.last_playback = Some(playback.clone());
 
         if self.state.playing && self.state.recording {
+            let raw_tick = self.state.playhead_ticks;
+            let quantized_tick = quantize_tick(
+                raw_tick,
+                self.state.sequence_length_ticks(),
+                self.state.timing_correct,
+            );
             let event = SequenceEvent {
                 selected_track: self.state.selected_track,
                 pad_bank: bank,
                 pad_number: pad,
                 velocity,
-                tick: self.state.playhead_ticks,
+                tick: quantized_tick,
                 playback: match &playback {
                     SamplePlaybackResolution::Intent { intent } => Some(intent.clone()),
                     SamplePlaybackResolution::Miss { .. } => None,
                 },
             };
             self.state.recorded_events.push(event.clone());
+            if quantized_tick != raw_tick {
+                outputs.push(MachineOutput::TimingCorrectApplied {
+                    original_tick: raw_tick,
+                    quantized_tick,
+                    division: self.state.timing_correct.division,
+                    swing_percent: self.state.timing_correct.swing_percent,
+                });
+            }
             outputs.push(MachineOutput::SequenceEventRecorded { event });
         }
 
@@ -1966,6 +2061,7 @@ fn validate_machine_json_fields(value: &Value) -> Result<(), ProjectSnapshotErro
             "midi_base_note",
             "selected_midi_settings_field",
             "selected_disk_operation",
+            "selected_timing_correct_field",
             "playhead_ticks",
             "playhead_tick_remainder",
             "event_count",
@@ -1998,6 +2094,7 @@ fn validate_sequence_json_fields(value: &Value) -> Result<(), ProjectSnapshotErr
             "muted_tracks",
             "bar_count",
             "loop_enabled",
+            "timing_correct",
             "recorded_events",
         ],
     )?
@@ -2013,7 +2110,22 @@ fn validate_sequence_json_fields(value: &Value) -> Result<(), ProjectSnapshotErr
             )?;
         }
     }
+    if let Some(timing_correct) = sequence.get("timing_correct") {
+        validate_timing_correct_json_fields("sequence.timing_correct", timing_correct)?;
+    }
 
+    Ok(())
+}
+
+fn validate_timing_correct_json_fields(
+    field: &str,
+    value: &Value,
+) -> Result<(), ProjectSnapshotError> {
+    let Some(settings) = reject_unknown_json_fields(field, value, &["division", "swing_percent"])?
+    else {
+        return Ok(());
+    };
+    require_json_fields(field, settings, &["division", "swing_percent"])?;
     Ok(())
 }
 
@@ -2352,6 +2464,7 @@ fn validate_project_snapshot(snapshot: &ProjectSnapshot) -> Result<(), ProjectSn
         MIN_BAR_COUNT,
         MAX_BAR_COUNT,
     )?;
+    validate_timing_correct_settings("sequence.timing_correct", snapshot.sequence.timing_correct)?;
 
     validate_range_u8(
         "program.index",
@@ -2515,6 +2628,18 @@ fn validate_setup_snapshot(setup: &ProjectSetupSnapshot) -> Result<(), ProjectSn
         setup.preferences.lcd_contrast,
         MIN_SETUP_LCD_CONTRAST,
         MAX_SETUP_LCD_CONTRAST,
+    )
+}
+
+fn validate_timing_correct_settings(
+    field: &str,
+    settings: TimingCorrectSettings,
+) -> Result<(), ProjectSnapshotError> {
+    validate_range_u8(
+        &format!("{field}.swing_percent"),
+        settings.swing_percent,
+        MIN_TIMING_CORRECT_SWING_PERCENT,
+        MAX_TIMING_CORRECT_SWING_PERCENT,
     )
 }
 
@@ -2919,6 +3044,56 @@ pub fn sequence_length_ticks_for_bars(bar_count: u16) -> u64 {
         .saturating_mul(u64::from(FOUNDATION_BEATS_PER_BAR))
 }
 
+fn quantize_tick(tick: u64, sequence_length_ticks: u64, settings: TimingCorrectSettings) -> u64 {
+    let Some(grid_ticks) = settings.division.grid_ticks() else {
+        return tick;
+    };
+    if tick >= sequence_length_ticks {
+        return sequence_length_ticks;
+    }
+
+    let rough_index = tick / grid_ticks;
+    let max_index = sequence_length_ticks
+        .saturating_add(grid_ticks)
+        .saturating_sub(1)
+        / grid_ticks
+        + 2;
+    let start_index = rough_index.saturating_sub(3);
+    let end_index = rough_index.saturating_add(3).min(max_index);
+    let mut best = swung_grid_target(0, grid_ticks, settings).min(sequence_length_ticks);
+
+    for index in start_index..=end_index {
+        let candidate = swung_grid_target(index, grid_ticks, settings).min(sequence_length_ticks);
+        let best_distance = best.abs_diff(tick);
+        let candidate_distance = candidate.abs_diff(tick);
+        if candidate_distance < best_distance
+            || (candidate_distance == best_distance && candidate > best)
+        {
+            best = candidate;
+        }
+    }
+
+    best
+}
+
+fn swung_grid_target(grid_index: u64, grid_ticks: u64, settings: TimingCorrectSettings) -> u64 {
+    if !settings.division.uses_swing() || settings.swing_percent == 50 || grid_index % 2 == 0 {
+        return grid_index.saturating_mul(grid_ticks);
+    }
+
+    let pair_base = grid_index.saturating_sub(1).saturating_mul(grid_ticks);
+    let pair_ticks = grid_ticks.saturating_mul(2);
+    let offset = div_round_u64(
+        pair_ticks.saturating_mul(u64::from(settings.swing_percent)),
+        100,
+    );
+    pair_base.saturating_add(offset)
+}
+
+fn div_round_u64(numerator: u64, denominator: u64) -> u64 {
+    numerator.saturating_add(denominator / 2) / denominator
+}
+
 fn sample_catalog_for_program(
     program: &Program,
     sample_trims: &[SampleTrim],
@@ -3080,6 +3255,7 @@ fn mode_reason(mode: Mode) -> &'static str {
         Mode::Trim => "trim",
         Mode::Song => "song",
         Mode::Midi => "midi",
+        Mode::TimingCorrect => "timing_correct",
         Mode::Disk => "disk",
         Mode::Setup => "setup",
     }

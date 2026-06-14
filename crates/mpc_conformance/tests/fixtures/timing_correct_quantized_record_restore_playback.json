@@ -1,0 +1,323 @@
+{
+  "id": "core.timing-correct.quantized-record-restore-playback",
+  "name": "Timing Correct edits quantize recording and restored playback uses quantized tick",
+  "source_refs": [
+    "docs/superpowers/plans/2026-06-13-mpc2000xl-timing-correct-foundation.md#source-and-evidence-status",
+    "docs/evidence/source-map.md#sources"
+  ],
+  "events": [
+    {
+      "type": "press",
+      "control": "timing_correct"
+    },
+    {
+      "type": "turn_data_wheel",
+      "delta": 1
+    },
+    {
+      "type": "turn_data_wheel",
+      "delta": 1
+    },
+    {
+      "type": "turn_data_wheel",
+      "delta": 1
+    },
+    {
+      "type": "press",
+      "control": "cursor_right"
+    },
+    {
+      "type": "turn_data_wheel",
+      "delta": 10
+    },
+    {
+      "type": "press",
+      "control": "overdub"
+    },
+    {
+      "type": "tick",
+      "micros": 161460
+    },
+    {
+      "type": "strike_pad",
+      "bank": "a",
+      "pad": 1,
+      "velocity": 90
+    }
+  ],
+  "expect_output_sequence": [
+    {
+      "type": "mode_changed",
+      "mode": "timing_correct"
+    },
+    {
+      "type": "lcd_changed"
+    },
+    {
+      "type": "timing_correct_changed",
+      "settings": {
+        "division": "eighth",
+        "swing_percent": 50
+      },
+      "selected_field": "division"
+    },
+    {
+      "type": "lcd_changed"
+    },
+    {
+      "type": "timing_correct_changed",
+      "settings": {
+        "division": "eighth_triplet",
+        "swing_percent": 50
+      },
+      "selected_field": "division"
+    },
+    {
+      "type": "lcd_changed"
+    },
+    {
+      "type": "timing_correct_changed",
+      "settings": {
+        "division": "sixteenth",
+        "swing_percent": 50
+      },
+      "selected_field": "division"
+    },
+    {
+      "type": "lcd_changed"
+    },
+    {
+      "type": "timing_correct_changed",
+      "settings": {
+        "division": "sixteenth",
+        "swing_percent": 50
+      },
+      "selected_field": "swing"
+    },
+    {
+      "type": "lcd_changed"
+    },
+    {
+      "type": "timing_correct_changed",
+      "settings": {
+        "division": "sixteenth",
+        "swing_percent": 60
+      },
+      "selected_field": "swing"
+    },
+    {
+      "type": "lcd_changed"
+    },
+    {
+      "type": "transport_changed",
+      "playing": true,
+      "recording": true
+    },
+    {
+      "type": "lcd_changed"
+    },
+    {
+      "type": "pad_triggered",
+      "bank": "a",
+      "pad": 1,
+      "velocity": 90
+    },
+    {
+      "type": "sample_playback_intent",
+      "intent": {
+        "selected_track": 1,
+        "program_index": 1,
+        "program_name": "Program01",
+        "bank": "a",
+        "pad_number": 1,
+        "sample_id": "synthetic_a_01",
+        "sample_name": "SYN-A01",
+        "velocity": 90,
+        "level": 100,
+        "pan": 0,
+        "tune_cents": 0
+      }
+    },
+    {
+      "type": "timing_correct_applied",
+      "original_tick": 31,
+      "quantized_tick": 29,
+      "division": "sixteenth",
+      "swing_percent": 60
+    },
+    {
+      "type": "sequence_event_recorded",
+      "event": {
+        "selected_track": 1,
+        "pad_bank": "a",
+        "pad_number": 1,
+        "velocity": 90,
+        "tick": 29,
+        "playback": {
+          "selected_track": 1,
+          "program_index": 1,
+          "program_name": "Program01",
+          "bank": "a",
+          "pad_number": 1,
+          "sample_id": "synthetic_a_01",
+          "sample_name": "SYN-A01",
+          "velocity": 90,
+          "level": 100,
+          "pan": 0,
+          "tune_cents": 0
+        }
+      }
+    }
+  ],
+  "expect": {
+    "mode": "timing_correct",
+    "lcd_title": "TIMING",
+    "playing": true,
+    "recording": true,
+    "event_count": 9,
+    "selected_track": 1,
+    "recorded_event_count": 1,
+    "playhead_ticks": 31,
+    "timing_correct_division": "sixteenth",
+    "timing_correct_swing_percent": 60,
+    "selected_timing_correct_field": "swing",
+    "last_recorded_sample_id": "synthetic_a_01",
+    "last_recorded_sample_name": "SYN-A01",
+    "last_recorded_event": {
+      "selected_track": 1,
+      "pad_bank": "a",
+      "pad_number": 1,
+      "velocity": 90,
+      "tick": 29,
+      "playback": {
+        "selected_track": 1,
+        "program_index": 1,
+        "program_name": "Program01",
+        "bank": "a",
+        "pad_number": 1,
+        "sample_id": "synthetic_a_01",
+        "sample_name": "SYN-A01",
+        "velocity": 90,
+        "level": 100,
+        "pan": 0,
+        "tune_cents": 0
+      }
+    }
+  },
+  "project_round_trip": {
+    "expect_snapshot_version": 1,
+    "restore_playhead_ticks": 0,
+    "restore_playhead_tick_remainder": 0,
+    "clear_last_playback_before_restore": true,
+    "post_restore_events": [
+      {
+        "type": "press",
+        "control": "play"
+      },
+      {
+        "type": "tick",
+        "micros": 151042
+      }
+    ],
+    "expect_post_restore_output_sequence": [
+      {
+        "type": "transport_changed",
+        "playing": true,
+        "recording": false
+      },
+      {
+        "type": "lcd_changed"
+      },
+      {
+        "type": "sequence_event_played",
+        "event": {
+          "selected_track": 1,
+          "pad_bank": "a",
+          "pad_number": 1,
+          "velocity": 90,
+          "tick": 29,
+          "playback": {
+            "selected_track": 1,
+            "program_index": 1,
+            "program_name": "Program01",
+            "bank": "a",
+            "pad_number": 1,
+            "sample_id": "synthetic_a_01",
+            "sample_name": "SYN-A01",
+            "velocity": 90,
+            "level": 100,
+            "pan": 0,
+            "tune_cents": 0
+          }
+        }
+      },
+      {
+        "type": "sample_playback_intent",
+        "intent": {
+          "selected_track": 1,
+          "program_index": 1,
+          "program_name": "Program01",
+          "bank": "a",
+          "pad_number": 1,
+          "sample_id": "synthetic_a_01",
+          "sample_name": "SYN-A01",
+          "velocity": 90,
+          "level": 100,
+          "pan": 0,
+          "tune_cents": 0
+        }
+      }
+    ],
+    "expect": {
+      "mode": "timing_correct",
+      "lcd_title": "TIMING",
+      "playing": true,
+      "recording": false,
+      "event_count": 11,
+      "selected_track": 1,
+      "recorded_event_count": 1,
+      "playhead_ticks": 29,
+      "timing_correct_division": "sixteenth",
+      "timing_correct_swing_percent": 60,
+      "selected_timing_correct_field": "swing",
+      "last_recorded_sample_id": "synthetic_a_01",
+      "last_recorded_sample_name": "SYN-A01",
+      "last_playback": {
+        "type": "intent",
+        "intent": {
+          "selected_track": 1,
+          "program_index": 1,
+          "program_name": "Program01",
+          "bank": "a",
+          "pad_number": 1,
+          "sample_id": "synthetic_a_01",
+          "sample_name": "SYN-A01",
+          "velocity": 90,
+          "level": 100,
+          "pan": 0,
+          "tune_cents": 0
+        }
+      },
+      "last_recorded_event": {
+        "selected_track": 1,
+        "pad_bank": "a",
+        "pad_number": 1,
+        "velocity": 90,
+        "tick": 29,
+        "playback": {
+          "selected_track": 1,
+          "program_index": 1,
+          "program_name": "Program01",
+          "bank": "a",
+          "pad_number": 1,
+          "sample_id": "synthetic_a_01",
+          "sample_name": "SYN-A01",
+          "velocity": 90,
+          "level": 100,
+          "pan": 0,
+          "tune_cents": 0
+        }
+      }
+    }
+  }
+}

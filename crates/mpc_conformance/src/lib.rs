@@ -3,7 +3,8 @@ use mpc_audio::{AudioRenderSettings, AudioSourceKind, ChannelBalance, render_int
 use mpc_core::{
     DiskOperation, HardwareEvent, MachineOutput, MainScreenField, MidiSettingsField, Mode, MpcCore,
     MpcState, PROJECT_SNAPSHOT_VERSION, PadBank, ProgramEditField, ProgramPad,
-    SamplePlaybackResolution, SequenceEvent, SetupField, SongEditField, SongStep, TrimEditField,
+    SamplePlaybackResolution, SequenceEvent, SetupField, SongEditField, SongStep,
+    TimingCorrectDivision, TimingCorrectField, TrimEditField,
 };
 use serde::de::{self, Visitor};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -250,6 +251,12 @@ pub struct ExpectedState {
     pub midi_base_note: Option<u8>,
     #[serde(default)]
     pub selected_midi_settings_field: Option<MidiSettingsField>,
+    #[serde(default)]
+    pub timing_correct_division: Option<TimingCorrectDivision>,
+    #[serde(default)]
+    pub timing_correct_swing_percent: Option<u8>,
+    #[serde(default)]
+    pub selected_timing_correct_field: Option<TimingCorrectField>,
     #[serde(default)]
     pub selected_disk_operation: Option<DiskOperation>,
     #[serde(default)]
@@ -692,6 +699,33 @@ fn validate_expected_state(
             details.push(format!(
                 "{prefix}selected_midi_settings_field mismatch: expected {:?}, got {:?}",
                 selected_midi_settings_field, state.selected_midi_settings_field
+            ));
+        }
+    }
+
+    if let Some(timing_correct_division) = expected.timing_correct_division {
+        if state.timing_correct.division != timing_correct_division {
+            details.push(format!(
+                "{prefix}timing_correct_division mismatch: expected {:?}, got {:?}",
+                timing_correct_division, state.timing_correct.division
+            ));
+        }
+    }
+
+    if let Some(timing_correct_swing_percent) = expected.timing_correct_swing_percent {
+        if state.timing_correct.swing_percent != timing_correct_swing_percent {
+            details.push(format!(
+                "{prefix}timing_correct_swing_percent mismatch: expected {}, got {}",
+                timing_correct_swing_percent, state.timing_correct.swing_percent
+            ));
+        }
+    }
+
+    if let Some(selected_timing_correct_field) = expected.selected_timing_correct_field {
+        if state.selected_timing_correct_field != selected_timing_correct_field {
+            details.push(format!(
+                "{prefix}selected_timing_correct_field mismatch: expected {:?}, got {:?}",
+                selected_timing_correct_field, state.selected_timing_correct_field
             ));
         }
     }

@@ -12,6 +12,7 @@ pub enum Mode {
     Trim,
     Song,
     Midi,
+    TimingCorrect,
     Disk,
     Setup,
 }
@@ -393,6 +394,127 @@ impl Default for SetupPreferences {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+pub enum TimingCorrectDivision {
+    Off,
+    Eighth,
+    EighthTriplet,
+    Sixteenth,
+    SixteenthTriplet,
+    ThirtySecond,
+}
+
+impl Default for TimingCorrectDivision {
+    fn default() -> Self {
+        Self::Off
+    }
+}
+
+impl TimingCorrectDivision {
+    pub const ORDERED: [Self; 6] = [
+        Self::Off,
+        Self::Eighth,
+        Self::EighthTriplet,
+        Self::Sixteenth,
+        Self::SixteenthTriplet,
+        Self::ThirtySecond,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Eighth => "1/8",
+            Self::EighthTriplet => "1/8T",
+            Self::Sixteenth => "1/16",
+            Self::SixteenthTriplet => "1/16T",
+            Self::ThirtySecond => "1/32",
+        }
+    }
+
+    pub fn grid_ticks(self) -> Option<u64> {
+        match self {
+            Self::Off => None,
+            Self::Eighth => Some(48),
+            Self::EighthTriplet => Some(32),
+            Self::Sixteenth => Some(24),
+            Self::SixteenthTriplet => Some(16),
+            Self::ThirtySecond => Some(12),
+        }
+    }
+
+    pub fn uses_swing(self) -> bool {
+        matches!(self, Self::Eighth | Self::Sixteenth | Self::ThirtySecond)
+    }
+
+    pub fn previous(self) -> Self {
+        let index = Self::ORDERED
+            .iter()
+            .position(|division| *division == self)
+            .expect("division should be in ordered list");
+        Self::ORDERED[(index + Self::ORDERED.len() - 1) % Self::ORDERED.len()]
+    }
+
+    pub fn next(self) -> Self {
+        let index = Self::ORDERED
+            .iter()
+            .position(|division| *division == self)
+            .expect("division should be in ordered list");
+        Self::ORDERED[(index + 1) % Self::ORDERED.len()]
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TimingCorrectField {
+    Division,
+    Swing,
+}
+
+impl Default for TimingCorrectField {
+    fn default() -> Self {
+        Self::Division
+    }
+}
+
+impl TimingCorrectField {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Division => "division",
+            Self::Swing => "swing",
+        }
+    }
+
+    pub fn previous(self) -> Self {
+        match self {
+            Self::Division => Self::Swing,
+            Self::Swing => Self::Division,
+        }
+    }
+
+    pub fn next(self) -> Self {
+        match self {
+            Self::Division => Self::Swing,
+            Self::Swing => Self::Division,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TimingCorrectSettings {
+    pub division: TimingCorrectDivision,
+    pub swing_percent: u8,
+}
+
+impl Default for TimingCorrectSettings {
+    fn default() -> Self {
+        Self {
+            division: TimingCorrectDivision::Off,
+            swing_percent: 50,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum SongEditField {
     Step,
     Sequence,
@@ -500,6 +622,7 @@ pub enum PanelControl {
     Trim,
     Song,
     Midi,
+    TimingCorrect,
     Disk,
     Setup,
     Play,
@@ -612,6 +735,16 @@ pub enum MachineOutput {
         input_channel: Option<u8>,
         base_note: u8,
         selected_field: MidiSettingsField,
+    },
+    TimingCorrectChanged {
+        settings: TimingCorrectSettings,
+        selected_field: TimingCorrectField,
+    },
+    TimingCorrectApplied {
+        original_tick: u64,
+        quantized_tick: u64,
+        division: TimingCorrectDivision,
+        swing_percent: u8,
     },
     DiskOperationSelected {
         operation: DiskOperation,

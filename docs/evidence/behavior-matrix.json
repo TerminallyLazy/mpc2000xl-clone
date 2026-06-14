@@ -2576,6 +2576,120 @@
         "Manual, firmware, native project, metronome audio, transport count-in, hardware LCD calibration, and JJ-OS parity are deferred.",
         "No proprietary manuals, service scans, firmware bytes, JJ-OS assets, samples, media, binary fixtures, or copied third-party code are stored in the repo."
       ]
+    },
+    {
+      "id": "core.timing-correct.quantize-swing-foundation",
+      "name": "TIMING CORRECT edits deterministic quantize and swing recording settings",
+      "area": "timing_correct",
+      "state": "fixture-backed-internal-spec",
+      "evidence": [
+        {
+          "source_id": "timing-correct-foundation-slice-plan",
+          "source_category": "internal_spec",
+          "type": "plan",
+          "status": "mapped",
+          "ref": "docs/superpowers/plans/2026-06-13-mpc2000xl-timing-correct-foundation.md#behavior-slice"
+        }
+      ],
+      "source_coverage": [
+        {
+          "source_category": "manual",
+          "source_id": "owner-manual",
+          "status": "investigation",
+          "ref": null,
+          "note": "Exact MPC2000XL TIMING CORRECT screens, quantize divisions, swing law, and recording behavior are not mapped yet."
+        },
+        {
+          "source_category": "firmware",
+          "source_id": "mpc2000xl-os-local-reference",
+          "status": "investigation",
+          "ref": null,
+          "note": "No firmware trace has been captured for TIMING CORRECT behavior."
+        },
+        {
+          "source_category": "jjos",
+          "source_id": "jjos-unverified-boundary",
+          "status": "conflict-note",
+          "ref": "docs/superpowers/specs/2026-06-13-mpc2000xl-full-app-product-design.md#jj-os-evidence-boundary",
+          "note": "JJ-OS TIMING CORRECT behavior is not accepted as reference evidence for this internal foundation slice."
+        },
+        {
+          "source_category": "internal_spec",
+          "source_id": "timing-correct-foundation-slice-plan",
+          "status": "mapped",
+          "ref": "docs/superpowers/plans/2026-06-13-mpc2000xl-timing-correct-foundation.md#source-and-evidence-status",
+          "note": "The current contract is deterministic 96 PPQN quantize/swing recording only."
+        }
+      ],
+      "inputs": [
+        {
+          "channel": "front_panel",
+          "event": "press",
+          "control": "timing_correct"
+        },
+        {
+          "channel": "front_panel",
+          "event": "press",
+          "mode": "timing_correct",
+          "control": "cursor_left|cursor_right",
+          "policy": "toggle selected field between division and swing"
+        },
+        {
+          "channel": "front_panel",
+          "event": "turn_data_wheel",
+          "mode": "timing_correct",
+          "policy": "cycle division by delta sign or clamp swing to 50..=75"
+        },
+        {
+          "channel": "recording",
+          "event": "strike_pad|mapped_midi_note_on",
+          "policy": "when playing and recording, record quantized tick if division is not off"
+        }
+      ],
+      "expected_outputs": {
+        "state": {
+          "defaults": "division off, swing 50, selected field division",
+          "settings": "sequence.timing_correct persists division and swing_percent",
+          "selected_field": "machine selected_timing_correct_field persists current edit focus",
+          "snapshot": "missing timing-correct fields restore defaults; present malformed settings are rejected"
+        },
+        "outputs": [
+          "TimingCorrectChanged plus LcdChanged when selected field or setting changes",
+          "TimingCorrectApplied before SequenceEventRecorded when quantization changes the recorded tick",
+          "Ignored for zero-delta edits and swing boundaries"
+        ],
+        "lcd": {
+          "title": "TIMING",
+          "content": "division, swing percent, selected field marker, and internal-spec/evidence-pending line"
+        },
+        "recording": {
+          "grid": "96 PPQN internal grid: eighth 48, eighth triplet 32, sixteenth 24, sixteenth triplet 16, thirty-second 12",
+          "swing": "odd non-triplet targets move later inside the two-step pair; triplet divisions ignore swing for now",
+          "playback": "restored playback schedules from the quantized recorded tick"
+        },
+        "desktop": {
+          "status": "TIMING mode button plus compact TC field/value controls"
+        },
+        "deferred": [
+          "MPC2000XL manual page mapping",
+          "firmware timing traces",
+          "hardware capture comparison",
+          "JJ-OS timing-correct parity",
+          "audio metronome/count-in integration",
+          "native sequence file compatibility"
+        ]
+      },
+      "tolerance": null,
+      "fixture_refs": [
+        "crates/mpc_core/tests/core_flow.rs",
+        "crates/mpc_conformance/tests/fixtures/timing_correct_quantized_record_restore_playback.json"
+      ],
+      "conflict_notes": [
+        "This is an internal deterministic timing-correct foundation, not full MPC2000XL or JJ-OS TIMING CORRECT behavior.",
+        "Triplet divisions intentionally ignore swing until accepted source traces define otherwise.",
+        "Manual, firmware, hardware capture, native project, and JJ-OS parity are deferred.",
+        "No proprietary manuals, service scans, firmware bytes, JJ-OS assets, samples, media, binary fixtures, or copied third-party code are stored in the repo."
+      ]
     }
   ]
 }

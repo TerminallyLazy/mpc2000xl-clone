@@ -7,7 +7,8 @@ pub use events::{
     PadAssignmentChange, PadBank, PanelControl, PlaybackMissReason, Program, ProgramEditField,
     ProgramPad, SampleCatalogEntry, SamplePlaybackIntent, SamplePlaybackMiss,
     SamplePlaybackResolution, SampleTrim, SequenceEvent, SetupField, SetupPreferences,
-    SongEditField, SongStep, SyntheticSample, TrimEditField, generated_sample_length_frames,
+    SongEditField, SongStep, SyntheticSample, TimingCorrectDivision, TimingCorrectField,
+    TimingCorrectSettings, TrimEditField, generated_sample_length_frames,
     sample_window_length_frames,
 };
 pub use lcd::LcdFrame;

@@ -6,7 +6,7 @@ use mpc_audio::{
 use mpc_core::{
     DiskOperation, HardwareEvent, MachineOutput, MidiSettingsField, Mode, MpcCore, MpcState,
     PadAssignmentChange, PadBank, PanelControl, ProgramPad, SampleCatalogEntry,
-    SamplePlaybackIntent, SamplePlaybackResolution, SetupPreferences,
+    SamplePlaybackIntent, SamplePlaybackResolution, SetupPreferences, TimingCorrectSettings,
 };
 use mpc_storage::{
     DEFAULT_PROJECT_FILE_PATH, load_project_file_with_report,
@@ -92,6 +92,7 @@ impl eframe::App for MpcDesktopApp {
             ui.add_space(16.0);
             self.draw_transport(ui);
             self.draw_midi_controls(ui);
+            self.draw_timing_correct_controls(ui);
             self.draw_setup_status(ui);
             self.draw_sequence_status(ui);
             self.draw_program_status(ui);
@@ -139,6 +140,12 @@ impl MpcDesktopApp {
             self.mode_button(ui, "TRIM", PanelControl::Trim, Mode::Trim);
             self.mode_button(ui, "SONG", PanelControl::Song, Mode::Song);
             self.mode_button(ui, "MIDI", PanelControl::Midi, Mode::Midi);
+            self.mode_button(
+                ui,
+                "TIMING",
+                PanelControl::TimingCorrect,
+                Mode::TimingCorrect,
+            );
             self.mode_button(ui, "DISK", PanelControl::Disk, Mode::Disk);
             self.mode_button(ui, "SETUP", PanelControl::Setup, Mode::Setup);
         });
@@ -430,6 +437,20 @@ impl MpcDesktopApp {
             return format!("MIDI ignored: {reason}");
         }
 
+        if let Some(MachineOutput::TimingCorrectChanged {
+            settings,
+            selected_field,
+        }) = outputs
+            .iter()
+            .find(|output| matches!(output, MachineOutput::TimingCorrectChanged { .. }))
+        {
+            return format!(
+                "TIMING {} selected: {}",
+                selected_field.label(),
+                timing_correct_settings_text(*settings)
+            );
+        }
+
         if let Some(MachineOutput::SetupPreferencesChanged {
             preferences,
             selected_field,
@@ -508,6 +529,22 @@ impl MpcDesktopApp {
             );
         }
 
+        if let Some(MachineOutput::TimingCorrectApplied {
+            original_tick,
+            quantized_tick,
+            division,
+            swing_percent,
+        }) = outputs
+            .iter()
+            .find(|output| matches!(output, MachineOutput::TimingCorrectApplied { .. }))
+        {
+            return format!(
+                "Timing Correct applied: tick {original_tick} -> {quantized_tick} ({} swing {}%)",
+                division.label(),
+                swing_percent
+            );
+        }
+
         if let Some(MachineOutput::MidiNoteMapped {
             channel,
             note,
@@ -523,26 +560,6 @@ impl MpcDesktopApp {
                 .unwrap_or_default();
             return format!(
                 "MIDI ch {channel} note {note} -> {bank:?}{pad:02} velocity {velocity}{playback}"
-            );
-        }
-
-        if let Some(MachineOutput::SampleTrimChanged {
-            sample_id,
-            start_frame,
-            end_frame,
-            window_length_frames,
-            selected_field,
-        }) = outputs
-            .iter()
-            .find(|output| matches!(output, MachineOutput::SampleTrimChanged { .. }))
-        {
-            return format!(
-                "TRIM {} {}={}..{} window {} frames",
-                sample_id,
-                selected_field.label(),
-                start_frame,
-                end_frame,
-                window_length_frames
             );
         }
 
@@ -604,6 +621,26 @@ impl MpcDesktopApp {
                 parameter.label(),
                 value,
                 assignment.sample.name
+            );
+        }
+
+        if let Some(MachineOutput::SampleTrimChanged {
+            sample_id,
+            start_frame,
+            end_frame,
+            window_length_frames,
+            selected_field,
+        }) = outputs
+            .iter()
+            .find(|output| matches!(output, MachineOutput::SampleTrimChanged { .. }))
+        {
+            return format!(
+                "TRIM {} {}={}..{} window {} frames",
+                sample_id,
+                selected_field.label(),
+                start_frame,
+                end_frame,
+                window_length_frames
             );
         }
 
@@ -897,6 +934,50 @@ impl MpcDesktopApp {
             channel: self.midi_channel,
             note,
             velocity: self.midi_velocity,
+        });
+    }
+
+    fn draw_timing_correct_controls(&mut self, ui: &mut egui::Ui) {
+        let state = self.core.state();
+        let timing_mode = state.mode == Mode::TimingCorrect;
+        let settings = state.timing_correct;
+        let selected_field = state.selected_timing_correct_field;
+
+        ui.horizontal_wrapped(|ui| {
+            ui.label(format!(
+                "TC: {} field {}",
+                timing_correct_settings_text(settings),
+                selected_field.label()
+            ));
+            ui.separator();
+            if ui
+                .add_enabled(timing_mode, egui::Button::new("TC <"))
+                .clicked()
+            {
+                self.dispatch_event(HardwareEvent::Press {
+                    control: PanelControl::CursorLeft,
+                });
+            }
+            if ui
+                .add_enabled(timing_mode, egui::Button::new("TC >"))
+                .clicked()
+            {
+                self.dispatch_event(HardwareEvent::Press {
+                    control: PanelControl::CursorRight,
+                });
+            }
+            if ui
+                .add_enabled(timing_mode, egui::Button::new("TC -"))
+                .clicked()
+            {
+                self.dispatch_event(HardwareEvent::TurnDataWheel { delta: -1 });
+            }
+            if ui
+                .add_enabled(timing_mode, egui::Button::new("TC +"))
+                .clicked()
+            {
+                self.dispatch_event(HardwareEvent::TurnDataWheel { delta: 1 });
+            }
         });
     }
 
@@ -1233,6 +1314,11 @@ fn main_screen_status(state: &MpcState) -> String {
             state.midi_base_note,
             midi_note_range_text(state.midi_base_note)
         ),
+        Mode::TimingCorrect => format!(
+            "LCD updated: TIMING field {}, {}",
+            state.selected_timing_correct_field.label(),
+            timing_correct_settings_text(state.timing_correct)
+        ),
         Mode::Setup => format!(
             "LCD updated: SETUP field {}, {}",
             state.selected_setup_field.label(),
@@ -1318,6 +1404,21 @@ fn setup_preferences_text(preferences: SetupPreferences) -> String {
         },
         preferences.count_in_bars,
         preferences.lcd_contrast
+    )
+}
+
+fn timing_correct_settings_text(settings: TimingCorrectSettings) -> String {
+    let swing_scope = if settings.division.uses_swing() {
+        "swing active"
+    } else if settings.division.grid_ticks().is_some() {
+        "triplet swing ignored"
+    } else {
+        "off"
+    };
+    format!(
+        "division {} swing {}% ({swing_scope})",
+        settings.division.label(),
+        settings.swing_percent
     )
 }
 

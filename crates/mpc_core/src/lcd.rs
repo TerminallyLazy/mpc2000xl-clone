@@ -2,7 +2,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::events::{
     DiskOperation, MidiSettingsField, PadAssignment, Program, ProgramEditField, ProgramPad,
-    SampleCatalogEntry, SetupField, SetupPreferences, SongEditField, SongStep, TrimEditField,
+    SampleCatalogEntry, SetupField, SetupPreferences, SongEditField, SongStep, TimingCorrectField,
+    TimingCorrectSettings, TrimEditField,
 };
 use crate::state::MainScreenField;
 
@@ -400,6 +401,48 @@ impl LcdFrame {
                     preferences.lcd_contrast
                 ),
                 format!("Edit {}", selected_field.label()),
+            ],
+            soft_keys: [
+                "F1".to_string(),
+                "F2".to_string(),
+                "F3".to_string(),
+                "F4".to_string(),
+                "F5".to_string(),
+                "F6".to_string(),
+            ],
+        }
+    }
+
+    pub fn timing_correct_screen(
+        settings: TimingCorrectSettings,
+        selected_field: TimingCorrectField,
+    ) -> Self {
+        let marker = |field| {
+            if selected_field == field { ">" } else { " " }
+        };
+        let swing_note = if settings.division.uses_swing() {
+            "Swing active"
+        } else if settings.division.grid_ticks().is_some() {
+            "Triplet swing ignored"
+        } else {
+            "Quantize disabled"
+        };
+
+        Self {
+            title: "TIMING".to_string(),
+            lines: [
+                format!(
+                    "{}Division {}",
+                    marker(TimingCorrectField::Division),
+                    settings.division.label()
+                ),
+                format!(
+                    "{}Swing {:02}%",
+                    marker(TimingCorrectField::Swing),
+                    settings.swing_percent
+                ),
+                format!("Edit {}  {swing_note}", selected_field.label()),
+                "Internal spec - evidence pending".to_string(),
             ],
             soft_keys: [
                 "F1".to_string(),

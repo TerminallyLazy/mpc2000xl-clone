@@ -4,7 +4,8 @@ use mpc_core::{
     PanelControl, PlaybackMissReason, ProgramEditField, ProgramPad, ProjectSetupSnapshot,
     ProjectSnapshot, ProjectSnapshotError, ProjectSongSnapshot, SamplePlaybackIntent,
     SamplePlaybackResolution, SampleTrim, SequenceEvent, SetupField, SetupPreferences,
-    SongEditField, SongStep, SyntheticSample, TrimEditField, sequence_length_ticks_for_bars,
+    SongEditField, SongStep, SyntheticSample, TimingCorrectDivision, TimingCorrectField,
+    TimingCorrectSettings, TrimEditField, sequence_length_ticks_for_bars,
 };
 
 #[test]
@@ -2390,6 +2391,448 @@ fn track_mute_soft_key_4_is_main_only() {
         assert!(core.state().muted_tracks.is_empty());
         assert_no_track_mute_outputs(&outputs);
     }
+}
+
+#[test]
+fn timing_correct_mode_defaults_off_and_default_off_preserves_recording_tick() {
+    let mut snapshot = MpcCore::new().export_project_snapshot();
+    let out_of_range_tick = snapshot.sequence.bar_count as u64 * 4 * 96 + 17;
+    snapshot.machine.playhead_ticks = out_of_range_tick;
+    snapshot.machine.playhead_tick_remainder = 0;
+    let mut core = restore_snapshot(snapshot);
+
+    let mode_outputs = core.dispatch(HardwareEvent::Press {
+        control: PanelControl::TimingCorrect,
+    });
+    assert_eq!(core.state().mode, Mode::TimingCorrect);
+    assert_eq!(core.state().lcd.title, "TIMING");
+    assert_eq!(
+        core.state().timing_correct,
+        TimingCorrectSettings::default()
+    );
+    assert_eq!(
+        core.state().selected_timing_correct_field,
+        TimingCorrectField::Division
+    );
+    assert!(core.state().lcd.lines[0].contains(">Division off"));
+    assert!(core.state().lcd.lines[3].contains("evidence pending"));
+    assert_eq!(
+        mode_outputs,
+        vec![
+            MachineOutput::ModeChanged {
+                mode: Mode::TimingCorrect,
+            },
+            MachineOutput::LcdChanged,
+        ]
+    );
+
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::Overdub,
+    });
+    let outputs = core.dispatch(HardwareEvent::StrikePad {
+        bank: PadBank::A,
+        pad: 1,
+        velocity: 90,
+    });
+
+    assert_eq!(core.state().recorded_events[0].tick, out_of_range_tick);
+    assert!(
+        !outputs
+            .iter()
+            .any(|output| matches!(output, MachineOutput::TimingCorrectApplied { .. }))
+    );
+}
+
+#[test]
+fn timing_correct_division_editing_cycles_by_delta_sign() {
+    let mut core = MpcCore::new();
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::TimingCorrect,
+    });
+
+    let first = core.dispatch(HardwareEvent::TurnDataWheel { delta: 4 });
+    assert_eq!(
+        core.state().timing_correct.division,
+        TimingCorrectDivision::Eighth
+    );
+    assert_eq!(
+        first,
+        timing_correct_changed_outputs(
+            TimingCorrectSettings {
+                division: TimingCorrectDivision::Eighth,
+                swing_percent: 50,
+            },
+            TimingCorrectField::Division,
+        )
+    );
+
+    let second = core.dispatch(HardwareEvent::TurnDataWheel { delta: 1 });
+    assert_eq!(
+        core.state().timing_correct.division,
+        TimingCorrectDivision::EighthTriplet
+    );
+    assert_eq!(
+        second,
+        timing_correct_changed_outputs(
+            TimingCorrectSettings {
+                division: TimingCorrectDivision::EighthTriplet,
+                swing_percent: 50,
+            },
+            TimingCorrectField::Division,
+        )
+    );
+
+    let previous = core.dispatch(HardwareEvent::TurnDataWheel { delta: -99 });
+    assert_eq!(
+        core.state().timing_correct.division,
+        TimingCorrectDivision::Eighth
+    );
+    assert_eq!(
+        previous,
+        timing_correct_changed_outputs(
+            TimingCorrectSettings {
+                division: TimingCorrectDivision::Eighth,
+                swing_percent: 50,
+            },
+            TimingCorrectField::Division,
+        )
+    );
+
+    let zero = core.dispatch(HardwareEvent::TurnDataWheel { delta: 0 });
+    assert_eq!(
+        zero,
+        vec![MachineOutput::Ignored {
+            reason: "timing_correct.division.zero_delta_ignored".to_string(),
+        }]
+    );
+}
+
+#[test]
+fn timing_correct_swing_field_selection_and_clamp_outputs() {
+    let mut core = MpcCore::new();
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::TimingCorrect,
+    });
+
+    let select_swing = core.dispatch(HardwareEvent::Press {
+        control: PanelControl::CursorRight,
+    });
+    assert_eq!(
+        core.state().selected_timing_correct_field,
+        TimingCorrectField::Swing
+    );
+    assert_eq!(
+        select_swing,
+        timing_correct_changed_outputs(TimingCorrectSettings::default(), TimingCorrectField::Swing)
+    );
+    assert!(core.state().lcd.lines[1].contains(">Swing 50%"));
+
+    let max = core.dispatch(HardwareEvent::TurnDataWheel { delta: 30 });
+    assert_eq!(core.state().timing_correct.swing_percent, 75);
+    assert_eq!(
+        max,
+        timing_correct_changed_outputs(
+            TimingCorrectSettings {
+                division: TimingCorrectDivision::Off,
+                swing_percent: 75,
+            },
+            TimingCorrectField::Swing,
+        )
+    );
+    assert_eq!(
+        core.dispatch(HardwareEvent::TurnDataWheel { delta: 1 }),
+        vec![MachineOutput::Ignored {
+            reason: "timing_correct.swing.boundary".to_string(),
+        }]
+    );
+
+    core.dispatch(HardwareEvent::TurnDataWheel { delta: -25 });
+    assert_eq!(core.state().timing_correct.swing_percent, 50);
+    assert_eq!(
+        core.dispatch(HardwareEvent::TurnDataWheel { delta: -1 }),
+        vec![MachineOutput::Ignored {
+            reason: "timing_correct.swing.boundary".to_string(),
+        }]
+    );
+    assert_eq!(
+        core.dispatch(HardwareEvent::TurnDataWheel { delta: 0 }),
+        vec![MachineOutput::Ignored {
+            reason: "timing_correct.swing.zero_delta_ignored".to_string(),
+        }]
+    );
+}
+
+#[test]
+fn timing_correct_quantizes_pad_recording_to_nearest_grid_and_ties_upward() {
+    let mut snapshot = MpcCore::new().export_project_snapshot();
+    snapshot.machine.playhead_ticks = 36;
+    snapshot.sequence.timing_correct = TimingCorrectSettings {
+        division: TimingCorrectDivision::Sixteenth,
+        swing_percent: 50,
+    };
+    let mut core = restore_snapshot(snapshot);
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::Overdub,
+    });
+
+    let outputs = core.dispatch(HardwareEvent::StrikePad {
+        bank: PadBank::B,
+        pad: 2,
+        velocity: 91,
+    });
+
+    assert_eq!(core.state().recorded_events[0].tick, 48);
+    assert!(matches!(
+        outputs.as_slice(),
+        [
+            MachineOutput::PadTriggered { .. },
+            MachineOutput::SamplePlaybackIntent { .. },
+            MachineOutput::TimingCorrectApplied {
+                original_tick: 36,
+                quantized_tick: 48,
+                division: TimingCorrectDivision::Sixteenth,
+                swing_percent: 50,
+            },
+            MachineOutput::SequenceEventRecorded { event },
+            MachineOutput::LcdChanged,
+        ] if event.tick == 48 && event.pad_bank == PadBank::B && event.pad_number == 2
+    ));
+}
+
+#[test]
+fn timing_correct_non_off_clamps_out_of_range_recording_tick_to_sequence_end() {
+    let mut snapshot = MpcCore::new().export_project_snapshot();
+    let sequence_length = sequence_length_ticks_for_bars(snapshot.sequence.bar_count);
+    snapshot.machine.playhead_ticks = sequence_length + 5_000;
+    snapshot.sequence.timing_correct = TimingCorrectSettings {
+        division: TimingCorrectDivision::Sixteenth,
+        swing_percent: 60,
+    };
+    let mut core = restore_snapshot(snapshot);
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::Overdub,
+    });
+
+    let outputs = core.dispatch(HardwareEvent::StrikePad {
+        bank: PadBank::A,
+        pad: 2,
+        velocity: 91,
+    });
+
+    assert_eq!(core.state().recorded_events[0].tick, sequence_length);
+    assert!(outputs.iter().any(|output| matches!(
+        output,
+        MachineOutput::TimingCorrectApplied {
+            original_tick,
+            quantized_tick,
+            division: TimingCorrectDivision::Sixteenth,
+            swing_percent: 60,
+        } if *original_tick == sequence_length + 5_000 && *quantized_tick == sequence_length
+    )));
+}
+
+#[test]
+fn timing_correct_swing_offsets_odd_non_triplet_grid_targets() {
+    let mut snapshot = MpcCore::new().export_project_snapshot();
+    snapshot.machine.playhead_ticks = 31;
+    snapshot.sequence.timing_correct = TimingCorrectSettings {
+        division: TimingCorrectDivision::Sixteenth,
+        swing_percent: 60,
+    };
+    let mut core = restore_snapshot(snapshot);
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::Overdub,
+    });
+
+    let outputs = core.dispatch(HardwareEvent::StrikePad {
+        bank: PadBank::A,
+        pad: 3,
+        velocity: 92,
+    });
+
+    assert_eq!(core.state().recorded_events[0].tick, 29);
+    assert!(outputs.iter().any(|output| matches!(
+        output,
+        MachineOutput::TimingCorrectApplied {
+            original_tick: 31,
+            quantized_tick: 29,
+            division: TimingCorrectDivision::Sixteenth,
+            swing_percent: 60,
+        }
+    )));
+}
+
+#[test]
+fn timing_correct_midi_note_on_records_quantized_tick() {
+    let mut snapshot = MpcCore::new().export_project_snapshot();
+    snapshot.machine.playhead_ticks = 35;
+    snapshot.sequence.timing_correct = TimingCorrectSettings {
+        division: TimingCorrectDivision::Eighth,
+        swing_percent: 50,
+    };
+    let mut core = restore_snapshot(snapshot);
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::Overdub,
+    });
+
+    let outputs = core.dispatch(HardwareEvent::MidiNoteOn {
+        channel: 1,
+        note: 36,
+        velocity: 93,
+    });
+
+    assert_eq!(core.state().recorded_events[0].tick, 48);
+    assert!(matches!(
+        outputs.as_slice(),
+        [
+            MachineOutput::MidiNoteMapped { pad: 1, .. },
+            MachineOutput::PadTriggered { pad: 1, .. },
+            MachineOutput::SamplePlaybackIntent { .. },
+            MachineOutput::TimingCorrectApplied {
+                original_tick: 35,
+                quantized_tick: 48,
+                division: TimingCorrectDivision::Eighth,
+                swing_percent: 50,
+            },
+            MachineOutput::SequenceEventRecorded { event },
+            MachineOutput::LcdChanged,
+        ] if event.tick == 48 && event.pad_bank == PadBank::A && event.pad_number == 1
+    ));
+}
+
+#[test]
+fn timing_correct_snapshot_defaults_round_trips_and_validates_values() {
+    let mut core = MpcCore::new();
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::TimingCorrect,
+    });
+    core.dispatch(HardwareEvent::TurnDataWheel { delta: 1 });
+    core.dispatch(HardwareEvent::TurnDataWheel { delta: 1 });
+    core.dispatch(HardwareEvent::TurnDataWheel { delta: 1 });
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::CursorRight,
+    });
+    core.dispatch(HardwareEvent::TurnDataWheel { delta: 10 });
+
+    let json = core
+        .to_project_json()
+        .expect("timing-correct snapshot should encode");
+    assert!(json.contains(r#""selected_timing_correct_field": "swing""#));
+    assert!(json.contains(r#""timing_correct""#));
+    assert!(json.contains(r#""division": "sixteenth""#));
+    assert!(json.contains(r#""swing_percent": 60"#));
+
+    let mut restored = MpcCore::new();
+    restored
+        .restore_project_json(&json)
+        .expect("timing-correct snapshot should restore");
+    assert_eq!(restored.state().mode, Mode::TimingCorrect);
+    assert_eq!(
+        restored.state().timing_correct,
+        TimingCorrectSettings {
+            division: TimingCorrectDivision::Sixteenth,
+            swing_percent: 60,
+        }
+    );
+    assert_eq!(
+        restored.state().selected_timing_correct_field,
+        TimingCorrectField::Swing
+    );
+
+    let mut older_value =
+        serde_json::to_value(MpcCore::new().export_project_snapshot()).expect("snapshot value");
+    older_value
+        .pointer_mut("/machine")
+        .unwrap()
+        .as_object_mut()
+        .unwrap()
+        .remove("selected_timing_correct_field");
+    older_value
+        .pointer_mut("/sequence")
+        .unwrap()
+        .as_object_mut()
+        .unwrap()
+        .remove("timing_correct");
+    let older_json = serde_json::to_string(&older_value).expect("older JSON should encode");
+    let mut older = MpcCore::new();
+    older
+        .restore_project_json(&older_json)
+        .expect("older snapshot without timing-correct fields should restore defaults");
+    assert_eq!(
+        older.state().timing_correct,
+        TimingCorrectSettings::default()
+    );
+    assert_eq!(
+        older.state().selected_timing_correct_field,
+        TimingCorrectField::Division
+    );
+
+    for invalid_swing in [49, 76] {
+        let mut invalid = MpcCore::new().export_project_snapshot();
+        invalid.sequence.timing_correct.swing_percent = invalid_swing;
+        assert_invalid_project_field(
+            MpcCore::new()
+                .restore_project_snapshot(invalid)
+                .expect_err("invalid swing should be rejected"),
+            "sequence.timing_correct.swing_percent",
+            "50..=75",
+        );
+    }
+
+    let mut incomplete = serde_json::to_value(MpcCore::new().export_project_snapshot())
+        .expect("snapshot value should encode");
+    incomplete
+        .pointer_mut("/sequence/timing_correct")
+        .unwrap()
+        .as_object_mut()
+        .unwrap()
+        .remove("swing_percent");
+    let error = MpcCore::from_project_json(&serde_json::to_string(&incomplete).unwrap())
+        .expect_err("present incomplete timing-correct settings should be rejected");
+    assert_invalid_project_field(
+        error,
+        "sequence.timing_correct.swing_percent",
+        "required field is missing",
+    );
+}
+
+#[test]
+fn timing_correct_outputs_serialize_snake_case() {
+    let settings = TimingCorrectSettings {
+        division: TimingCorrectDivision::SixteenthTriplet,
+        swing_percent: 60,
+    };
+    assert_eq!(
+        serde_json::to_value(MachineOutput::TimingCorrectChanged {
+            settings,
+            selected_field: TimingCorrectField::Swing,
+        })
+        .expect("changed output should serialize"),
+        serde_json::json!({
+            "type": "timing_correct_changed",
+            "settings": {
+                "division": "sixteenth_triplet",
+                "swing_percent": 60
+            },
+            "selected_field": "swing"
+        })
+    );
+    assert_eq!(
+        serde_json::to_value(MachineOutput::TimingCorrectApplied {
+            original_tick: 31,
+            quantized_tick: 29,
+            division: TimingCorrectDivision::Sixteenth,
+            swing_percent: 60,
+        })
+        .expect("applied output should serialize"),
+        serde_json::json!({
+            "type": "timing_correct_applied",
+            "original_tick": 31,
+            "quantized_tick": 29,
+            "division": "sixteenth",
+            "swing_percent": 60
+        })
+    );
 }
 
 #[test]
@@ -5299,6 +5742,19 @@ fn setup_changed_outputs(
     vec![
         MachineOutput::SetupPreferencesChanged {
             preferences,
+            selected_field,
+        },
+        MachineOutput::LcdChanged,
+    ]
+}
+
+fn timing_correct_changed_outputs(
+    settings: TimingCorrectSettings,
+    selected_field: TimingCorrectField,
+) -> Vec<MachineOutput> {
+    vec![
+        MachineOutput::TimingCorrectChanged {
+            settings,
             selected_field,
         },
         MachineOutput::LcdChanged,
