@@ -1541,6 +1541,120 @@
       ]
     },
     {
+      "id": "audio.metronome.count-in-click-render-routing",
+      "name": "Count-in metronome click intents render deterministic PCM and route through host audio",
+      "area": "audio_host",
+      "state": "unit-backed-internal-spec",
+      "evidence": [
+        {
+          "source_id": "metronome-click-audio-foundation-slice-plan",
+          "source_category": "internal_spec",
+          "type": "plan",
+          "status": "mapped",
+          "ref": "docs/superpowers/plans/2026-06-14-mpc2000xl-metronome-click-audio-foundation.md#behavior-slice"
+        },
+        {
+          "source_id": "count-in-click-foundation-slice-plan",
+          "source_category": "internal_spec",
+          "type": "plan",
+          "status": "mapped",
+          "ref": "docs/superpowers/plans/2026-06-13-mpc2000xl-count-in-click-foundation.md#deterministic-contract"
+        },
+        {
+          "source_id": "host-audio-plumbing-slice-plan",
+          "source_category": "internal_spec",
+          "type": "plan",
+          "status": "mapped",
+          "ref": "docs/superpowers/plans/2026-06-13-mpc2000xl-host-audio-plumbing.md#device-abstraction"
+        }
+      ],
+      "source_coverage": [
+        {
+          "source_category": "manual",
+          "source_id": "owner-manual",
+          "status": "investigation",
+          "ref": null,
+          "note": "Exact MPC2000XL metronome click timbre, output level, and routing behavior are not mapped yet."
+        },
+        {
+          "source_category": "firmware",
+          "source_id": "mpc2000xl-os-local-reference",
+          "status": "investigation",
+          "ref": null,
+          "note": "No firmware trace validates count-in click audio rendering, latency, or scheduling tolerance yet."
+        },
+        {
+          "source_category": "schematic",
+          "source_id": "operation-schematic",
+          "status": "investigation",
+          "ref": null,
+          "note": "No hardware output path evidence is mapped to this deterministic generated click."
+        },
+        {
+          "source_category": "internal_spec",
+          "source_id": "metronome-click-audio-foundation-slice-plan",
+          "status": "mapped",
+          "ref": "docs/superpowers/plans/2026-06-14-mpc2000xl-metronome-click-audio-foundation.md#deterministic-contract",
+          "note": "The click audio contract is deterministic generated PCM from CountInClickIntent and AudioRenderSettings."
+        }
+      ],
+      "inputs": [
+        {
+          "channel": "core_output",
+          "event": "MetronomeClick",
+          "intent_fields": [
+            "count_in_tick",
+            "bar_index",
+            "beat_index",
+            "accent"
+          ]
+        },
+        {
+          "channel": "render_settings",
+          "sample_rate_hz": "u32",
+          "frame_count": "usize"
+        },
+        {
+          "channel": "host_audio",
+          "event": "count_in_click_render_enqueue",
+          "enabled": "true|false"
+        }
+      ],
+      "expected_outputs": {
+        "render": {
+          "source": "mpc_audio::render_count_in_click",
+          "render_kind": "count_in_click",
+          "frames": "deterministic stereo PCM i16 bounded by AudioRenderSettings.frame_count",
+          "accent": "accent peak amplitude is greater than non-accent peak amplitude",
+          "source_kind": "rights_safe_generated",
+          "loaded_audio_byte_count": 0,
+          "metadata": [
+            "count_in_tick",
+            "bar_index",
+            "beat_index",
+            "accent"
+          ]
+        },
+        "host_audio_state": {
+          "disabled": "ignored without backend enqueue or success-counter increments",
+          "enabled": "enqueues through the existing play_rendered path and increments accepted counters"
+        },
+        "desktop": {
+          "status": "continues to show count-in bar, beat, and tick position",
+          "host_audio_status": "last event and counters reflect click enqueues when host audio is enabled"
+        }
+      },
+      "tolerance": null,
+      "fixture_refs": [
+        "crates/mpc_audio/src/lib.rs",
+        "apps/desktop/src/main.rs"
+      ],
+      "conflict_notes": [
+        "This is an internal deterministic audio-routing foundation, not a real MPC2000XL metronome sound or real device backend.",
+        "No proprietary samples, recordings, firmware bytes, external media, copied manuals, service scans, or binary audio fixtures are stored in the repo."
+      ]
+    },
+    {
       "id": "core.project.snapshot-round-trip",
       "name": "Project snapshot round-trips sequence, program, and synthetic metadata",
       "area": "project_persistence",

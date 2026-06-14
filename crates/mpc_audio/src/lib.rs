@@ -1,4 +1,4 @@
-use mpc_core::{PadBank, SamplePlaybackIntent};
+use mpc_core::{CountInClickIntent, PadBank, SamplePlaybackIntent};
 use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::VecDeque;
 
@@ -23,6 +23,9 @@ const MAX_LEVEL: i32 = 127;
 const PAN_RANGE: i8 = 100;
 const FNV_OFFSET_BASIS: u32 = 2_166_136_261;
 const FNV_PRIME: u32 = 16_777_619;
+const COUNT_IN_CLICK_ACCENT_PEAK: i32 = 24_000;
+const COUNT_IN_CLICK_NORMAL_PEAK: i32 = 14_000;
+const COUNT_IN_CLICK_ACTIVE_RATE_DIVISOR: usize = 250;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AudioRenderSettings {
@@ -148,8 +151,17 @@ pub enum ChannelBalance {
     Right,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AudioRenderKind {
+    #[default]
+    SamplePlayback,
+    CountInClick,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct AudioRenderSummary {
+    pub render_kind: AudioRenderKind,
     pub sample_rate_hz: u32,
     pub frame_count: usize,
     pub source_sample_id: String,
@@ -172,6 +184,14 @@ pub struct AudioRenderSummary {
     pub channel_balance: ChannelBalance,
     pub source_kind: AudioSourceKind,
     pub loaded_audio_byte_count: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub count_in_tick: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bar_index: Option<u8>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub beat_index: Option<u8>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub accent: Option<bool>,
 }
 
 impl<'de> Deserialize<'de> for AudioRenderSummary {
@@ -181,6 +201,8 @@ impl<'de> Deserialize<'de> for AudioRenderSummary {
     {
         #[derive(Deserialize)]
         struct AudioRenderSummaryData {
+            #[serde(default)]
+            render_kind: AudioRenderKind,
             sample_rate_hz: u32,
             frame_count: usize,
             source_sample_id: String,
@@ -206,6 +228,14 @@ impl<'de> Deserialize<'de> for AudioRenderSummary {
             channel_balance: ChannelBalance,
             source_kind: AudioSourceKind,
             loaded_audio_byte_count: usize,
+            #[serde(default)]
+            count_in_tick: Option<u64>,
+            #[serde(default)]
+            bar_index: Option<u8>,
+            #[serde(default)]
+            beat_index: Option<u8>,
+            #[serde(default)]
+            accent: Option<bool>,
         }
 
         let data = AudioRenderSummaryData::deserialize(deserializer)?;
@@ -217,6 +247,7 @@ impl<'de> Deserialize<'de> for AudioRenderSummary {
             .unwrap_or(0);
 
         Ok(Self {
+            render_kind: data.render_kind,
             sample_rate_hz: data.sample_rate_hz,
             frame_count: data.frame_count,
             source_sample_id: data.source_sample_id,
@@ -241,6 +272,10 @@ impl<'de> Deserialize<'de> for AudioRenderSummary {
             channel_balance: data.channel_balance,
             source_kind: data.source_kind,
             loaded_audio_byte_count: data.loaded_audio_byte_count,
+            count_in_tick: data.count_in_tick,
+            bar_index: data.bar_index,
+            beat_index: data.beat_index,
+            accent: data.accent,
         })
     }
 }
@@ -694,6 +729,33 @@ where
         }
     }
 
+    pub fn play_count_in_click(&mut self, intent: &CountInClickIntent) -> HostAudioEvent {
+        self.play_count_in_click_with_render_summary(intent).event
+    }
+
+    pub fn play_count_in_click_with_render_summary(
+        &mut self,
+        intent: &CountInClickIntent,
+    ) -> HostAudioPlaybackReport {
+        match render_count_in_click(intent, self.render_settings) {
+            Ok(rendered) => {
+                let render_summary = Some(rendered.summary.clone());
+                let event = self.play_rendered(rendered);
+                HostAudioPlaybackReport {
+                    event,
+                    render_summary,
+                }
+            }
+            Err(error) => {
+                let event = self.record_failed(HostAudioError::render(error), None);
+                HostAudioPlaybackReport {
+                    event,
+                    render_summary: None,
+                }
+            }
+        }
+    }
+
     pub fn play_rendered(&mut self, rendered: RenderedAudio) -> HostAudioEvent {
         if self.mode == HostAudioMode::Disabled {
             return self.record_ignored();
@@ -797,6 +859,7 @@ pub fn render_intent(
     let peak_amplitude = peak_left.max(peak_right);
     let channel_balance = channel_balance(peak_left, peak_right);
     let summary = AudioRenderSummary {
+        render_kind: AudioRenderKind::SamplePlayback,
         sample_rate_hz: render_settings.sample_rate_hz,
         frame_count: render_settings.frame_count,
         source_sample_id: intent.sample_id.clone(),
@@ -819,6 +882,77 @@ pub fn render_intent(
         channel_balance,
         source_kind: AudioSourceKind::RightsSafeGenerated,
         loaded_audio_byte_count: 0,
+        count_in_tick: None,
+        bar_index: None,
+        beat_index: None,
+        accent: None,
+    };
+
+    Ok(RenderedAudio {
+        settings: render_settings,
+        summary,
+        frames,
+    })
+}
+
+pub fn render_count_in_click(
+    intent: &CountInClickIntent,
+    settings: AudioRenderSettings,
+) -> Result<RenderedAudio, AudioRenderError> {
+    settings.validate()?;
+
+    let render_settings = settings;
+    let active_frame_count = count_in_click_active_frame_count(render_settings);
+    let click_peak = count_in_click_peak(intent.accent);
+    let mut frames = Vec::with_capacity(render_settings.frame_count);
+    let mut peak_left = 0_i16;
+    let mut peak_right = 0_i16;
+
+    for frame_index in 0..render_settings.frame_count {
+        let mono = count_in_click_sample(intent, frame_index, active_frame_count, click_peak);
+        let left = mono;
+        let right = mono;
+
+        peak_left = peak_left.max(left.saturating_abs());
+        peak_right = peak_right.max(right.saturating_abs());
+        frames.push(AudioFrame { left, right });
+    }
+
+    let frame_count_u32 = u32::try_from(render_settings.frame_count).unwrap_or(u32::MAX);
+    let peak_amplitude = peak_left.max(peak_right);
+    let source_sample_name = if intent.accent {
+        "COUNT-IN ACCENT"
+    } else {
+        "COUNT-IN CLICK"
+    };
+    let summary = AudioRenderSummary {
+        render_kind: AudioRenderKind::CountInClick,
+        sample_rate_hz: render_settings.sample_rate_hz,
+        frame_count: render_settings.frame_count,
+        source_sample_id: "count_in_click".to_string(),
+        source_sample_name: source_sample_name.to_string(),
+        selected_track: 0,
+        program_index: 0,
+        program_name: "Metronome".to_string(),
+        bank: PadBank::A,
+        pad_number: 0,
+        velocity: if intent.accent { 127 } else { 96 },
+        level: 127,
+        pan: 0,
+        tune_cents: 0,
+        start_frame: 0,
+        end_frame: frame_count_u32.saturating_sub(1),
+        window_length_frames: frame_count_u32,
+        peak_left,
+        peak_right,
+        peak_amplitude,
+        channel_balance: channel_balance(peak_left, peak_right),
+        source_kind: AudioSourceKind::RightsSafeGenerated,
+        loaded_audio_byte_count: 0,
+        count_in_tick: Some(intent.count_in_tick),
+        bar_index: Some(intent.bar_index),
+        beat_index: Some(intent.beat_index),
+        accent: Some(intent.accent),
     };
 
     Ok(RenderedAudio {
@@ -912,6 +1046,49 @@ fn seeded_square_wave(seed: u32, frame_index: usize, tune_cents: i16) -> i32 {
     if phase < duty { 255 } else { -255 }
 }
 
+fn count_in_click_active_frame_count(settings: AudioRenderSettings) -> usize {
+    if settings.frame_count == 0 {
+        return 0;
+    }
+
+    let active_frame_limit =
+        (settings.sample_rate_hz as usize / COUNT_IN_CLICK_ACTIVE_RATE_DIVISOR).max(1);
+    settings.frame_count.min(active_frame_limit)
+}
+
+fn count_in_click_peak(accent: bool) -> i32 {
+    if accent {
+        COUNT_IN_CLICK_ACCENT_PEAK
+    } else {
+        COUNT_IN_CLICK_NORMAL_PEAK
+    }
+}
+
+fn count_in_click_sample(
+    intent: &CountInClickIntent,
+    frame_index: usize,
+    active_frame_count: usize,
+    peak: i32,
+) -> i16 {
+    if frame_index >= active_frame_count || active_frame_count == 0 {
+        return 0;
+    }
+
+    let phase_seed =
+        ((intent.count_in_tick ^ u64::from(intent.bar_index) ^ u64::from(intent.beat_index)) & 1)
+            as usize;
+    let polarity_period = if intent.accent { 3 } else { 5 };
+    let polarity = if ((frame_index / polarity_period) + phase_seed).is_multiple_of(2) {
+        1
+    } else {
+        -1
+    };
+    let envelope = peak * i32::try_from(active_frame_count - frame_index).unwrap_or(i32::MAX)
+        / i32::try_from(active_frame_count).unwrap_or(1);
+
+    clamp_i16(polarity * envelope)
+}
+
 fn clamp_i16(value: i32) -> i16 {
     value.clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16
 }
@@ -927,7 +1104,7 @@ fn channel_balance(peak_left: i16, peak_right: i16) -> ChannelBalance {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mpc_core::PadBank;
+    use mpc_core::{CountInClickIntent, PadBank};
 
     #[test]
     fn same_intent_and_settings_render_exact_same_frames() {
@@ -1037,6 +1214,112 @@ mod tests {
         assert_eq!(summary.start_frame, 0);
         assert_eq!(summary.end_frame, 23);
         assert_eq!(summary.window_length_frames, 24);
+        assert_eq!(summary.render_kind, AudioRenderKind::SamplePlayback);
+        assert_eq!(summary.count_in_tick, None);
+        assert_eq!(summary.bar_index, None);
+        assert_eq!(summary.beat_index, None);
+        assert_eq!(summary.accent, None);
+    }
+
+    #[test]
+    fn count_in_click_render_is_deterministic_and_reports_metadata() {
+        let intent = test_count_in_click_intent(96, 1, 1, true);
+        let settings = settings(44_100, 64);
+
+        let first = render_click(&intent, settings);
+        let second = render_click(&intent, settings);
+
+        assert_eq!(first.frames, second.frames);
+        assert_eq!(first.summary, second.summary);
+        assert_eq!(first.settings, settings);
+        assert_eq!(first.summary.render_kind, AudioRenderKind::CountInClick);
+        assert_eq!(
+            first.summary.source_kind,
+            AudioSourceKind::RightsSafeGenerated
+        );
+        assert_eq!(first.summary.loaded_audio_byte_count, 0);
+        assert_eq!(first.summary.count_in_tick, Some(96));
+        assert_eq!(first.summary.bar_index, Some(1));
+        assert_eq!(first.summary.beat_index, Some(1));
+        assert_eq!(first.summary.accent, Some(true));
+        assert_eq!(first.summary.channel_balance, ChannelBalance::Center);
+    }
+
+    #[test]
+    fn count_in_click_accent_peak_is_louder_than_non_accent_peak() {
+        let settings = settings(44_100, 128);
+        let accent = render_click(&test_count_in_click_intent(0, 1, 1, true), settings);
+        let click = render_click(&test_count_in_click_intent(96, 1, 2, false), settings);
+
+        assert!(accent.summary.peak_amplitude > click.summary.peak_amplitude);
+        assert_eq!(accent.summary.source_sample_name, "COUNT-IN ACCENT");
+        assert_eq!(click.summary.source_sample_name, "COUNT-IN CLICK");
+    }
+
+    #[test]
+    fn disabled_host_audio_ignores_count_in_click_without_enqueueing() {
+        let mut engine = HostAudioEngine::new(CaptureAudioBackend::new(4), settings(44_100, 64))
+            .expect("host audio settings should be valid");
+
+        let report = engine
+            .play_count_in_click_with_render_summary(&test_count_in_click_intent(0, 1, 1, true));
+
+        assert_eq!(
+            report.event,
+            HostAudioEvent::Ignored {
+                backend_name: "capture".to_string(),
+                reason: HostAudioIgnoreReason::Disabled,
+            }
+        );
+        let summary = report
+            .render_summary
+            .expect("engine should expose count-in render summary for UI");
+        assert_eq!(summary.render_kind, AudioRenderKind::CountInClick);
+        assert_eq!(summary.accent, Some(true));
+        let state = engine.state();
+        assert_eq!(state.queued_render_count, 0);
+        assert_eq!(state.played_render_count, 0);
+        assert_eq!(engine.backend().captured_renders().len(), 0);
+        assert_eq!(state.last_event.as_ref(), Some(&report.event));
+    }
+
+    #[test]
+    fn enabled_host_audio_enqueues_and_captures_count_in_click() {
+        let mut engine =
+            HostAudioEngine::enabled(CaptureAudioBackend::new(4), settings(44_100, 64))
+                .expect("host audio settings should be valid");
+
+        let report = engine
+            .play_count_in_click_with_render_summary(&test_count_in_click_intent(96, 1, 2, false));
+
+        let HostAudioEvent::Enqueued {
+            backend_name,
+            receipt,
+        } = &report.event
+        else {
+            panic!("expected enqueued event, got {:?}", report.event);
+        };
+        assert_eq!(backend_name, "capture");
+        assert_eq!(receipt.frame_count, 64);
+        assert!(receipt.queued);
+        assert!(receipt.played);
+        assert_eq!(receipt.summary.render_kind, AudioRenderKind::CountInClick);
+        assert_eq!(receipt.summary.count_in_tick, Some(96));
+        assert_eq!(receipt.summary.beat_index, Some(2));
+        assert_eq!(receipt.summary.accent, Some(false));
+
+        let state = engine.state();
+        assert_eq!(state.queued_render_count, 1);
+        assert_eq!(state.played_render_count, 1);
+        assert_eq!(state.last_event.as_ref(), Some(&report.event));
+        let capture = engine
+            .backend()
+            .captured_renders()
+            .back()
+            .expect("capture should store latest count-in click");
+        assert_eq!(capture.frame_count, 64);
+        assert_eq!(capture.summary.render_kind, AudioRenderKind::CountInClick);
+        assert_eq!(capture.summary.source_sample_name, "COUNT-IN CLICK");
     }
 
     #[test]
@@ -1361,6 +1644,10 @@ mod tests {
         render_intent(intent, settings).expect("test render settings should be valid")
     }
 
+    fn render_click(intent: &CountInClickIntent, settings: AudioRenderSettings) -> RenderedAudio {
+        render_count_in_click(intent, settings).expect("test render settings should be valid")
+    }
+
     fn test_intent(velocity: u8, level: u8, pan: i8) -> SamplePlaybackIntent {
         test_intent_with_tune(velocity, level, pan, 0)
     }
@@ -1386,6 +1673,20 @@ mod tests {
             start_frame: 0,
             end_frame: 51_599,
             window_length_frames: 51_600,
+        }
+    }
+
+    fn test_count_in_click_intent(
+        count_in_tick: u64,
+        bar_index: u8,
+        beat_index: u8,
+        accent: bool,
+    ) -> CountInClickIntent {
+        CountInClickIntent {
+            count_in_tick,
+            bar_index,
+            beat_index,
+            accent,
         }
     }
 

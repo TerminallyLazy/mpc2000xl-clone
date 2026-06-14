@@ -1,7 +1,7 @@
 use eframe::egui;
 use mpc_audio::{
-    AudioRenderSettings, AudioRenderSummary, CaptureAudioBackend, HostAudioEngine, HostAudioError,
-    HostAudioEvent, HostAudioState,
+    AudioRenderKind, AudioRenderSettings, AudioRenderSummary, CaptureAudioBackend, HostAudioEngine,
+    HostAudioError, HostAudioEvent, HostAudioPlaybackReport, HostAudioState,
 };
 use mpc_core::{
     DiskOperation, HardwareEvent, MachineOutput, MidiSettingsField, Mode, MpcCore, MpcState,
@@ -356,7 +356,7 @@ impl MpcDesktopApp {
 
     fn dispatch_event(&mut self, event: HardwareEvent) {
         let outputs = self.core.dispatch(event);
-        let render_or_host_error = self.handle_last_playback_intent(&outputs);
+        let render_or_host_error = self.handle_audio_outputs(&outputs);
         let disk_operation_status = self.handle_disk_operation_request(&outputs);
         self.last_status = disk_operation_status
             .or(render_or_host_error)
@@ -378,34 +378,55 @@ impl MpcDesktopApp {
         Some(self.last_status.clone())
     }
 
-    fn handle_last_playback_intent(&mut self, outputs: &[MachineOutput]) -> Option<String> {
+    fn handle_audio_outputs(&mut self, outputs: &[MachineOutput]) -> Option<String> {
         let mut playback_error = None;
 
-        for intent in outputs.iter().filter_map(|output| match output {
-            MachineOutput::SamplePlaybackIntent { intent } => Some(intent),
-            _ => None,
-        }) {
-            let report = self.host_audio.play_intent_with_render_summary(intent);
-            self.last_synthetic_render = report.render_summary;
-            self.last_synthetic_render_error = None;
-
-            if let HostAudioEvent::Failed {
-                error: HostAudioError::Render { error },
-                ..
-            } = &report.event
-            {
-                let message = format!("Synthetic render failed: {error}");
-                self.last_synthetic_render_error = Some(message.clone());
-                playback_error = Some(message);
-                continue;
-            }
-
-            if let Some(message) = host_audio_error_message(&report.event) {
-                playback_error = Some(message);
+        for output in outputs {
+            match output {
+                MachineOutput::SamplePlaybackIntent { intent } => {
+                    let report = self.host_audio.play_intent_with_render_summary(intent);
+                    if let Some(message) =
+                        self.record_audio_report(report, "Synthetic render failed")
+                    {
+                        playback_error = Some(message);
+                    }
+                }
+                MachineOutput::MetronomeClick { intent } => {
+                    let report = self
+                        .host_audio
+                        .play_count_in_click_with_render_summary(intent);
+                    if let Some(message) =
+                        self.record_audio_report(report, "Count-in click render failed")
+                    {
+                        playback_error = Some(message);
+                    }
+                }
+                _ => {}
             }
         }
 
         playback_error
+    }
+
+    fn record_audio_report(
+        &mut self,
+        report: HostAudioPlaybackReport,
+        render_error_prefix: &str,
+    ) -> Option<String> {
+        self.last_synthetic_render = report.render_summary;
+        self.last_synthetic_render_error = None;
+
+        if let HostAudioEvent::Failed {
+            error: HostAudioError::Render { error },
+            ..
+        } = &report.event
+        {
+            let message = format!("{render_error_prefix}: {error}");
+            self.last_synthetic_render_error = Some(message.clone());
+            return Some(message);
+        }
+
+        host_audio_error_message(&report.event)
     }
 
     fn status_from_outputs(outputs: &[MachineOutput], state: &MpcState) -> String {
@@ -1538,19 +1559,29 @@ fn playback_intent_from_outputs(outputs: &[MachineOutput]) -> Option<&SamplePlay
 fn last_synthetic_render_text(summary: Option<&AudioRenderSummary>, error: Option<&str>) -> String {
     match (summary, error) {
         (_, Some(error)) => error.to_string(),
-        (Some(summary), None) => format!(
-            "Synthetic render: {} {} frames @ {} Hz trim {}..{} window {} tune {} peak L{} R{} balance {:?}",
-            summary.source_sample_name,
-            summary.frame_count,
-            summary.sample_rate_hz,
-            summary.start_frame,
-            summary.end_frame,
-            summary.window_length_frames,
-            tune_text(summary.tune_cents),
-            summary.peak_left,
-            summary.peak_right,
-            summary.channel_balance
-        ),
+        (Some(summary), None) => match summary.render_kind {
+            AudioRenderKind::SamplePlayback => format!(
+                "Synthetic render: {} {} frames @ {} Hz trim {}..{} window {} tune {} peak L{} R{} balance {:?}",
+                summary.source_sample_name,
+                summary.frame_count,
+                summary.sample_rate_hz,
+                summary.start_frame,
+                summary.end_frame,
+                summary.window_length_frames,
+                tune_text(summary.tune_cents),
+                summary.peak_left,
+                summary.peak_right,
+                summary.channel_balance
+            ),
+            AudioRenderKind::CountInClick => format!(
+                "Synthetic render: {} {} frames @ {} Hz peak L{} R{}",
+                count_in_click_summary_label(summary),
+                summary.frame_count,
+                summary.sample_rate_hz,
+                summary.peak_left,
+                summary.peak_right
+            ),
+        },
         (None, None) => "Synthetic render: none".to_string(),
     }
 }
@@ -1600,21 +1631,64 @@ fn last_host_audio_event_text(event: Option<&HostAudioEvent>) -> String {
         Some(HostAudioEvent::Ignored { reason, .. }) => {
             format!("Host audio event: ignored {reason:?}")
         }
-        Some(HostAudioEvent::Enqueued { receipt, .. }) => format!(
-            "Host audio event: {} {} frames tune {} queued={} played={}",
-            receipt.summary.source_sample_name,
-            receipt.frame_count,
-            tune_text(receipt.summary.tune_cents),
-            receipt.queued,
-            receipt.played
-        ),
-        Some(HostAudioEvent::Failed { error, summary, .. }) => {
-            let sample = summary
-                .as_ref()
-                .map(|summary| summary.source_sample_name.as_str())
-                .unwrap_or("no render");
-            format!("Host audio event: failed {sample}: {error}")
-        }
+        Some(HostAudioEvent::Enqueued { receipt, .. }) => match receipt.summary.render_kind {
+            AudioRenderKind::SamplePlayback => format!(
+                "Host audio event: {} {} frames tune {} queued={} played={}",
+                receipt.summary.source_sample_name,
+                receipt.frame_count,
+                tune_text(receipt.summary.tune_cents),
+                receipt.queued,
+                receipt.played
+            ),
+            AudioRenderKind::CountInClick => format!(
+                "Host audio event: {} {} frames queued={} played={}",
+                count_in_click_summary_label(&receipt.summary),
+                receipt.frame_count,
+                receipt.queued,
+                receipt.played
+            ),
+        },
+        Some(HostAudioEvent::Failed { error, summary, .. }) => match summary {
+            Some(summary) => match summary.render_kind {
+                AudioRenderKind::SamplePlayback => {
+                    format!(
+                        "Host audio event: failed {}: {error}",
+                        summary.source_sample_name
+                    )
+                }
+                AudioRenderKind::CountInClick => format!(
+                    "Host audio event: failed {}: {error}",
+                    count_in_click_summary_label(summary)
+                ),
+            },
+            None => format!("Host audio event: failed no render: {error}"),
+        },
         None => "Host audio event: none".to_string(),
     }
+}
+
+fn count_in_click_summary_label(summary: &AudioRenderSummary) -> String {
+    let accent = if summary.accent.unwrap_or(false) {
+        "count-in accent"
+    } else {
+        "count-in click"
+    };
+    format!(
+        "{accent} bar {} beat {} tick {}",
+        optional_u8_text(summary.bar_index),
+        optional_u8_text(summary.beat_index),
+        optional_u64_text(summary.count_in_tick)
+    )
+}
+
+fn optional_u8_text(value: Option<u8>) -> String {
+    value
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "?".to_string())
+}
+
+fn optional_u64_text(value: Option<u64>) -> String {
+    value
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "?".to_string())
 }
