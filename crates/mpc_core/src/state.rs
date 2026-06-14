@@ -571,6 +571,18 @@ impl MpcCore {
         self.restore_project_snapshot(snapshot)
     }
 
+    pub fn import_sample_metadata_for_selected_pad(
+        &mut self,
+        sample_name: impl Into<String>,
+        length_frames: u32,
+    ) -> Vec<MachineOutput> {
+        self.create_sample_metadata_with_length(
+            SampleSourceKind::Imported,
+            Some(sample_name.into()),
+            length_frames,
+        )
+    }
+
     pub fn dispatch(&mut self, event: HardwareEvent) -> Vec<MachineOutput> {
         self.state.event_count = self.state.event_count.saturating_add(1);
 
@@ -1102,6 +1114,19 @@ impl MpcCore {
     }
 
     fn create_sample_metadata(&mut self, source_kind: SampleSourceKind) -> Vec<MachineOutput> {
+        self.create_sample_metadata_with_length(
+            source_kind,
+            None,
+            sample_source_length_frames(source_kind),
+        )
+    }
+
+    fn create_sample_metadata_with_length(
+        &mut self,
+        source_kind: SampleSourceKind,
+        sample_name: Option<String>,
+        length_frames: u32,
+    ) -> Vec<MachineOutput> {
         let target_pad = self.state.selected_program_pad;
         if !(1..=16).contains(&target_pad.pad_number) {
             return Self::ignored(format!(
@@ -1110,21 +1135,40 @@ impl MpcCore {
             ));
         }
 
-        let Some(next_index) = next_user_sample_index(
-            &self.state.current_program,
-            sample_source_id_prefix(source_kind),
-        ) else {
+        if matches!(
+            source_kind,
+            SampleSourceKind::Recorded | SampleSourceKind::Imported
+        ) && !(1..=MAX_USER_SAMPLE_LENGTH_FRAMES).contains(&length_frames)
+        {
+            return Self::ignored(format!(
+                "sample.{}.invalid_length",
+                sample_source_reason(source_kind)
+            ));
+        }
+
+        let Some(next_index) =
+            next_user_sample_index(&self.state, sample_source_id_prefix(source_kind))
+        else {
             return Self::ignored(format!(
                 "sample.{}.capacity",
                 sample_source_reason(source_kind)
             ));
         };
-        let length_frames = sample_source_length_frames(source_kind);
+        let sample_name = sample_name
+            .map(|name| normalize_user_sample_name(&name))
+            .filter(|name| !name.is_empty())
+            .unwrap_or_else(|| {
+                format!("{}-{next_index:03}", sample_source_name_prefix(source_kind))
+            });
         let sample = SyntheticSample {
             id: format!("{}_{next_index:03}", sample_source_id_prefix(source_kind)),
-            name: format!("{}-{next_index:03}", sample_source_name_prefix(source_kind)),
+            name: sample_name,
             source_kind,
-            length_frames: Some(length_frames),
+            length_frames: if source_kind == SampleSourceKind::Generated {
+                None
+            } else {
+                Some(length_frames)
+            },
         };
 
         let (level, pan, tune_cents, mute_group) = self
@@ -3713,18 +3757,46 @@ fn generated_sample(pad: ProgramPad) -> SyntheticSample {
     }
 }
 
-fn next_user_sample_index(program: &Program, id_prefix: &str) -> Option<u16> {
+fn next_user_sample_index(state: &MpcState, id_prefix: &str) -> Option<u16> {
     let prefix = format!("{id_prefix}_");
-    let max_existing = program
-        .pad_assignments
-        .iter()
-        .filter_map(|assignment| assignment.sample.id.strip_prefix(&prefix))
+    let max_existing = user_sample_ids_in_state(state)
+        .filter_map(|sample_id| sample_id.strip_prefix(&prefix))
         .filter_map(|suffix| suffix.parse::<u16>().ok())
         .max()
         .unwrap_or(0);
     max_existing
         .checked_add(1)
         .filter(|next| *next <= MAX_USER_SAMPLE_INDEX)
+}
+
+fn user_sample_ids_in_state(state: &MpcState) -> impl Iterator<Item = &str> {
+    state
+        .current_program
+        .pad_assignments
+        .iter()
+        .map(|assignment| assignment.sample.id.as_str())
+        .chain(
+            state
+                .sample_trims
+                .iter()
+                .map(|trim| trim.sample_id.as_str()),
+        )
+        .chain(state.selected_sample_id.as_deref())
+        .chain(state.recorded_events.iter().filter_map(|event| {
+            event
+                .playback
+                .as_ref()
+                .map(|intent| intent.sample_id.as_str())
+        }))
+        .chain(
+            state
+                .last_playback
+                .as_ref()
+                .and_then(|playback| match playback {
+                    SamplePlaybackResolution::Intent { intent } => Some(intent.sample_id.as_str()),
+                    SamplePlaybackResolution::Miss { .. } => None,
+                }),
+        )
 }
 
 fn sample_source_length_frames(source_kind: SampleSourceKind) -> u32 {
@@ -3760,6 +3832,10 @@ fn sample_source_reason(source_kind: SampleSourceKind) -> &'static str {
         SampleSourceKind::Recorded => "record",
         SampleSourceKind::Imported => "import",
     }
+}
+
+fn normalize_user_sample_name(name: &str) -> String {
+    name.trim().to_string()
 }
 
 fn clamp_delta_u8(current: u8, delta: i32, min: u8, max: u8) -> u8 {

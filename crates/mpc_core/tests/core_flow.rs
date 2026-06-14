@@ -652,6 +652,124 @@ fn sample_metadata_assignment_replaces_selected_pad_and_preserves_pad_params() {
 }
 
 #[test]
+fn runtime_imported_sample_metadata_uses_decoded_name_and_length() {
+    let mut core = MpcCore::new();
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::Sample,
+    });
+
+    let outputs = core.import_sample_metadata_for_selected_pad("USER-KICK", 1_234);
+
+    assert_eq!(
+        core.state().selected_sample_id.as_deref(),
+        Some("imported_001")
+    );
+    let imported = core.state().selected_sample().unwrap();
+    assert_eq!(imported.sample.name, "USER-KICK");
+    assert_eq!(imported.source_kind, SampleSourceKind::Imported);
+    assert_eq!(imported.length_frames, 1_234);
+    assert_eq!(imported.end_frame, 1_233);
+    assert!(matches!(
+        outputs.as_slice(),
+        [
+            MachineOutput::SampleMetadataCreated {
+                sample,
+                source_kind: SampleSourceKind::Imported,
+                length_frames: 1_234,
+                ..
+            },
+            MachineOutput::PadAssignmentChanged {
+                action: PadAssignmentChange::Assigned,
+                assignment: Some(_),
+                ..
+            },
+            MachineOutput::SampleSelected { entry },
+            MachineOutput::LcdChanged
+        ] if sample.id == "imported_001" && sample.name == "USER-KICK" && entry.sample.id == "imported_001"
+    ));
+}
+
+#[test]
+fn runtime_imported_sample_metadata_rejects_zero_length() {
+    let mut core = MpcCore::new();
+    let before = core.export_project_snapshot();
+
+    let outputs = core.import_sample_metadata_for_selected_pad("EMPTY", 0);
+
+    assert_eq!(
+        outputs,
+        vec![MachineOutput::Ignored {
+            reason: "sample.import.invalid_length".to_string()
+        }]
+    );
+    assert_eq!(core.export_project_snapshot(), before);
+}
+
+#[test]
+fn imported_sample_metadata_ids_do_not_reuse_recorded_playback_history() {
+    let mut core = MpcCore::new();
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::Sample,
+    });
+    core.import_sample_metadata_for_selected_pad("USER-KICK", 1_234);
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::Rec,
+    });
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::Play,
+    });
+    core.dispatch(HardwareEvent::Tick { micros: 500_000 });
+    core.dispatch(HardwareEvent::StrikePad {
+        bank: PadBank::A,
+        pad: 1,
+        velocity: 100,
+    });
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::Stop,
+    });
+    assert_eq!(
+        core.state().recorded_events[0]
+            .playback
+            .as_ref()
+            .map(|intent| intent.sample_id.as_str()),
+        Some("imported_001")
+    );
+
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::Program,
+    });
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::SoftKey(1),
+    });
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::Sample,
+    });
+    let outputs = core.dispatch(HardwareEvent::Press {
+        control: PanelControl::SoftKey(4),
+    });
+
+    assert_eq!(
+        core.state().selected_sample_id.as_deref(),
+        Some("imported_002")
+    );
+    assert!(matches!(
+        outputs.first(),
+        Some(MachineOutput::SampleMetadataCreated {
+            sample,
+            source_kind: SampleSourceKind::Imported,
+            ..
+        }) if sample.id == "imported_002"
+    ));
+    assert_eq!(
+        core.state().recorded_events[0]
+            .playback
+            .as_ref()
+            .map(|intent| intent.sample_id.as_str()),
+        Some("imported_001")
+    );
+}
+
+#[test]
 fn sample_metadata_creation_output_serializes_with_stable_shape() {
     let mut core = MpcCore::new();
     core.dispatch(HardwareEvent::Press {

@@ -28,3 +28,13 @@ local-assets/projects/last.mpc2000xl-project.json
 ```
 
 These files are JSON produced by `mpc_core` project snapshot APIs. They do not embed audio bytes or proprietary Akai assets, and they are not a claim of native MPC2000XL disk-format compatibility.
+
+## Runtime WAV Import
+
+The desktop SAMPLE view can load a user-owned 16-bit PCM mono/stereo WAV from an ignored local path such as:
+
+```bash
+local-assets/samples/import.wav
+```
+
+The decoded audio stays in memory for playback only. Project files persist metadata and trim state, not WAV bytes or local file contents.

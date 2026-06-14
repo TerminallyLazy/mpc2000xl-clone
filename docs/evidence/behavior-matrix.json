@@ -3721,6 +3721,109 @@
         "This is an internal deterministic metadata-only foundation, not full MPC2000XL or JJ-OS SAMPLE behavior.",
         "No real audio bytes, file paths, binary blobs, external media, manuals, service scans, firmware, or proprietary data are stored."
       ]
+    },
+    {
+      "id": "audio.sample.runtime-wav-import-foundation",
+      "name": "Runtime user WAV import loads pad payloads without persisting audio bytes",
+      "area": "sample_audio_host",
+      "state": "unit-backed-internal-spec",
+      "evidence": [
+        {
+          "source_id": "runtime-wav-import-foundation-slice-plan",
+          "source_category": "internal_spec",
+          "type": "plan",
+          "status": "mapped",
+          "ref": "docs/superpowers/plans/2026-06-14-mpc2000xl-runtime-wav-import-foundation.md#behavior-slice"
+        },
+        {
+          "source_id": "host-audio-device-output-foundation-slice-plan",
+          "source_category": "internal_spec",
+          "type": "plan",
+          "status": "mapped",
+          "ref": "docs/superpowers/plans/2026-06-14-mpc2000xl-host-audio-device-output-foundation.md#deterministic-contract"
+        }
+      ],
+      "source_coverage": [
+        {
+          "source_category": "manual",
+          "source_id": "owner-manual",
+          "status": "investigation",
+          "ref": null,
+          "note": "Manual mapping for exact MPC2000XL sample import, naming, trim, and playback behavior is deferred."
+        },
+        {
+          "source_category": "firmware",
+          "source_id": "mpc2000xl-os-local-reference",
+          "status": "investigation",
+          "ref": null,
+          "note": "No firmware trace or native sample-file comparison has been captured."
+        },
+        {
+          "source_category": "jjos",
+          "source_id": "jjos-unverified-boundary",
+          "status": "conflict-note",
+          "ref": "docs/superpowers/specs/2026-06-13-mpc2000xl-full-app-product-design.md#jj-os-evidence-boundary",
+          "note": "No JJ-OS parity claim is made for runtime WAV import or playback behavior."
+        },
+        {
+          "source_category": "internal_spec",
+          "source_id": "runtime-wav-import-foundation-slice-plan",
+          "status": "mapped",
+          "ref": "docs/superpowers/plans/2026-06-14-mpc2000xl-runtime-wav-import-foundation.md#deterministic-contract",
+          "note": "The current contract is runtime-only user WAV payloads plus metadata-only project persistence."
+        }
+      ],
+      "inputs": [
+        {
+          "channel": "desktop",
+          "event": "load_wav_to_selected_pad",
+          "mode": "sample",
+          "policy": "decode a user-owned local WAV path, create imported metadata for the selected pad, and store runtime payload in memory"
+        },
+        {
+          "channel": "front_panel_or_midi",
+          "event": "sample_playback_intent",
+          "policy": "render a loaded runtime WAV payload when the intent sample id is present in the runtime sample library"
+        }
+      ],
+      "expected_outputs": {
+        "state": {
+          "sample_source_kind": "runtime WAV import creates imported sample metadata with decoded frame length",
+          "runtime_library": "decoded WAV frames are keyed by sample id in memory only",
+          "snapshot": "project JSON persists metadata and trims but not WAV bytes or local file contents"
+        },
+        "audio": {
+          "supported_format": "16-bit PCM mono or stereo WAV",
+          "source_kind": "runtime_user_wav when payload is loaded, rights_safe_generated when missing",
+          "sample_rate_policy": "sample rate must match host render settings; no resampling",
+          "pad_parameters": "velocity, level, pan, trim window, mute group, release, and voice allocation use existing host-audio paths"
+        },
+        "desktop": {
+          "controls": "SAMPLE mode path field plus Load WAV to pad button",
+          "status": "runtime load status and audio render source/byte count are visible"
+        },
+        "deferred": [
+          "durable media relinking",
+          "copying user audio into project packages",
+          "waveform display",
+          "recording from audio input",
+          "resampling or pitch interpolation",
+          "native MPC2000XL sample/project formats",
+          "MPC2000XL manual parity",
+          "JJ-OS parity"
+        ]
+      },
+      "tolerance": null,
+      "fixture_refs": [
+        "crates/mpc_audio/src/lib.rs",
+        "crates/mpc_core/tests/core_flow.rs",
+        "crates/mpc_storage/src/lib.rs",
+        "apps/desktop/src/main.rs"
+      ],
+      "conflict_notes": [
+        "This is an internal runtime user-file foundation, not full MPC2000XL or JJ-OS sample import behavior.",
+        "No WAV files, factory samples, proprietary manuals, service scans, firmware bytes, JJ-OS assets, hardware captures, native sample files, or copied third-party media are stored in the repo."
+      ]
     }
   ]
 }

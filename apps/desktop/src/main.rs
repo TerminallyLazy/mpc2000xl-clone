@@ -3,7 +3,7 @@ use mpc_audio::{
     AudioRenderKind, AudioRenderSettings, AudioRenderSummary, CaptureAudioBackend,
     DeviceAudioBackend, DeviceAudioBackendConfig, DeviceAudioBackendStatus, HostAudioBackend,
     HostAudioBackendError, HostAudioEngine, HostAudioError, HostAudioEvent,
-    HostAudioPlaybackReport, HostAudioState,
+    HostAudioPlaybackReport, HostAudioState, RuntimeSampleLibrary, load_wav_sample_payload,
 };
 use mpc_core::{
     DiskOperation, HardwareEvent, MachineOutput, MidiSettingsField, Mode, MpcCore, MpcState,
@@ -20,6 +20,7 @@ use mpc_storage::{
     DEFAULT_PROJECT_FILE_PATH, load_project_file_with_report,
     save_project_file as save_project_file_to_path,
 };
+use std::collections::BTreeSet;
 
 fn main() -> eframe::Result<()> {
     let options = eframe::NativeOptions {
@@ -47,8 +48,11 @@ struct MpcDesktopApp {
     selected_midi_input_port: usize,
     selected_midi_output_port: usize,
     last_status: String,
-    last_synthetic_render: Option<AudioRenderSummary>,
-    last_synthetic_render_error: Option<String>,
+    last_audio_render: Option<AudioRenderSummary>,
+    last_audio_render_error: Option<String>,
+    runtime_samples: RuntimeSampleLibrary,
+    sample_import_path: String,
+    last_runtime_sample_status: String,
     last_project_snapshot_json: Option<String>,
     last_project_snapshot_status: String,
     last_project_snapshot_version: Option<u16>,
@@ -159,8 +163,11 @@ impl Default for MpcDesktopApp {
             selected_midi_input_port: 0,
             selected_midi_output_port: 0,
             last_status: "Ready".to_string(),
-            last_synthetic_render: None,
-            last_synthetic_render_error: None,
+            last_audio_render: None,
+            last_audio_render_error: None,
+            runtime_samples: RuntimeSampleLibrary::default(),
+            sample_import_path: "local-assets/samples/import.wav".to_string(),
+            last_runtime_sample_status: "Runtime WAV: none".to_string(),
             last_project_snapshot_json: None,
             last_project_snapshot_status: "Snapshot: none".to_string(),
             last_project_snapshot_version: None,
@@ -377,6 +384,7 @@ impl MpcDesktopApp {
                 let version = snapshot.version;
                 match self.core.restore_project_snapshot(snapshot) {
                     Ok(()) => {
+                        self.clear_runtime_sample_payloads("snapshot load");
                         self.last_project_snapshot_version = Some(version);
                         self.last_project_snapshot_bytes = Some(byte_count);
                         self.last_project_snapshot_status = format!(
@@ -431,6 +439,7 @@ impl MpcDesktopApp {
                 let report = loaded.report;
                 match self.core.restore_project_snapshot(loaded.snapshot) {
                     Ok(()) => {
+                        self.clear_runtime_sample_payloads("project file load");
                         self.last_project_file_version = Some(report.snapshot_version);
                         self.last_project_file_bytes = Some(report.byte_count);
                         self.last_project_file_status = format!(
@@ -466,6 +475,7 @@ impl MpcDesktopApp {
         let render_or_host_error = self.handle_audio_outputs(&outputs);
         let midi_host_error = self.handle_midi_outputs(&outputs);
         let disk_operation_status = self.handle_disk_operation_request(&outputs);
+        self.prune_runtime_samples_to_project_metadata();
         self.last_status = disk_operation_status
             .or(midi_host_error)
             .or(render_or_host_error)
@@ -647,9 +657,13 @@ impl MpcDesktopApp {
         for output in outputs {
             match output {
                 MachineOutput::SamplePlaybackIntent { intent } => {
-                    let report = self.host_audio.play_intent_with_render_summary(intent);
-                    if let Some(message) =
-                        self.record_audio_report(report, "Synthetic render failed")
+                    let report = self
+                        .host_audio
+                        .play_intent_with_runtime_samples_and_render_summary(
+                            intent,
+                            &self.runtime_samples,
+                        );
+                    if let Some(message) = self.record_audio_report(report, "Sample render failed")
                     {
                         playback_error = Some(message);
                     }
@@ -682,8 +696,8 @@ impl MpcDesktopApp {
         report: HostAudioPlaybackReport,
         render_error_prefix: &str,
     ) -> Option<String> {
-        self.last_synthetic_render = report.render_summary;
-        self.last_synthetic_render_error = None;
+        self.last_audio_render = report.render_summary;
+        self.last_audio_render_error = None;
 
         if let HostAudioEvent::Failed {
             error: HostAudioError::Render { error },
@@ -691,7 +705,7 @@ impl MpcDesktopApp {
         } = &report.event
         {
             let message = format!("{render_error_prefix}: {error}");
-            self.last_synthetic_render_error = Some(message.clone());
+            self.last_audio_render_error = Some(message.clone());
             return Some(message);
         }
 
@@ -715,6 +729,78 @@ impl MpcDesktopApp {
 
     fn record_midi_report(&mut self, report: HostMidiOutputReport) -> Option<String> {
         host_midi_error_message(&report.event)
+    }
+
+    fn load_wav_to_selected_pad(&mut self) {
+        let path = self.sample_import_path.trim();
+        if path.is_empty() {
+            let message = "Runtime WAV import failed: path is empty".to_string();
+            self.last_runtime_sample_status = message.clone();
+            self.last_status = message;
+            return;
+        }
+
+        let payload = match load_wav_sample_payload(path) {
+            Ok(payload) => payload,
+            Err(error) => {
+                let message = format!("Runtime WAV import failed: {error}");
+                self.last_runtime_sample_status = message.clone();
+                self.last_status = message;
+                return;
+            }
+        };
+        let sample_name = sample_name_from_path(path);
+        let outputs = self
+            .core
+            .import_sample_metadata_for_selected_pad(sample_name, payload.length_frames_u32());
+        let created = outputs.iter().find_map(|output| match output {
+            MachineOutput::SampleMetadataCreated {
+                sample,
+                source_kind,
+                length_frames,
+                ..
+            } if *source_kind == mpc_core::SampleSourceKind::Imported => {
+                Some((sample.clone(), *length_frames))
+            }
+            _ => None,
+        });
+
+        if let Some((sample, length_frames)) = created {
+            let byte_count = payload.byte_count;
+            let sample_rate_hz = payload.sample_rate_hz;
+            self.runtime_samples
+                .insert(sample.id.clone(), sample.name.clone(), payload);
+            self.prune_runtime_samples_to_project_metadata();
+            self.last_runtime_sample_status = format!(
+                "Runtime WAV loaded: {} {} frames @ {} Hz ({} bytes)",
+                sample.name, length_frames, sample_rate_hz, byte_count
+            );
+            self.last_status = self.last_runtime_sample_status.clone();
+        } else {
+            self.last_status = Self::status_from_outputs(&outputs, self.core.state());
+            self.last_runtime_sample_status = self.last_status.clone();
+        }
+    }
+
+    fn clear_runtime_sample_payloads(&mut self, reason: &str) {
+        self.runtime_samples.clear();
+        self.last_audio_render = None;
+        self.last_audio_render_error = None;
+        self.last_runtime_sample_status = format!("Runtime WAV: cleared after {reason}");
+    }
+
+    fn prune_runtime_samples_to_project_metadata(&mut self) {
+        if self.runtime_samples.is_empty() {
+            return;
+        }
+
+        let retained_sample_ids = runtime_sample_ids_referenced_by_project(self.core.state());
+        self.runtime_samples
+            .retain(|sample_id, _| retained_sample_ids.contains(sample_id));
+        if self.runtime_samples.is_empty() {
+            self.last_runtime_sample_status =
+                "Runtime WAV: none referenced by current project metadata".to_string();
+        }
     }
 
     fn status_from_outputs(outputs: &[MachineOutput], state: &MpcState) -> String {
@@ -1514,7 +1600,7 @@ impl MpcDesktopApp {
         ui.horizontal_wrapped(|ui| {
             ui.label(sample_text);
             ui.separator();
-            ui.label("Sample catalog: metadata only, no audio bytes");
+            ui.label("Samples: project metadata only; WAV payloads stay runtime-only");
             ui.separator();
             if ui
                 .add_enabled(sample_mode, egui::Button::new("Prev sample"))
@@ -1543,7 +1629,17 @@ impl MpcDesktopApp {
                         control: PanelControl::SoftKey(4),
                     });
                 }
+                ui.separator();
+                ui.label("WAV");
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.sample_import_path).desired_width(300.0),
+                );
+                if ui.button("Load WAV to pad").clicked() {
+                    self.load_wav_to_selected_pad();
+                }
             }
+            ui.separator();
+            ui.label(&self.last_runtime_sample_status);
             ui.separator();
             ui.label(format!("TRIM field {}", selected_trim_edit_field.label()));
             if ui
@@ -1579,9 +1675,9 @@ impl MpcDesktopApp {
 
     fn draw_audio_render_status(&self, ui: &mut egui::Ui) {
         ui.horizontal_wrapped(|ui| {
-            ui.label(last_synthetic_render_text(
-                self.last_synthetic_render.as_ref(),
-                self.last_synthetic_render_error.as_deref(),
+            ui.label(last_audio_render_text(
+                self.last_audio_render.as_ref(),
+                self.last_audio_render_error.as_deref(),
             ));
         });
     }
@@ -2038,12 +2134,13 @@ fn playback_intent_from_outputs(outputs: &[MachineOutput]) -> Option<&SamplePlay
     })
 }
 
-fn last_synthetic_render_text(summary: Option<&AudioRenderSummary>, error: Option<&str>) -> String {
+fn last_audio_render_text(summary: Option<&AudioRenderSummary>, error: Option<&str>) -> String {
     match (summary, error) {
         (_, Some(error)) => error.to_string(),
         (Some(summary), None) => match summary.render_kind {
             AudioRenderKind::SamplePlayback => format!(
-                "Synthetic render: {} {} frames @ {} Hz trim {}..{} window {} tune {} mute group {} peak L{} R{} balance {:?}",
+                "{}: {} {} frames @ {} Hz trim {}..{} window {} tune {} mute group {} peak L{} R{} balance {:?} loaded {} bytes",
+                audio_source_label(summary),
                 summary.source_sample_name,
                 summary.frame_count,
                 summary.sample_rate_hz,
@@ -2054,10 +2151,12 @@ fn last_synthetic_render_text(summary: Option<&AudioRenderSummary>, error: Optio
                 mute_group_text(summary.mute_group),
                 summary.peak_left,
                 summary.peak_right,
-                summary.channel_balance
+                summary.channel_balance,
+                summary.loaded_audio_byte_count
             ),
             AudioRenderKind::CountInClick => format!(
-                "Synthetic render: {} {} frames @ {} Hz peak L{} R{}",
+                "{}: {} {} frames @ {} Hz peak L{} R{}",
+                audio_source_label(summary),
                 count_in_click_summary_label(summary),
                 summary.frame_count,
                 summary.sample_rate_hz,
@@ -2065,8 +2164,49 @@ fn last_synthetic_render_text(summary: Option<&AudioRenderSummary>, error: Optio
                 summary.peak_right
             ),
         },
-        (None, None) => "Synthetic render: none".to_string(),
+        (None, None) => "Audio render: none".to_string(),
     }
+}
+
+fn audio_source_label(summary: &AudioRenderSummary) -> &'static str {
+    match summary.source_kind {
+        mpc_audio::AudioSourceKind::RightsSafeGenerated => "Generated render",
+        mpc_audio::AudioSourceKind::RuntimeUserWav => "Runtime WAV render",
+    }
+}
+
+fn sample_name_from_path(path: &str) -> String {
+    std::path::Path::new(path)
+        .file_stem()
+        .and_then(|name| name.to_str())
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .unwrap_or("USER-WAV")
+        .to_string()
+}
+
+fn runtime_sample_ids_referenced_by_project(state: &MpcState) -> BTreeSet<String> {
+    let mut sample_ids = BTreeSet::new();
+    sample_ids.extend(
+        state
+            .current_program
+            .pad_assignments
+            .iter()
+            .map(|assignment| assignment.sample.id.clone()),
+    );
+    sample_ids.extend(state.sample_trims.iter().map(|trim| trim.sample_id.clone()));
+    if let Some(sample_id) = &state.selected_sample_id {
+        sample_ids.insert(sample_id.clone());
+    }
+    for event in &state.recorded_events {
+        if let Some(playback) = &event.playback {
+            sample_ids.insert(playback.sample_id.clone());
+        }
+    }
+    if let Some(SamplePlaybackResolution::Intent { intent }) = &state.last_playback {
+        sample_ids.insert(intent.sample_id.clone());
+    }
+    sample_ids
 }
 
 fn project_snapshot_status_text(

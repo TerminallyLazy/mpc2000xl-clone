@@ -59,6 +59,7 @@ This file tracks evidence sources without copying proprietary source pages, scan
 | metronome-click-audio-foundation-slice-plan | internal_spec | plan | Deterministic count-in click audio rendering and host-audio routing foundation | `docs/superpowers/plans/2026-06-14-mpc2000xl-metronome-click-audio-foundation.md` |
 | host-audio-voice-lifecycle-foundation-slice-plan | internal_spec | plan | Deterministic host-audio voice lifecycle and polyphony accounting foundation | `docs/superpowers/plans/2026-06-14-mpc2000xl-host-audio-voice-lifecycle-foundation.md` |
 | host-audio-device-output-foundation-slice-plan | internal_spec | plan | Optional default host output-device backend foundation | `docs/superpowers/plans/2026-06-14-mpc2000xl-host-audio-device-output-foundation.md` |
+| runtime-wav-import-foundation-slice-plan | internal_spec | plan | Runtime user-owned WAV import and playback foundation | `docs/superpowers/plans/2026-06-14-mpc2000xl-runtime-wav-import-foundation.md` |
 
 ## Legal Boundary
 

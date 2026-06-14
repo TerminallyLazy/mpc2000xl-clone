@@ -2,7 +2,8 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{FromSample, Sample, SampleFormat, SizedSample};
 use mpc_core::{CountInClickIntent, PadBank, SamplePlaybackIntent, SampleReleaseIntent};
 use serde::{Deserialize, Deserializer, Serialize};
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
+use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 pub const DEFAULT_SAMPLE_RATE_HZ: u32 = 44_100;
@@ -17,6 +18,9 @@ pub const MAX_SAMPLE_RATE_HZ: u32 = 192_000;
 /// maximum accepted sample rate so malformed fixtures cannot request OOM-sized
 /// allocations.
 pub const MAX_RENDER_FRAMES: usize = MAX_SAMPLE_RATE_HZ as usize;
+/// Runtime user WAV import guardrail. The foundation app keeps imported WAV
+/// payloads in memory only; this cap avoids retaining oversized user files.
+pub const MAX_RUNTIME_SAMPLE_FRAMES: usize = MAX_SAMPLE_RATE_HZ as usize * 60;
 /// Deterministic capture backends store render summaries only, but construction
 /// still clamps requested history to avoid unchecked upfront allocation.
 pub const MAX_CAPTURE_AUDIO_BACKEND_CAPTURES: usize = 1_024;
@@ -120,6 +124,10 @@ pub enum AudioRenderError {
         frame_count: usize,
         max_frame_count: usize,
     },
+    RuntimeSampleRateMismatch {
+        sample_rate_hz: u32,
+        render_sample_rate_hz: u32,
+    },
 }
 
 impl std::fmt::Display for AudioRenderError {
@@ -146,6 +154,13 @@ impl std::fmt::Display for AudioRenderError {
                 formatter,
                 "frame count {frame_count} exceeds maximum {max_frame_count}"
             ),
+            Self::RuntimeSampleRateMismatch {
+                sample_rate_hz,
+                render_sample_rate_hz,
+            } => write!(
+                formatter,
+                "runtime sample rate {sample_rate_hz} Hz does not match render rate {render_sample_rate_hz} Hz"
+            ),
         }
     }
 }
@@ -162,7 +177,163 @@ pub struct AudioFrame {
 #[serde(rename_all = "snake_case")]
 pub enum AudioSourceKind {
     RightsSafeGenerated,
+    RuntimeUserWav,
 }
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WavSamplePayload {
+    pub sample_rate_hz: u32,
+    pub channel_count: u16,
+    pub frame_count: usize,
+    pub byte_count: usize,
+    pub frames: Vec<AudioFrame>,
+}
+
+impl WavSamplePayload {
+    pub fn length_frames_u32(&self) -> u32 {
+        u32::try_from(self.frame_count).unwrap_or(u32::MAX)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuntimeSample {
+    pub sample_id: String,
+    pub sample_name: String,
+    pub payload: WavSamplePayload,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RuntimeSampleLibrary {
+    samples: HashMap<String, RuntimeSample>,
+}
+
+impl RuntimeSampleLibrary {
+    pub fn insert(
+        &mut self,
+        sample_id: impl Into<String>,
+        sample_name: impl Into<String>,
+        payload: WavSamplePayload,
+    ) {
+        let sample_id = sample_id.into();
+        self.samples.insert(
+            sample_id.clone(),
+            RuntimeSample {
+                sample_id,
+                sample_name: sample_name.into(),
+                payload,
+            },
+        );
+    }
+
+    pub fn get(&self, sample_id: &str) -> Option<&RuntimeSample> {
+        self.samples.get(sample_id)
+    }
+
+    pub fn clear(&mut self) {
+        self.samples.clear();
+    }
+
+    pub fn retain<F>(&mut self, mut keep: F)
+    where
+        F: FnMut(&str, &RuntimeSample) -> bool,
+    {
+        self.samples
+            .retain(|sample_id, sample| keep(sample_id, sample));
+    }
+
+    pub fn len(&self) -> usize {
+        self.samples.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.samples.is_empty()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WavSampleLoadError {
+    Metadata {
+        path: String,
+        message: String,
+    },
+    Open {
+        path: String,
+        message: String,
+    },
+    UnsupportedFormat {
+        sample_format: &'static str,
+        bits_per_sample: u16,
+        channel_count: u16,
+    },
+    SampleRateBelowMinimum {
+        sample_rate_hz: u32,
+        min_sample_rate_hz: u32,
+    },
+    SampleRateAboveMaximum {
+        sample_rate_hz: u32,
+        max_sample_rate_hz: u32,
+    },
+    Empty,
+    TooLong {
+        frame_count: usize,
+        max_frame_count: usize,
+    },
+    Decode {
+        path: String,
+        message: String,
+    },
+}
+
+impl std::fmt::Display for WavSampleLoadError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Metadata { path, message } => {
+                write!(
+                    formatter,
+                    "could not read WAV metadata for {path}: {message}"
+                )
+            }
+            Self::Open { path, message } => {
+                write!(formatter, "could not open WAV {path}: {message}")
+            }
+            Self::UnsupportedFormat {
+                sample_format,
+                bits_per_sample,
+                channel_count,
+            } => write!(
+                formatter,
+                "unsupported WAV format {sample_format} {bits_per_sample}-bit with {channel_count} channel(s); expected 16-bit PCM mono or stereo"
+            ),
+            Self::SampleRateBelowMinimum {
+                sample_rate_hz,
+                min_sample_rate_hz,
+            } => write!(
+                formatter,
+                "WAV sample rate {sample_rate_hz} Hz is below minimum {min_sample_rate_hz} Hz"
+            ),
+            Self::SampleRateAboveMaximum {
+                sample_rate_hz,
+                max_sample_rate_hz,
+            } => write!(
+                formatter,
+                "WAV sample rate {sample_rate_hz} Hz exceeds maximum {max_sample_rate_hz} Hz"
+            ),
+            Self::Empty => write!(formatter, "WAV contains no sample frames"),
+            Self::TooLong {
+                frame_count,
+                max_frame_count,
+            } => write!(
+                formatter,
+                "WAV contains {frame_count} frames, exceeding runtime cap {max_frame_count}"
+            ),
+            Self::Decode { path, message } => {
+                write!(formatter, "could not decode WAV {path}: {message}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for WavSampleLoadError {}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -1218,6 +1389,30 @@ where
         }
     }
 
+    pub fn play_intent_with_runtime_samples_and_render_summary(
+        &mut self,
+        intent: &SamplePlaybackIntent,
+        runtime_samples: &RuntimeSampleLibrary,
+    ) -> HostAudioPlaybackReport {
+        match render_intent_with_runtime_samples(intent, self.render_settings, runtime_samples) {
+            Ok(rendered) => {
+                let render_summary = Some(rendered.summary.clone());
+                let event = self.play_rendered(rendered);
+                HostAudioPlaybackReport {
+                    event,
+                    render_summary,
+                }
+            }
+            Err(error) => {
+                let event = self.record_failed(HostAudioError::render(error), None);
+                HostAudioPlaybackReport {
+                    event,
+                    render_summary: None,
+                }
+            }
+        }
+    }
+
     pub fn play_count_in_click(&mut self, intent: &CountInClickIntent) -> HostAudioEvent {
         self.play_count_in_click_with_render_summary(intent).event
     }
@@ -1525,6 +1720,109 @@ pub fn render_intent(
     })
 }
 
+pub fn render_intent_with_runtime_samples(
+    intent: &SamplePlaybackIntent,
+    settings: AudioRenderSettings,
+    runtime_samples: &RuntimeSampleLibrary,
+) -> Result<RenderedAudio, AudioRenderError> {
+    if let Some(sample) = runtime_samples.get(&intent.sample_id) {
+        render_runtime_sample_intent(intent, settings, sample)
+    } else {
+        render_intent(intent, settings)
+    }
+}
+
+pub fn load_wav_sample_payload(
+    path: impl AsRef<Path>,
+) -> Result<WavSamplePayload, WavSampleLoadError> {
+    let path = path.as_ref();
+    let path_label = path.display().to_string();
+    let byte_count = std::fs::metadata(path)
+        .map_err(|error| WavSampleLoadError::Metadata {
+            path: path_label.clone(),
+            message: error.to_string(),
+        })?
+        .len()
+        .try_into()
+        .unwrap_or(usize::MAX);
+    let reader = hound::WavReader::open(path).map_err(|error| WavSampleLoadError::Open {
+        path: path_label.clone(),
+        message: error.to_string(),
+    })?;
+    let spec = reader.spec();
+    if spec.sample_format != hound::SampleFormat::Int
+        || spec.bits_per_sample != 16
+        || !matches!(spec.channels, 1 | 2)
+    {
+        return Err(WavSampleLoadError::UnsupportedFormat {
+            sample_format: match spec.sample_format {
+                hound::SampleFormat::Float => "float",
+                hound::SampleFormat::Int => "pcm",
+            },
+            bits_per_sample: spec.bits_per_sample,
+            channel_count: spec.channels,
+        });
+    }
+    if spec.sample_rate < MIN_SAMPLE_RATE_HZ {
+        return Err(WavSampleLoadError::SampleRateBelowMinimum {
+            sample_rate_hz: spec.sample_rate,
+            min_sample_rate_hz: MIN_SAMPLE_RATE_HZ,
+        });
+    }
+    if spec.sample_rate > MAX_SAMPLE_RATE_HZ {
+        return Err(WavSampleLoadError::SampleRateAboveMaximum {
+            sample_rate_hz: spec.sample_rate,
+            max_sample_rate_hz: MAX_SAMPLE_RATE_HZ,
+        });
+    }
+
+    let declared_frame_count = reader.duration() as usize;
+    if declared_frame_count == 0 {
+        return Err(WavSampleLoadError::Empty);
+    }
+    if declared_frame_count > MAX_RUNTIME_SAMPLE_FRAMES {
+        return Err(WavSampleLoadError::TooLong {
+            frame_count: declared_frame_count,
+            max_frame_count: MAX_RUNTIME_SAMPLE_FRAMES,
+        });
+    }
+
+    let mut samples = reader.into_samples::<i16>();
+    let mut frames = Vec::with_capacity(declared_frame_count);
+    while let Some(left) = next_wav_sample(&mut samples, &path_label)? {
+        if frames.len() >= MAX_RUNTIME_SAMPLE_FRAMES {
+            return Err(WavSampleLoadError::TooLong {
+                frame_count: frames.len().saturating_add(1),
+                max_frame_count: MAX_RUNTIME_SAMPLE_FRAMES,
+            });
+        }
+        let right = if spec.channels == 1 {
+            left
+        } else {
+            next_wav_sample(&mut samples, &path_label)?.ok_or_else(|| {
+                WavSampleLoadError::Decode {
+                    path: path_label.clone(),
+                    message: "incomplete stereo frame".to_string(),
+                }
+            })?
+        };
+        frames.push(AudioFrame { left, right });
+    }
+
+    let frame_count = frames.len();
+    if frame_count == 0 {
+        return Err(WavSampleLoadError::Empty);
+    }
+
+    Ok(WavSamplePayload {
+        sample_rate_hz: spec.sample_rate,
+        channel_count: spec.channels,
+        frame_count,
+        byte_count,
+        frames,
+    })
+}
+
 pub fn render_count_in_click(
     intent: &CountInClickIntent,
     settings: AudioRenderSettings,
@@ -1652,6 +1950,106 @@ fn validate_backend_receipt(
     Ok(())
 }
 
+fn render_runtime_sample_intent(
+    intent: &SamplePlaybackIntent,
+    settings: AudioRenderSettings,
+    sample: &RuntimeSample,
+) -> Result<RenderedAudio, AudioRenderError> {
+    settings.validate()?;
+    if sample.payload.sample_rate_hz != settings.sample_rate_hz {
+        return Err(AudioRenderError::RuntimeSampleRateMismatch {
+            sample_rate_hz: sample.payload.sample_rate_hz,
+            render_sample_rate_hz: settings.sample_rate_hz,
+        });
+    }
+
+    let requested_frame_count = settings
+        .frame_count
+        .min(usize::try_from(intent.window_length_frames).unwrap_or(usize::MAX));
+    let start_frame = usize::try_from(intent.start_frame).unwrap_or(usize::MAX);
+    let available_frame_count = sample
+        .payload
+        .frames
+        .len()
+        .saturating_sub(start_frame)
+        .min(requested_frame_count);
+    let render_settings = AudioRenderSettings {
+        sample_rate_hz: settings.sample_rate_hz,
+        frame_count: available_frame_count,
+    };
+    let pan = intent.pan.clamp(-PAN_RANGE, PAN_RANGE);
+    let (left_pan_gain, right_pan_gain) = stereo_gains(pan);
+    let mut frames = Vec::with_capacity(available_frame_count);
+    let mut peak_left = 0_i16;
+    let mut peak_right = 0_i16;
+
+    for frame in sample
+        .payload
+        .frames
+        .iter()
+        .skip(start_frame)
+        .take(available_frame_count)
+    {
+        let left = scale_runtime_sample(frame.left, intent.velocity, intent.level, left_pan_gain);
+        let right =
+            scale_runtime_sample(frame.right, intent.velocity, intent.level, right_pan_gain);
+        peak_left = peak_left.max(left.saturating_abs());
+        peak_right = peak_right.max(right.saturating_abs());
+        frames.push(AudioFrame { left, right });
+    }
+
+    let peak_amplitude = peak_left.max(peak_right);
+    let summary = AudioRenderSummary {
+        render_kind: AudioRenderKind::SamplePlayback,
+        sample_rate_hz: render_settings.sample_rate_hz,
+        frame_count: render_settings.frame_count,
+        source_sample_id: intent.sample_id.clone(),
+        source_sample_name: intent.sample_name.clone(),
+        selected_track: intent.selected_track,
+        program_index: intent.program_index,
+        program_name: intent.program_name.clone(),
+        bank: intent.bank,
+        pad_number: intent.pad_number,
+        velocity: intent.velocity,
+        level: intent.level,
+        pan: intent.pan,
+        tune_cents: intent.tune_cents,
+        mute_group: intent.mute_group,
+        start_frame: intent.start_frame,
+        end_frame: intent.end_frame,
+        window_length_frames: intent.window_length_frames,
+        peak_left,
+        peak_right,
+        peak_amplitude,
+        channel_balance: channel_balance(peak_left, peak_right),
+        source_kind: AudioSourceKind::RuntimeUserWav,
+        loaded_audio_byte_count: sample.payload.byte_count,
+        count_in_tick: None,
+        bar_index: None,
+        beat_index: None,
+        accent: None,
+    };
+
+    Ok(RenderedAudio {
+        settings: render_settings,
+        summary,
+        frames,
+    })
+}
+
+fn next_wav_sample<R: std::io::Read>(
+    samples: &mut hound::WavIntoSamples<R, i16>,
+    path_label: &str,
+) -> Result<Option<i16>, WavSampleLoadError> {
+    samples
+        .next()
+        .transpose()
+        .map_err(|error| WavSampleLoadError::Decode {
+            path: path_label.to_string(),
+            message: error.to_string(),
+        })
+}
+
 fn stable_seed(intent: &SamplePlaybackIntent) -> u32 {
     let mut hash = FNV_OFFSET_BASIS;
     for byte in intent
@@ -1738,6 +2136,16 @@ fn count_in_click_sample(
 
 fn clamp_i16(value: i32) -> i16 {
     value.clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16
+}
+
+fn scale_runtime_sample(sample: i16, velocity: u8, level: u8, pan_gain: i32) -> i16 {
+    let value = i64::from(sample)
+        * i64::from(velocity.min(MAX_VELOCITY as u8))
+        * i64::from(level.min(MAX_LEVEL as u8))
+        * i64::from(pan_gain);
+    let divisor = i64::from(MAX_VELOCITY * MAX_LEVEL * 100);
+    let scaled = value / divisor;
+    scaled.clamp(i64::from(i16::MIN), i64::from(i16::MAX)) as i16
 }
 
 fn channel_balance(peak_left: i16, peak_right: i16) -> ChannelBalance {
@@ -1978,6 +2386,172 @@ mod tests {
             AudioSourceKind::RightsSafeGenerated
         );
         assert_eq!(rendered.summary.loaded_audio_byte_count, 0);
+    }
+
+    #[test]
+    fn wav_import_decodes_pcm16_mono_and_runtime_renderer_uses_payload() {
+        let path = unique_wav_path("mono");
+        write_wav(
+            &path,
+            hound::WavSpec {
+                channels: 1,
+                sample_rate: 44_100,
+                bits_per_sample: 16,
+                sample_format: hound::SampleFormat::Int,
+            },
+            &[1_000, -1_000, 2_000, -2_000],
+        );
+
+        let payload = load_wav_sample_payload(&path).expect("test WAV should load");
+        assert_eq!(payload.sample_rate_hz, 44_100);
+        assert_eq!(payload.channel_count, 1);
+        assert_eq!(payload.frame_count, 4);
+        assert!(payload.byte_count > 0);
+        assert_eq!(
+            payload.frames[0],
+            AudioFrame {
+                left: 1_000,
+                right: 1_000
+            }
+        );
+
+        let mut library = RuntimeSampleLibrary::default();
+        library.insert("imported_001", "USER-KICK", payload);
+        let mut intent = test_intent_with_sample("imported_001", "USER-KICK");
+        intent.velocity = 127;
+        intent.level = 127;
+        intent.start_frame = 1;
+        intent.end_frame = 3;
+        intent.window_length_frames = 3;
+        let rendered = render_intent_with_runtime_samples(&intent, settings(44_100, 8), &library)
+            .expect("runtime WAV should render");
+
+        assert_eq!(
+            rendered.summary.source_kind,
+            AudioSourceKind::RuntimeUserWav
+        );
+        assert!(rendered.summary.loaded_audio_byte_count > 0);
+        assert_eq!(rendered.frames.len(), 3);
+        assert_eq!(rendered.frames[0].left, -1_000);
+        assert_eq!(rendered.frames[0].right, -1_000);
+        assert_eq!(rendered.summary.peak_amplitude, 2_000);
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn runtime_renderer_falls_back_to_generated_audio_when_payload_is_missing() {
+        let rendered = render_intent_with_runtime_samples(
+            &test_intent_with_sample("imported_001", "USER-KICK"),
+            settings(44_100, 16),
+            &RuntimeSampleLibrary::default(),
+        )
+        .expect("missing runtime payload should use generated fallback");
+
+        assert_eq!(
+            rendered.summary.source_kind,
+            AudioSourceKind::RightsSafeGenerated
+        );
+        assert_eq!(rendered.summary.loaded_audio_byte_count, 0);
+    }
+
+    #[test]
+    fn runtime_renderer_rejects_sample_rate_mismatch() {
+        let path = unique_wav_path("rate");
+        write_wav(
+            &path,
+            hound::WavSpec {
+                channels: 2,
+                sample_rate: 48_000,
+                bits_per_sample: 16,
+                sample_format: hound::SampleFormat::Int,
+            },
+            &[1_000, -1_000, 2_000, -2_000],
+        );
+        let payload = load_wav_sample_payload(&path).expect("test WAV should load");
+        let mut library = RuntimeSampleLibrary::default();
+        library.insert("imported_001", "RATE", payload);
+
+        let error = render_intent_with_runtime_samples(
+            &test_intent_with_sample("imported_001", "RATE"),
+            settings(44_100, 16),
+            &library,
+        )
+        .expect_err("mismatched rate should fail explicitly");
+
+        assert_eq!(
+            error,
+            AudioRenderError::RuntimeSampleRateMismatch {
+                sample_rate_hz: 48_000,
+                render_sample_rate_hz: 44_100
+            }
+        );
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn wav_import_rejects_empty_supported_wav() {
+        let path = unique_wav_path("empty");
+        write_wav(
+            &path,
+            hound::WavSpec {
+                channels: 1,
+                sample_rate: 44_100,
+                bits_per_sample: 16,
+                sample_format: hound::SampleFormat::Int,
+            },
+            &[],
+        );
+
+        assert_eq!(
+            load_wav_sample_payload(&path),
+            Err(WavSampleLoadError::Empty)
+        );
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn wav_import_rejects_unsupported_bit_depth_before_decoding() {
+        let path = unique_wav_path("unsupported");
+        write_wav(
+            &path,
+            hound::WavSpec {
+                channels: 1,
+                sample_rate: 44_100,
+                bits_per_sample: 24,
+                sample_format: hound::SampleFormat::Int,
+            },
+            &[],
+        );
+
+        assert_eq!(
+            load_wav_sample_payload(&path),
+            Err(WavSampleLoadError::UnsupportedFormat {
+                sample_format: "pcm",
+                bits_per_sample: 24,
+                channel_count: 1
+            })
+        );
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn wav_import_rejects_declared_duration_above_runtime_cap_before_decoding() {
+        let path = unique_wav_path("too_long");
+        write_declared_pcm16_wav_header(&path, 1, 44_100, MAX_RUNTIME_SAMPLE_FRAMES + 1);
+
+        assert_eq!(
+            load_wav_sample_payload(&path),
+            Err(WavSampleLoadError::TooLong {
+                frame_count: MAX_RUNTIME_SAMPLE_FRAMES + 1,
+                max_frame_count: MAX_RUNTIME_SAMPLE_FRAMES
+            })
+        );
+
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]
@@ -3004,6 +3578,70 @@ mod tests {
             beat_index,
             accent,
         }
+    }
+
+    fn unique_wav_path(label: &str) -> std::path::PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system time should be after unix epoch")
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "mpc_audio_{label}_{}_{}.wav",
+            std::process::id(),
+            nanos
+        ))
+    }
+
+    fn write_wav(path: &std::path::Path, spec: hound::WavSpec, samples: &[i16]) {
+        let mut writer = hound::WavWriter::create(path, spec).expect("test WAV should create");
+        for sample in samples {
+            writer
+                .write_sample(*sample)
+                .expect("test WAV sample should write");
+        }
+        writer.finalize().expect("test WAV should finalize");
+    }
+
+    fn write_declared_pcm16_wav_header(
+        path: &std::path::Path,
+        channels: u16,
+        sample_rate_hz: u32,
+        frame_count: usize,
+    ) {
+        use std::io::Write;
+
+        let bytes_per_sample = 2_u32;
+        let data_bytes = u32::try_from(
+            frame_count
+                .saturating_mul(usize::from(channels))
+                .saturating_mul(bytes_per_sample as usize),
+        )
+        .expect("test WAV data size should fit u32");
+        let byte_rate = sample_rate_hz * u32::from(channels) * bytes_per_sample;
+        let block_align = channels * bytes_per_sample as u16;
+        let mut file = std::fs::File::create(path).expect("test WAV header should create");
+        file.write_all(b"RIFF").expect("RIFF marker should write");
+        file.write_all(&(36_u32 + data_bytes).to_le_bytes())
+            .expect("RIFF size should write");
+        file.write_all(b"WAVE").expect("WAVE marker should write");
+        file.write_all(b"fmt ").expect("fmt marker should write");
+        file.write_all(&16_u32.to_le_bytes())
+            .expect("fmt size should write");
+        file.write_all(&1_u16.to_le_bytes())
+            .expect("PCM format should write");
+        file.write_all(&channels.to_le_bytes())
+            .expect("channel count should write");
+        file.write_all(&sample_rate_hz.to_le_bytes())
+            .expect("sample rate should write");
+        file.write_all(&byte_rate.to_le_bytes())
+            .expect("byte rate should write");
+        file.write_all(&block_align.to_le_bytes())
+            .expect("block align should write");
+        file.write_all(&16_u16.to_le_bytes())
+            .expect("bits per sample should write");
+        file.write_all(b"data").expect("data marker should write");
+        file.write_all(&data_bytes.to_le_bytes())
+            .expect("data size should write");
     }
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
