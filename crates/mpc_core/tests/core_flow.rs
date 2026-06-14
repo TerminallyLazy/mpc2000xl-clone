@@ -1,9 +1,10 @@
 use mpc_core::{
     DiskOperation, HardwareEvent, INTERNAL_PPQN, MachineOutput, MainScreenField, MidiSettingsField,
     Mode, MpcCore, PROJECT_SNAPSHOT_VERSION, PadAssignment, PadAssignmentChange, PadBank,
-    PanelControl, PlaybackMissReason, ProgramEditField, ProgramPad, ProjectSnapshot,
-    ProjectSnapshotError, ProjectSongSnapshot, SamplePlaybackIntent, SamplePlaybackResolution,
-    SequenceEvent, SongEditField, SongStep, SyntheticSample, sequence_length_ticks_for_bars,
+    PanelControl, PlaybackMissReason, ProgramEditField, ProgramPad, ProjectSetupSnapshot,
+    ProjectSnapshot, ProjectSnapshotError, ProjectSongSnapshot, SamplePlaybackIntent,
+    SamplePlaybackResolution, SequenceEvent, SetupField, SetupPreferences, SongEditField, SongStep,
+    SyntheticSample, sequence_length_ticks_for_bars,
 };
 
 #[test]
@@ -3501,6 +3502,353 @@ fn midi_settings_changed_output_serializes_stably() {
 }
 
 #[test]
+fn setup_mode_default_screen_shows_preferences() {
+    let mut core = MpcCore::new();
+
+    assert_eq!(
+        core.state().setup_preferences,
+        setup_preferences(true, 0, 5)
+    );
+    assert_eq!(core.state().selected_setup_field, SetupField::Metronome);
+
+    let outputs = core.dispatch(HardwareEvent::Press {
+        control: PanelControl::Setup,
+    });
+
+    assert_eq!(core.state().mode, Mode::Setup);
+    assert_eq!(core.state().lcd.title, "SETUP");
+    assert_eq!(core.state().lcd.lines[0], ">Metronome On");
+    assert_eq!(core.state().lcd.lines[1], " Count-in bars 0");
+    assert_eq!(core.state().lcd.lines[2], " LCD contrast 05");
+    assert_eq!(core.state().lcd.lines[3], "Edit metronome");
+    assert_eq!(
+        core.state().lcd.soft_keys,
+        ["F1", "F2", "F3", "F4", "F5", "F6"].map(std::string::ToString::to_string)
+    );
+    assert_eq!(
+        outputs,
+        vec![
+            MachineOutput::ModeChanged { mode: Mode::Setup },
+            MachineOutput::LcdChanged,
+        ]
+    );
+}
+
+#[test]
+fn setup_cursor_left_right_cycles_fields_and_emits_settings_output() {
+    let mut core = MpcCore::new();
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::Setup,
+    });
+
+    let right_to_count = core.dispatch(HardwareEvent::Press {
+        control: PanelControl::CursorRight,
+    });
+    assert_eq!(core.state().selected_setup_field, SetupField::CountInBars);
+    assert_eq!(core.state().lcd.lines[1], ">Count-in bars 0");
+    assert_eq!(
+        right_to_count,
+        setup_changed_outputs(setup_preferences(true, 0, 5), SetupField::CountInBars)
+    );
+
+    let right_to_contrast = core.dispatch(HardwareEvent::Press {
+        control: PanelControl::CursorRight,
+    });
+    assert_eq!(core.state().selected_setup_field, SetupField::LcdContrast);
+    assert_eq!(core.state().lcd.lines[2], ">LCD contrast 05");
+    assert_eq!(
+        right_to_contrast,
+        setup_changed_outputs(setup_preferences(true, 0, 5), SetupField::LcdContrast)
+    );
+
+    let right_to_metronome = core.dispatch(HardwareEvent::Press {
+        control: PanelControl::CursorRight,
+    });
+    assert_eq!(core.state().selected_setup_field, SetupField::Metronome);
+    assert_eq!(
+        right_to_metronome,
+        setup_changed_outputs(setup_preferences(true, 0, 5), SetupField::Metronome)
+    );
+
+    let left_to_contrast = core.dispatch(HardwareEvent::Press {
+        control: PanelControl::CursorLeft,
+    });
+    assert_eq!(core.state().selected_setup_field, SetupField::LcdContrast);
+    assert_eq!(
+        left_to_contrast,
+        setup_changed_outputs(setup_preferences(true, 0, 5), SetupField::LcdContrast)
+    );
+}
+
+#[test]
+fn setup_data_wheel_edits_preferences_clamps_and_ignores_zero_delta() {
+    let mut core = MpcCore::new();
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::Setup,
+    });
+
+    assert_eq!(
+        core.dispatch(HardwareEvent::TurnDataWheel { delta: 0 }),
+        vec![MachineOutput::Ignored {
+            reason: "setup.metronome.zero_delta_ignored".to_string(),
+        }]
+    );
+    assert_eq!(
+        core.dispatch(HardwareEvent::TurnDataWheel { delta: 1 }),
+        vec![MachineOutput::Ignored {
+            reason: "setup.metronome.boundary".to_string(),
+        }]
+    );
+    assert_eq!(
+        core.dispatch(HardwareEvent::TurnDataWheel { delta: -1 }),
+        setup_changed_outputs(setup_preferences(false, 0, 5), SetupField::Metronome)
+    );
+    assert_eq!(
+        core.dispatch(HardwareEvent::TurnDataWheel { delta: -1 }),
+        vec![MachineOutput::Ignored {
+            reason: "setup.metronome.boundary".to_string(),
+        }]
+    );
+
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::CursorRight,
+    });
+    assert_eq!(
+        core.dispatch(HardwareEvent::TurnDataWheel { delta: 0 }),
+        vec![MachineOutput::Ignored {
+            reason: "setup.count_in_bars.zero_delta_ignored".to_string(),
+        }]
+    );
+    assert_eq!(
+        core.dispatch(HardwareEvent::TurnDataWheel { delta: 4 }),
+        setup_changed_outputs(setup_preferences(false, 4, 5), SetupField::CountInBars)
+    );
+    assert_eq!(
+        core.dispatch(HardwareEvent::TurnDataWheel { delta: 1 }),
+        vec![MachineOutput::Ignored {
+            reason: "setup.count_in_bars.boundary".to_string(),
+        }]
+    );
+    assert_eq!(
+        core.dispatch(HardwareEvent::TurnDataWheel { delta: -4 }),
+        setup_changed_outputs(setup_preferences(false, 0, 5), SetupField::CountInBars)
+    );
+
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::CursorRight,
+    });
+    assert_eq!(
+        core.dispatch(HardwareEvent::TurnDataWheel { delta: 0 }),
+        vec![MachineOutput::Ignored {
+            reason: "setup.lcd_contrast.zero_delta_ignored".to_string(),
+        }]
+    );
+    assert_eq!(
+        core.dispatch(HardwareEvent::TurnDataWheel { delta: 5 }),
+        setup_changed_outputs(setup_preferences(false, 0, 10), SetupField::LcdContrast)
+    );
+    assert_eq!(
+        core.dispatch(HardwareEvent::TurnDataWheel { delta: 1 }),
+        vec![MachineOutput::Ignored {
+            reason: "setup.lcd_contrast.boundary".to_string(),
+        }]
+    );
+    assert_eq!(
+        core.dispatch(HardwareEvent::TurnDataWheel { delta: -10 }),
+        setup_changed_outputs(setup_preferences(false, 0, 0), SetupField::LcdContrast)
+    );
+    assert_eq!(
+        core.dispatch(HardwareEvent::TurnDataWheel { delta: -1 }),
+        vec![MachineOutput::Ignored {
+            reason: "setup.lcd_contrast.boundary".to_string(),
+        }]
+    );
+}
+
+#[test]
+fn setup_project_snapshot_defaults_round_trips_and_validates() {
+    let mut core = MpcCore::new();
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::Setup,
+    });
+    core.dispatch(HardwareEvent::TurnDataWheel { delta: -1 });
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::CursorRight,
+    });
+    core.dispatch(HardwareEvent::TurnDataWheel { delta: 2 });
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::CursorRight,
+    });
+    core.dispatch(HardwareEvent::TurnDataWheel { delta: 3 });
+
+    let json = core
+        .to_project_json()
+        .expect("SETUP preferences snapshot should encode");
+    assert!(json.contains(r#""setup""#));
+    assert!(json.contains(r#""selected_field": "lcd_contrast""#));
+
+    let mut restored = MpcCore::new();
+    restored
+        .restore_project_json(&json)
+        .expect("SETUP preferences snapshot should restore");
+    assert_eq!(restored.state().mode, Mode::Setup);
+    assert_eq!(
+        restored.state().setup_preferences,
+        setup_preferences(false, 2, 8)
+    );
+    assert_eq!(
+        restored.state().selected_setup_field,
+        SetupField::LcdContrast
+    );
+    assert_eq!(restored.state().lcd.title, "SETUP");
+    assert_eq!(restored.state().lcd.lines[2], ">LCD contrast 08");
+
+    let mut older_value =
+        serde_json::to_value(MpcCore::new().export_project_snapshot()).expect("snapshot value");
+    older_value
+        .as_object_mut()
+        .expect("snapshot root should be an object")
+        .remove("setup");
+    let older_json = serde_json::to_string(&older_value).expect("older JSON should encode");
+    let mut older = MpcCore::new();
+    older
+        .restore_project_json(&older_json)
+        .expect("older snapshot without setup metadata should restore");
+    assert_eq!(
+        older.state().setup_preferences,
+        setup_preferences(true, 0, 5)
+    );
+    assert_eq!(older.state().selected_setup_field, SetupField::Metronome);
+
+    let mut malformed_setup_value =
+        serde_json::to_value(MpcCore::new().export_project_snapshot()).expect("snapshot value");
+    malformed_setup_value
+        .as_object_mut()
+        .expect("snapshot root should be an object")
+        .insert("setup".to_string(), serde_json::json!({}));
+    let malformed_setup_json =
+        serde_json::to_string(&malformed_setup_value).expect("malformed setup JSON should encode");
+    assert_invalid_project_field(
+        MpcCore::new()
+            .restore_project_json(&malformed_setup_json)
+            .expect_err("present incomplete setup object should be rejected"),
+        "setup.preferences",
+        "required field is missing",
+    );
+
+    let mut malformed_preferences_value =
+        serde_json::to_value(MpcCore::new().export_project_snapshot()).expect("snapshot value");
+    *malformed_preferences_value
+        .pointer_mut("/setup/preferences")
+        .expect("setup preferences should exist") = serde_json::json!({
+        "metronome_enabled": true,
+        "lcd_contrast": 5
+    });
+    let malformed_preferences_json = serde_json::to_string(&malformed_preferences_value)
+        .expect("malformed preferences JSON should encode");
+    assert_invalid_project_field(
+        MpcCore::new()
+            .restore_project_json(&malformed_preferences_json)
+            .expect_err("present incomplete setup preferences should be rejected"),
+        "setup.preferences.count_in_bars",
+        "required field is missing",
+    );
+
+    let mut invalid_count = MpcCore::new().export_project_snapshot();
+    invalid_count.setup.preferences.count_in_bars = 5;
+    assert_invalid_project_field(
+        MpcCore::new()
+            .restore_project_snapshot(invalid_count)
+            .expect_err("out-of-range setup count-in should be rejected"),
+        "setup.preferences.count_in_bars",
+        "0..=4",
+    );
+
+    let invalid_contrast = ProjectSnapshot {
+        setup: ProjectSetupSnapshot {
+            preferences: setup_preferences(true, 0, 11),
+            selected_field: SetupField::Metronome,
+        },
+        ..MpcCore::new().export_project_snapshot()
+    };
+    assert_invalid_project_field(
+        MpcCore::new()
+            .restore_project_snapshot(invalid_contrast)
+            .expect_err("out-of-range setup LCD contrast should be rejected"),
+        "setup.preferences.lcd_contrast",
+        "0..=10",
+    );
+}
+
+#[test]
+fn setup_preferences_changed_output_serializes_stably() {
+    let output = MachineOutput::SetupPreferencesChanged {
+        preferences: setup_preferences(false, 2, 8),
+        selected_field: SetupField::LcdContrast,
+    };
+
+    let json = serde_json::to_value(output).expect("SETUP preferences output should serialize");
+
+    assert_eq!(
+        json,
+        serde_json::json!({
+            "type": "setup_preferences_changed",
+            "preferences": {
+                "metronome_enabled": false,
+                "count_in_bars": 2,
+                "lcd_contrast": 8
+            },
+            "selected_field": "lcd_contrast"
+        })
+    );
+}
+
+#[test]
+fn setup_soft_keys_are_unmapped_and_isolated_from_other_modes() {
+    let mut core = MpcCore::new();
+
+    let main_f2 = core.dispatch(HardwareEvent::Press {
+        control: PanelControl::SoftKey(2),
+    });
+    assert_no_setup_outputs(&main_f2);
+    assert_eq!(
+        core.state().setup_preferences,
+        setup_preferences(true, 0, 5)
+    );
+
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::Setup,
+    });
+    let setup_f2 = core.dispatch(HardwareEvent::Press {
+        control: PanelControl::SoftKey(2),
+    });
+    assert_eq!(
+        setup_f2,
+        vec![MachineOutput::Ignored {
+            reason: "setup.soft_key.2_unmapped".to_string(),
+        }]
+    );
+    assert_no_setup_outputs(&setup_f2);
+    assert_eq!(
+        core.state().setup_preferences,
+        setup_preferences(true, 0, 5)
+    );
+
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::Disk,
+    });
+    let disk_f2 = core.dispatch(HardwareEvent::Press {
+        control: PanelControl::SoftKey(2),
+    });
+    assert!(
+        disk_f2
+            .iter()
+            .any(|output| matches!(output, MachineOutput::DiskOperationRequested { .. }))
+    );
+    assert_no_setup_outputs(&disk_f2);
+}
+
+#[test]
 fn invalid_pad_and_velocity_are_ignored() {
     let mut core = MpcCore::new();
 
@@ -3760,6 +4108,13 @@ fn project_snapshot_json_rejects_unknown_fields_at_persisted_boundaries() {
             "/sequence/recorded_events/0/playback",
             "file_path",
             "sequence.recorded_events[0].playback.file_path",
+        ),
+        ("setup", "/setup", "audio_bytes", "setup.audio_bytes"),
+        (
+            "setup preferences",
+            "/setup/preferences",
+            "service_menu",
+            "setup.preferences.service_menu",
         ),
     ];
 
@@ -4074,6 +4429,40 @@ fn assert_no_song_outputs(outputs: &[MachineOutput]) {
         )),
         "non-SONG output sequence must not contain song outputs: {outputs:?}"
     );
+}
+
+fn assert_no_setup_outputs(outputs: &[MachineOutput]) {
+    assert!(
+        outputs
+            .iter()
+            .all(|output| !matches!(output, MachineOutput::SetupPreferencesChanged { .. })),
+        "non-SETUP output sequence must not contain setup outputs: {outputs:?}"
+    );
+}
+
+fn setup_preferences(
+    metronome_enabled: bool,
+    count_in_bars: u8,
+    lcd_contrast: u8,
+) -> SetupPreferences {
+    SetupPreferences {
+        metronome_enabled,
+        count_in_bars,
+        lcd_contrast,
+    }
+}
+
+fn setup_changed_outputs(
+    preferences: SetupPreferences,
+    selected_field: SetupField,
+) -> Vec<MachineOutput> {
+    vec![
+        MachineOutput::SetupPreferencesChanged {
+            preferences,
+            selected_field,
+        },
+        MachineOutput::LcdChanged,
+    ]
 }
 
 fn assignment_for_pad(core: &MpcCore, pad: ProgramPad) -> Option<&mpc_core::PadAssignment> {

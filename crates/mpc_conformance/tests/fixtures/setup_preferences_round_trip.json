@@ -1,0 +1,128 @@
+{
+  "id": "core.setup.preferences-round-trip",
+  "name": "SETUP mode edits metronome, count-in bars, LCD contrast, and round-trips preferences",
+  "source_refs": [
+    "docs/superpowers/plans/2026-06-13-mpc2000xl-setup-preferences.md#behavior-slice",
+    "docs/evidence/behavior-matrix.json#core.setup.preferences-foundation"
+  ],
+  "events": [
+    {
+      "type": "press",
+      "control": "setup"
+    },
+    {
+      "type": "turn_data_wheel",
+      "delta": -1
+    },
+    {
+      "type": "press",
+      "control": "cursor_right"
+    },
+    {
+      "type": "turn_data_wheel",
+      "delta": 2
+    },
+    {
+      "type": "press",
+      "control": "cursor_right"
+    },
+    {
+      "type": "turn_data_wheel",
+      "delta": 3
+    }
+  ],
+  "expect_output_sequence": [
+    {
+      "type": "mode_changed",
+      "mode": "setup"
+    },
+    {
+      "type": "lcd_changed"
+    },
+    {
+      "type": "setup_preferences_changed",
+      "preferences": {
+        "metronome_enabled": false,
+        "count_in_bars": 0,
+        "lcd_contrast": 5
+      },
+      "selected_field": "metronome"
+    },
+    {
+      "type": "lcd_changed"
+    },
+    {
+      "type": "setup_preferences_changed",
+      "preferences": {
+        "metronome_enabled": false,
+        "count_in_bars": 0,
+        "lcd_contrast": 5
+      },
+      "selected_field": "count_in_bars"
+    },
+    {
+      "type": "lcd_changed"
+    },
+    {
+      "type": "setup_preferences_changed",
+      "preferences": {
+        "metronome_enabled": false,
+        "count_in_bars": 2,
+        "lcd_contrast": 5
+      },
+      "selected_field": "count_in_bars"
+    },
+    {
+      "type": "lcd_changed"
+    },
+    {
+      "type": "setup_preferences_changed",
+      "preferences": {
+        "metronome_enabled": false,
+        "count_in_bars": 2,
+        "lcd_contrast": 5
+      },
+      "selected_field": "lcd_contrast"
+    },
+    {
+      "type": "lcd_changed"
+    },
+    {
+      "type": "setup_preferences_changed",
+      "preferences": {
+        "metronome_enabled": false,
+        "count_in_bars": 2,
+        "lcd_contrast": 8
+      },
+      "selected_field": "lcd_contrast"
+    },
+    {
+      "type": "lcd_changed"
+    }
+  ],
+  "expect": {
+    "mode": "setup",
+    "lcd_title": "SETUP",
+    "playing": false,
+    "recording": false,
+    "event_count": 6,
+    "selected_setup_field": "lcd_contrast",
+    "setup_metronome_enabled": false,
+    "setup_count_in_bars": 2,
+    "setup_lcd_contrast": 8
+  },
+  "project_round_trip": {
+    "expect_snapshot_version": 1,
+    "expect": {
+      "mode": "setup",
+      "lcd_title": "SETUP",
+      "playing": false,
+      "recording": false,
+      "event_count": 6,
+      "selected_setup_field": "lcd_contrast",
+      "setup_metronome_enabled": false,
+      "setup_count_in_bars": 2,
+      "setup_lcd_contrast": 8
+    }
+  }
+}

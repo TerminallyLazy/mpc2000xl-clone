@@ -3,7 +3,7 @@ use mpc_audio::{AudioRenderSettings, AudioSourceKind, ChannelBalance, render_int
 use mpc_core::{
     DiskOperation, HardwareEvent, MachineOutput, MainScreenField, MidiSettingsField, Mode, MpcCore,
     MpcState, PROJECT_SNAPSHOT_VERSION, PadBank, ProgramEditField, ProgramPad,
-    SamplePlaybackResolution, SequenceEvent, SongEditField, SongStep,
+    SamplePlaybackResolution, SequenceEvent, SetupField, SongEditField, SongStep,
 };
 use serde::de::{self, Visitor};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -248,6 +248,14 @@ pub struct ExpectedState {
     pub selected_midi_settings_field: Option<MidiSettingsField>,
     #[serde(default)]
     pub selected_disk_operation: Option<DiskOperation>,
+    #[serde(default)]
+    pub selected_setup_field: Option<SetupField>,
+    #[serde(default)]
+    pub setup_metronome_enabled: Option<bool>,
+    #[serde(default)]
+    pub setup_count_in_bars: Option<u8>,
+    #[serde(default)]
+    pub setup_lcd_contrast: Option<u8>,
     #[serde(default)]
     pub song_step_count: Option<usize>,
     #[serde(default)]
@@ -645,6 +653,42 @@ fn validate_expected_state(
             details.push(format!(
                 "{prefix}selected_disk_operation mismatch: expected {:?}, got {:?}",
                 selected_disk_operation, state.selected_disk_operation
+            ));
+        }
+    }
+
+    if let Some(selected_setup_field) = expected.selected_setup_field {
+        if state.selected_setup_field != selected_setup_field {
+            details.push(format!(
+                "{prefix}selected_setup_field mismatch: expected {:?}, got {:?}",
+                selected_setup_field, state.selected_setup_field
+            ));
+        }
+    }
+
+    if let Some(setup_metronome_enabled) = expected.setup_metronome_enabled {
+        if state.setup_preferences.metronome_enabled != setup_metronome_enabled {
+            details.push(format!(
+                "{prefix}setup_metronome_enabled mismatch: expected {}, got {}",
+                setup_metronome_enabled, state.setup_preferences.metronome_enabled
+            ));
+        }
+    }
+
+    if let Some(setup_count_in_bars) = expected.setup_count_in_bars {
+        if state.setup_preferences.count_in_bars != setup_count_in_bars {
+            details.push(format!(
+                "{prefix}setup_count_in_bars mismatch: expected {}, got {}",
+                setup_count_in_bars, state.setup_preferences.count_in_bars
+            ));
+        }
+    }
+
+    if let Some(setup_lcd_contrast) = expected.setup_lcd_contrast {
+        if state.setup_preferences.lcd_contrast != setup_lcd_contrast {
+            details.push(format!(
+                "{prefix}setup_lcd_contrast mismatch: expected {}, got {}",
+                setup_lcd_contrast, state.setup_preferences.lcd_contrast
             ));
         }
     }

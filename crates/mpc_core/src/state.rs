@@ -7,7 +7,8 @@ use crate::events::{
     DiskOperation, HardwareEvent, MachineOutput, MidiSettingsField, Mode, PadAssignment,
     PadAssignmentChange, PadBank, PanelControl, PlaybackMissReason, Program, ProgramEditField,
     ProgramPad, SampleCatalogEntry, SamplePlaybackIntent, SamplePlaybackMiss,
-    SamplePlaybackResolution, SequenceEvent, SongEditField, SongStep, SyntheticSample,
+    SamplePlaybackResolution, SequenceEvent, SetupField, SetupPreferences, SongEditField, SongStep,
+    SyntheticSample,
 };
 use crate::lcd::LcdFrame;
 
@@ -54,6 +55,10 @@ const MIDI_MAX_NOTE: u8 = 127;
 const DEFAULT_MIDI_BASE_NOTE: u8 = 36;
 const MAX_MIDI_BASE_NOTE: u8 = 112;
 const MIDI_MAPPED_PAD_COUNT: u8 = 16;
+const MIN_SETUP_COUNT_IN_BARS: u8 = 0;
+const MAX_SETUP_COUNT_IN_BARS: u8 = 4;
+const MIN_SETUP_LCD_CONTRAST: u8 = 0;
+const MAX_SETUP_LCD_CONTRAST: u8 = 10;
 const PAD_BANKS: [PadBank; 4] = [PadBank::A, PadBank::B, PadBank::C, PadBank::D];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -115,6 +120,8 @@ pub struct ProjectSnapshot {
     pub program: ProjectProgramSnapshot,
     #[serde(default)]
     pub song: ProjectSongSnapshot,
+    #[serde(default)]
+    pub setup: ProjectSetupSnapshot,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -177,6 +184,22 @@ impl Default for ProjectSongSnapshot {
             steps: default_song_steps(),
             selected_step_index: 0,
             selected_field: SongEditField::Step,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProjectSetupSnapshot {
+    pub preferences: SetupPreferences,
+    pub selected_field: SetupField,
+}
+
+impl Default for ProjectSetupSnapshot {
+    fn default() -> Self {
+        Self {
+            preferences: SetupPreferences::default(),
+            selected_field: SetupField::default(),
         }
     }
 }
@@ -251,6 +274,8 @@ pub struct MpcState {
     pub midi_base_note: u8,
     pub selected_midi_settings_field: MidiSettingsField,
     pub selected_disk_operation: DiskOperation,
+    pub setup_preferences: SetupPreferences,
+    pub selected_setup_field: SetupField,
     pub song_steps: Vec<SongStep>,
     pub selected_song_step_index: usize,
     pub selected_song_edit_field: SongEditField,
@@ -312,6 +337,8 @@ impl Default for MpcState {
             midi_base_note: DEFAULT_MIDI_BASE_NOTE,
             selected_midi_settings_field: MidiSettingsField::InputChannel,
             selected_disk_operation: DiskOperation::SaveProject,
+            setup_preferences: SetupPreferences::default(),
+            selected_setup_field: SetupField::Metronome,
             song_steps: default_song_steps(),
             selected_song_step_index: 0,
             selected_song_edit_field: SongEditField::Step,
@@ -396,6 +423,10 @@ impl MpcCore {
                 selected_step_index: self.state.selected_song_step_index,
                 selected_field: self.state.selected_song_edit_field,
             },
+            setup: ProjectSetupSnapshot {
+                preferences: self.state.setup_preferences,
+                selected_field: self.state.selected_setup_field,
+            },
         }
     }
 
@@ -434,6 +465,8 @@ impl MpcCore {
         self.state.midi_base_note = snapshot.machine.midi_base_note;
         self.state.selected_midi_settings_field = snapshot.machine.selected_midi_settings_field;
         self.state.selected_disk_operation = snapshot.machine.selected_disk_operation;
+        self.state.setup_preferences = snapshot.setup.preferences;
+        self.state.selected_setup_field = snapshot.setup.selected_field;
         self.state.song_steps = snapshot.song.steps;
         self.state.selected_song_step_index = snapshot.song.selected_step_index;
         self.state.selected_song_edit_field = snapshot.song.selected_field;
@@ -642,6 +675,10 @@ impl MpcCore {
             return self.adjust_disk_operation(delta);
         }
 
+        if self.state.mode == Mode::Setup {
+            return self.adjust_setup_preferences(delta);
+        }
+
         if self.state.mode == Mode::Song {
             return self.adjust_song_field(delta);
         }
@@ -699,6 +736,10 @@ impl MpcCore {
             return vec![MachineOutput::LcdChanged];
         }
 
+        if self.state.mode == Mode::Setup {
+            return self.select_setup_field(self.state.selected_setup_field.previous());
+        }
+
         if self.state.mode != Mode::Main {
             return Self::ignored(format!(
                 "{}.cursor_left_unmapped",
@@ -740,6 +781,10 @@ impl MpcCore {
             self.state.selected_song_edit_field = self.state.selected_song_edit_field.next();
             self.refresh_lcd();
             return vec![MachineOutput::LcdChanged];
+        }
+
+        if self.state.mode == Mode::Setup {
+            return self.select_setup_field(self.state.selected_setup_field.next());
         }
 
         if self.state.mode != Mode::Main {
@@ -915,6 +960,68 @@ impl MpcCore {
         self.refresh_lcd();
         vec![
             MachineOutput::DiskOperationSelected { operation },
+            MachineOutput::LcdChanged,
+        ]
+    }
+
+    fn select_setup_field(&mut self, field: SetupField) -> Vec<MachineOutput> {
+        self.state.selected_setup_field = field;
+        self.refresh_lcd();
+        self.setup_preferences_changed_outputs()
+    }
+
+    fn adjust_setup_preferences(&mut self, delta: i32) -> Vec<MachineOutput> {
+        if delta == 0 {
+            return Self::ignored(format!(
+                "setup.{}.zero_delta_ignored",
+                self.state.selected_setup_field.label()
+            ));
+        }
+
+        match self.state.selected_setup_field {
+            SetupField::Metronome => {
+                let next = delta.is_positive();
+                if self.state.setup_preferences.metronome_enabled == next {
+                    return Self::ignored("setup.metronome.boundary".to_string());
+                }
+                self.state.setup_preferences.metronome_enabled = next;
+            }
+            SetupField::CountInBars => {
+                let next = clamp_delta_u8(
+                    self.state.setup_preferences.count_in_bars,
+                    delta,
+                    MIN_SETUP_COUNT_IN_BARS,
+                    MAX_SETUP_COUNT_IN_BARS,
+                );
+                if self.state.setup_preferences.count_in_bars == next {
+                    return Self::ignored("setup.count_in_bars.boundary".to_string());
+                }
+                self.state.setup_preferences.count_in_bars = next;
+            }
+            SetupField::LcdContrast => {
+                let next = clamp_delta_u8(
+                    self.state.setup_preferences.lcd_contrast,
+                    delta,
+                    MIN_SETUP_LCD_CONTRAST,
+                    MAX_SETUP_LCD_CONTRAST,
+                );
+                if self.state.setup_preferences.lcd_contrast == next {
+                    return Self::ignored("setup.lcd_contrast.boundary".to_string());
+                }
+                self.state.setup_preferences.lcd_contrast = next;
+            }
+        }
+
+        self.refresh_lcd();
+        self.setup_preferences_changed_outputs()
+    }
+
+    fn setup_preferences_changed_outputs(&self) -> Vec<MachineOutput> {
+        vec![
+            MachineOutput::SetupPreferencesChanged {
+                preferences: self.state.setup_preferences,
+                selected_field: self.state.selected_setup_field,
+            },
             MachineOutput::LcdChanged,
         ]
     }
@@ -1166,7 +1273,10 @@ impl MpcCore {
                 self.state.selected_midi_settings_field,
             ),
             Mode::Disk => LcdFrame::disk_screen(self.state.selected_disk_operation),
-            Mode::Setup => LcdFrame::mode_screen("SETUP", "System settings"),
+            Mode::Setup => LcdFrame::setup_screen(
+                self.state.setup_preferences,
+                self.state.selected_setup_field,
+            ),
         };
     }
 
@@ -1621,6 +1731,7 @@ fn validate_project_snapshot_json_fields(value: &Value) -> Result<(), ProjectSna
             "sequence",
             "program",
             "song",
+            "setup",
         ],
     )?
     else {
@@ -1638,6 +1749,9 @@ fn validate_project_snapshot_json_fields(value: &Value) -> Result<(), ProjectSna
     }
     if let Some(song) = root.get("song") {
         validate_song_json_fields(song)?;
+    }
+    if let Some(setup) = root.get("setup") {
+        validate_setup_json_fields(setup)?;
     }
 
     Ok(())
@@ -1757,6 +1871,41 @@ fn validate_song_step_json_fields(field: &str, value: &Value) -> Result<(), Proj
         return Ok(());
     };
     require_json_fields(field, step, &["sequence_index", "repeats"])?;
+    Ok(())
+}
+
+fn validate_setup_json_fields(value: &Value) -> Result<(), ProjectSnapshotError> {
+    let Some(setup) =
+        reject_unknown_json_fields("setup", value, &["preferences", "selected_field"])?
+    else {
+        return Ok(());
+    };
+    require_json_fields("setup", setup, &["preferences", "selected_field"])?;
+
+    if let Some(preferences) = setup.get("preferences") {
+        validate_setup_preferences_json_fields("setup.preferences", preferences)?;
+    }
+
+    Ok(())
+}
+
+fn validate_setup_preferences_json_fields(
+    field: &str,
+    value: &Value,
+) -> Result<(), ProjectSnapshotError> {
+    let Some(preferences) = reject_unknown_json_fields(
+        field,
+        value,
+        &["metronome_enabled", "count_in_bars", "lcd_contrast"],
+    )?
+    else {
+        return Ok(());
+    };
+    require_json_fields(
+        field,
+        preferences,
+        &["metronome_enabled", "count_in_bars", "lcd_contrast"],
+    )?;
     Ok(())
 }
 
@@ -2059,6 +2208,7 @@ fn validate_project_snapshot(snapshot: &ProjectSnapshot) -> Result<(), ProjectSn
     }
 
     validate_song_snapshot(&snapshot.song)?;
+    validate_setup_snapshot(&snapshot.setup)?;
 
     Ok(())
 }
@@ -2097,6 +2247,21 @@ fn validate_song_step(field: &str, step: &SongStep) -> Result<(), ProjectSnapsho
         step.repeats,
         MIN_SONG_REPEATS,
         MAX_SONG_REPEATS,
+    )
+}
+
+fn validate_setup_snapshot(setup: &ProjectSetupSnapshot) -> Result<(), ProjectSnapshotError> {
+    validate_range_u8(
+        "setup.preferences.count_in_bars",
+        setup.preferences.count_in_bars,
+        MIN_SETUP_COUNT_IN_BARS,
+        MAX_SETUP_COUNT_IN_BARS,
+    )?;
+    validate_range_u8(
+        "setup.preferences.lcd_contrast",
+        setup.preferences.lcd_contrast,
+        MIN_SETUP_LCD_CONTRAST,
+        MAX_SETUP_LCD_CONTRAST,
     )
 }
 

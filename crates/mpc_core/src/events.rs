@@ -202,6 +202,63 @@ impl MidiSettingsField {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+pub enum SetupField {
+    Metronome,
+    CountInBars,
+    LcdContrast,
+}
+
+impl Default for SetupField {
+    fn default() -> Self {
+        Self::Metronome
+    }
+}
+
+impl SetupField {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Metronome => "metronome",
+            Self::CountInBars => "count_in_bars",
+            Self::LcdContrast => "lcd_contrast",
+        }
+    }
+
+    pub fn previous(self) -> Self {
+        match self {
+            Self::Metronome => Self::LcdContrast,
+            Self::CountInBars => Self::Metronome,
+            Self::LcdContrast => Self::CountInBars,
+        }
+    }
+
+    pub fn next(self) -> Self {
+        match self {
+            Self::Metronome => Self::CountInBars,
+            Self::CountInBars => Self::LcdContrast,
+            Self::LcdContrast => Self::Metronome,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SetupPreferences {
+    pub metronome_enabled: bool,
+    pub count_in_bars: u8,
+    pub lcd_contrast: u8,
+}
+
+impl Default for SetupPreferences {
+    fn default() -> Self {
+        Self {
+            metronome_enabled: true,
+            count_in_bars: 0,
+            lcd_contrast: 5,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum SongEditField {
     Step,
     Sequence,
@@ -415,6 +472,10 @@ pub enum MachineOutput {
     },
     DiskOperationRequested {
         operation: DiskOperation,
+    },
+    SetupPreferencesChanged {
+        preferences: SetupPreferences,
+        selected_field: SetupField,
     },
     SongStepSelected {
         index: usize,

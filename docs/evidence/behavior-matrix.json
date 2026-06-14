@@ -2245,6 +2245,115 @@
         "Song playback, conversion, native file formats, and manual parity are deferred.",
         "No proprietary manuals, service scans, firmware bytes, JJ-OS assets, samples, media, binary fixtures, or copied third-party code are stored in the repo."
       ]
+    },
+    {
+      "id": "core.setup.preferences-foundation",
+      "name": "SETUP mode edits deterministic project preferences",
+      "area": "setup",
+      "state": "fixture-backed-internal-spec",
+      "evidence": [
+        {
+          "source_id": "setup-preferences-slice-plan",
+          "source_category": "internal_spec",
+          "type": "plan",
+          "status": "mapped",
+          "ref": "docs/superpowers/plans/2026-06-13-mpc2000xl-setup-preferences.md#behavior-slice"
+        }
+      ],
+      "source_coverage": [
+        {
+          "source_category": "manual",
+          "source_id": "owner-manual",
+          "status": "investigation",
+          "ref": null,
+          "note": "Exact MPC2000XL SETUP pages, metronome setup, count-in behavior, and LCD contrast behavior are not mapped yet."
+        },
+        {
+          "source_category": "firmware",
+          "source_id": "mpc2000xl-os-local-reference",
+          "status": "investigation",
+          "ref": null,
+          "note": "No firmware trace has been captured for SETUP mode behavior."
+        },
+        {
+          "source_category": "jjos",
+          "source_id": "jjos-unverified-boundary",
+          "status": "conflict-note",
+          "ref": "docs/superpowers/specs/2026-06-13-mpc2000xl-full-app-product-design.md#jj-os-evidence-boundary",
+          "note": "JJ-OS SETUP behavior is not accepted as reference evidence for this internal foundation slice."
+        },
+        {
+          "source_category": "internal_spec",
+          "source_id": "setup-preferences-slice-plan",
+          "status": "mapped",
+          "ref": "docs/superpowers/plans/2026-06-13-mpc2000xl-setup-preferences.md#source-and-evidence-status",
+          "note": "The current contract is deterministic preference editing only."
+        }
+      ],
+      "inputs": [
+        {
+          "channel": "front_panel",
+          "event": "press",
+          "control": "setup"
+        },
+        {
+          "channel": "front_panel",
+          "event": "press",
+          "mode": "setup",
+          "control": "cursor_left|cursor_right",
+          "policy": "cycle selected setup field"
+        },
+        {
+          "channel": "front_panel",
+          "event": "turn_data_wheel",
+          "mode": "setup",
+          "policy": "edit selected field; metronome toggles by delta sign, count-in clamps to 0..=4, LCD contrast clamps to 0..=10"
+        },
+        {
+          "channel": "front_panel",
+          "event": "press",
+          "mode": "setup",
+          "control": "soft_key_1..soft_key_6",
+          "policy": "unmapped"
+        }
+      ],
+      "expected_outputs": {
+        "state": {
+          "defaults": "metronome enabled, count-in bars 0, LCD contrast 5, selected field metronome",
+          "selected_field": "metronome, count_in_bars, lcd_contrast cycle with cursor left/right",
+          "snapshot": "top-level setup object persists preferences and selected_field; missing top-level setup restores defaults; present incomplete setup objects are rejected"
+        },
+        "outputs": [
+          "SetupPreferencesChanged plus LcdChanged when selected field changes",
+          "SetupPreferencesChanged plus LcdChanged when a preference value changes",
+          "Ignored for zero-delta edits, preference boundaries, and SETUP soft keys"
+        ],
+        "lcd": {
+          "title": "SETUP",
+          "content": "selected-field marker and current metronome, count-in bars, and LCD contrast values"
+        },
+        "desktop": {
+          "status": "summarizes selected SETUP field and current preferences"
+        },
+        "deferred": [
+          "metronome audio scheduling",
+          "transport count-in behavior",
+          "hardware LCD calibration",
+          "native MPC setup files",
+          "JJ-OS behavior",
+          "manual parity claims"
+        ]
+      },
+      "tolerance": null,
+      "fixture_refs": [
+        "crates/mpc_core/tests/core_flow.rs",
+        "crates/mpc_conformance/tests/fixtures/setup_preferences_round_trip.json"
+      ],
+      "conflict_notes": [
+        "This is an internal-spec preferences editor, not full MPC2000XL or JJ-OS SETUP behavior.",
+        "Manual, firmware, native project, metronome audio, transport count-in, hardware LCD calibration, and JJ-OS parity are deferred.",
+        "No proprietary manuals, service scans, firmware bytes, JJ-OS assets, samples, media, binary fixtures, or copied third-party code are stored in the repo."
+      ]
     }
   ]
 }

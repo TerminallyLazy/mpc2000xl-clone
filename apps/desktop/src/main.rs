@@ -6,7 +6,7 @@ use mpc_audio::{
 use mpc_core::{
     DiskOperation, HardwareEvent, MachineOutput, MidiSettingsField, Mode, MpcCore, MpcState,
     PadAssignmentChange, PadBank, PanelControl, ProgramPad, SampleCatalogEntry,
-    SamplePlaybackResolution,
+    SamplePlaybackResolution, SetupPreferences,
 };
 use mpc_storage::{
     DEFAULT_PROJECT_FILE_PATH, load_project_file_with_report,
@@ -92,6 +92,7 @@ impl eframe::App for MpcDesktopApp {
             ui.add_space(16.0);
             self.draw_transport(ui);
             self.draw_midi_controls(ui);
+            self.draw_setup_status(ui);
             self.draw_sequence_status(ui);
             self.draw_program_status(ui);
             self.draw_sample_status(ui);
@@ -427,6 +428,20 @@ impl MpcDesktopApp {
             .find(|output| matches!(output, MachineOutput::MidiInputIgnored { .. }))
         {
             return format!("MIDI ignored: {reason}");
+        }
+
+        if let Some(MachineOutput::SetupPreferencesChanged {
+            preferences,
+            selected_field,
+        }) = outputs
+            .iter()
+            .find(|output| matches!(output, MachineOutput::SetupPreferencesChanged { .. }))
+        {
+            return format!(
+                "SETUP {} selected: {}",
+                selected_field.label(),
+                setup_preferences_text(*preferences)
+            );
         }
 
         if let Some(MachineOutput::DiskOperationSelected { operation }) = outputs
@@ -851,6 +866,50 @@ impl MpcDesktopApp {
         });
     }
 
+    fn draw_setup_status(&mut self, ui: &mut egui::Ui) {
+        let state = self.core.state();
+        let setup_mode = state.mode == Mode::Setup;
+        let preferences = state.setup_preferences;
+        let selected_field = state.selected_setup_field;
+
+        ui.horizontal_wrapped(|ui| {
+            ui.label(format!(
+                "SETUP: {} field {}",
+                setup_preferences_text(preferences),
+                selected_field.label()
+            ));
+            ui.separator();
+            if ui
+                .add_enabled(setup_mode, egui::Button::new("Setup <"))
+                .clicked()
+            {
+                self.dispatch_event(HardwareEvent::Press {
+                    control: PanelControl::CursorLeft,
+                });
+            }
+            if ui
+                .add_enabled(setup_mode, egui::Button::new("Setup >"))
+                .clicked()
+            {
+                self.dispatch_event(HardwareEvent::Press {
+                    control: PanelControl::CursorRight,
+                });
+            }
+            if ui
+                .add_enabled(setup_mode, egui::Button::new("Setup -"))
+                .clicked()
+            {
+                self.dispatch_event(HardwareEvent::TurnDataWheel { delta: -1 });
+            }
+            if ui
+                .add_enabled(setup_mode, egui::Button::new("Setup +"))
+                .clicked()
+            {
+                self.dispatch_event(HardwareEvent::TurnDataWheel { delta: 1 });
+            }
+        });
+    }
+
     fn draw_sequence_status(&mut self, ui: &mut egui::Ui) {
         let state = self.core.state();
         let playing = state.playing;
@@ -1077,6 +1136,11 @@ fn main_screen_status(state: &MpcState) -> String {
             state.midi_base_note,
             midi_note_range_text(state.midi_base_note)
         ),
+        Mode::Setup => format!(
+            "LCD updated: SETUP field {}, {}",
+            state.selected_setup_field.label(),
+            setup_preferences_text(state.setup_preferences)
+        ),
         mode => format!("LCD updated: {mode:?}"),
     }
 }
@@ -1142,6 +1206,19 @@ fn midi_input_channel_text(input_channel: Option<u8>) -> String {
 
 fn midi_note_range_text(base_note: u8) -> String {
     format!("{}..={}", base_note, base_note.saturating_add(15))
+}
+
+fn setup_preferences_text(preferences: SetupPreferences) -> String {
+    format!(
+        "metronome {} count-in {} bars contrast {}",
+        if preferences.metronome_enabled {
+            "on"
+        } else {
+            "off"
+        },
+        preferences.count_in_bars,
+        preferences.lcd_contrast
+    )
 }
 
 fn last_playback_text(state: &MpcState) -> String {

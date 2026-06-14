@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::events::{
     DiskOperation, MidiSettingsField, PadAssignment, Program, ProgramEditField, ProgramPad,
-    SampleCatalogEntry, SongEditField, SongStep,
+    SampleCatalogEntry, SetupField, SetupPreferences, SongEditField, SongStep,
 };
 use crate::state::MainScreenField;
 
@@ -362,6 +362,42 @@ impl LcdFrame {
             ],
         }
     }
+
+    pub fn setup_screen(preferences: SetupPreferences, selected_field: SetupField) -> Self {
+        let marker = |field| {
+            if selected_field == field { ">" } else { " " }
+        };
+
+        Self {
+            title: "SETUP".to_string(),
+            lines: [
+                format!(
+                    "{}Metronome {}",
+                    marker(SetupField::Metronome),
+                    on_off_text(preferences.metronome_enabled)
+                ),
+                format!(
+                    "{}Count-in bars {}",
+                    marker(SetupField::CountInBars),
+                    preferences.count_in_bars
+                ),
+                format!(
+                    "{}LCD contrast {:02}",
+                    marker(SetupField::LcdContrast),
+                    preferences.lcd_contrast
+                ),
+                format!("Edit {}", selected_field.label()),
+            ],
+            soft_keys: [
+                "F1".to_string(),
+                "F2".to_string(),
+                "F3".to_string(),
+                "F4".to_string(),
+                "F5".to_string(),
+                "F6".to_string(),
+            ],
+        }
+    }
 }
 
 fn sample_soft_keys() -> [String; 6] {
@@ -391,6 +427,10 @@ fn midi_input_channel_text(input_channel: Option<u8>) -> String {
         Some(channel) => format!("Ch {channel:02}"),
         None => "Omni".to_string(),
     }
+}
+
+fn on_off_text(enabled: bool) -> &'static str {
+    if enabled { "On" } else { "Off" }
 }
 
 fn pad_label(pad: ProgramPad) -> String {
