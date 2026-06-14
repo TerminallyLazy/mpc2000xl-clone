@@ -25,7 +25,7 @@ Implemented behavior:
 
 ## Source And Evidence Status
 
-This behavior is internal-spec/manual-investigation foundation. The 32-voice default and stealing policy are repo-owned scaffolding only. Exact MPC2000XL polyphony, note-off behavior, envelopes, mute groups, output routing, DAC behavior, scheduler latency, and hardware timing tolerance remain pending accepted manual, firmware, service, or hardware evidence.
+This behavior is internal-spec/manual-investigation foundation. The 32-voice default and stealing policy are repo-owned scaffolding only. Exact MPC2000XL polyphony, release envelopes, mute/choke groups, output routing, DAC behavior, scheduler latency, and hardware timing tolerance remain pending accepted manual, firmware, service, or hardware evidence.
 
 No proprietary manuals, service scans, firmware bytes, recordings, factory samples, binary audio fixtures, copied media, or external sample files are added.
 
@@ -53,4 +53,4 @@ Focused tests added:
 
 ## Next Boundaries
 
-Future slices can map evidence-backed polyphony, sample envelopes, note-off release behavior, mute groups, mixer routing, metering, and optional real device output behind `HostAudioBackend`. Those slices should preserve deterministic tests and rights-safe fixtures until accepted reference evidence is available.
+Future slices can map evidence-backed polyphony, exact sample envelopes, mute/choke groups, mixer routing, metering, and optional real device output behind `HostAudioBackend`. Those slices should preserve deterministic tests and rights-safe fixtures until accepted reference evidence is available.

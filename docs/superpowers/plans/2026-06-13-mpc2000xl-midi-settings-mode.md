@@ -18,7 +18,7 @@ Implemented behavior:
 - Settings edits emit `MidiSettingsChanged { input_channel, base_note, selected_field }` plus `LcdChanged`.
 - `MidiNoteOn` validates channel/note/velocity, then applies the optional input-channel filter, then maps notes in `midi_base_note..=midi_base_note+15` to bank A pads `1..=16`.
 - If an input channel is selected, valid note-on events on other channels emit `MidiInputIgnored` and do not trigger playback, recording, last-playback mutation, or host-audio routing.
-- `MidiNoteOff` remains a validated no-op for playback and recording. The input-channel filter does not change note-off behavior in this foundation slice.
+- `MidiNoteOff` now uses the configured input channel and base-note window through the later release foundation. It still does not trigger playback or sequence recording.
 - Project snapshots persist MIDI settings with serde defaults so older snapshots restore to Omni, base note `36`, and `input_channel` selection.
 - Snapshot compatibility policy for this slice is current-reader backward compatibility: missing MIDI settings fields restore to documented defaults. Older-binary forward compatibility for new v1 fields is deferred to the formal snapshot migration/versioning slice.
 - The desktop shell shows MIDI settings next to MIDI simulation and provides MIDI-mode setting/value buttons that route through cursor/data-wheel events.

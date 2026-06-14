@@ -1246,13 +1246,14 @@
           "notes_36_to_51": "default bank A pads 1..=16 using pad = note - 35; MIDI settings can move this 16-note window",
           "outside_range": "MidiInputIgnored with deterministic reason",
           "invalid_fields": "MidiInputIgnored with deterministic reason",
-          "note_off": "no playback and no sequence recording"
+          "note_off": "mapped assigned note-offs emit release metadata with no playback and no sequence recording"
         },
         "outputs": [
           "MidiNoteMapped for mapped note-on",
           "PadTriggered through the existing pad path",
           "SamplePlaybackIntent or SamplePlaybackMiss through the existing pad path",
-          "SequenceEventRecorded when playing and recording"
+          "SequenceEventRecorded when playing and recording",
+          "MidiNoteReleased and SampleReleaseIntent for mapped assigned note-off"
         ],
         "desktop": {
           "simulation_controls": "channel, note, velocity, note-on, note-off, and quick note buttons",
@@ -1480,6 +1481,110 @@
       "conflict_notes": [
         "This is a deterministic internal output/capture contract, not native host MIDI device I/O.",
         "MIDI clock, MIDI sync, MIDI thru, note-off output, raw MIDI event persistence, device discovery, exact MPC2000XL screen parity, and JJ-OS parity remain unmapped."
+      ]
+    },
+    {
+      "id": "core.midi.note-off-release-foundation",
+      "name": "Mapped MIDI note-off emits sample release and host audio removes matching voices",
+      "area": "midi_input_audio_host",
+      "state": "fixture-backed-internal-spec",
+      "evidence": [
+        {
+          "source_id": "midi-note-off-release-foundation-slice-plan",
+          "source_category": "internal_spec",
+          "type": "plan",
+          "status": "mapped",
+          "ref": "docs/superpowers/plans/2026-06-14-mpc2000xl-midi-note-off-release-foundation.md#behavior-slice"
+        },
+        {
+          "source_id": "midi-note-input-slice-plan",
+          "source_category": "internal_spec",
+          "type": "plan",
+          "status": "mapped",
+          "ref": "docs/superpowers/plans/2026-06-13-mpc2000xl-midi-note-input.md#behavior-slice"
+        },
+        {
+          "source_id": "host-audio-voice-lifecycle-foundation-slice-plan",
+          "source_category": "internal_spec",
+          "type": "plan",
+          "status": "mapped",
+          "ref": "docs/superpowers/plans/2026-06-14-mpc2000xl-host-audio-voice-lifecycle-foundation.md#behavior-slice"
+        }
+      ],
+      "source_coverage": [
+        {
+          "source_category": "manual",
+          "source_id": "owner-manual",
+          "status": "investigation",
+          "ref": null,
+          "note": "Exact MPC2000XL note-off, release envelope, all-notes-off, and mute/choke group behavior is pending."
+        },
+        {
+          "source_category": "firmware",
+          "source_id": "mpc2000xl-os-local-reference",
+          "status": "investigation",
+          "ref": null,
+          "note": "No user-supplied firmware or hardware MIDI/audio trace has validated release timing, voice matching, or envelope behavior."
+        },
+        {
+          "source_category": "schematic",
+          "source_id": "operation-schematic",
+          "status": "investigation",
+          "ref": null,
+          "note": "No MIDI input/output electrical or DAC path evidence is mapped to this deterministic release model."
+        },
+        {
+          "source_category": "jjos",
+          "source_id": "jjos-unverified-boundary",
+          "status": "conflict-note",
+          "ref": "docs/superpowers/specs/2026-06-13-mpc2000xl-full-app-product-design.md#jj-os-evidence-boundary",
+          "note": "JJ-OS note-off/release behavior is not accepted as MPC2000XL evidence for this foundation slice."
+        },
+        {
+          "source_category": "internal_spec",
+          "source_id": "midi-note-off-release-foundation-slice-plan",
+          "status": "mapped",
+          "ref": "docs/superpowers/plans/2026-06-14-mpc2000xl-midi-note-off-release-foundation.md#deterministic-contract",
+          "note": "Current release behavior is metadata-only and removes matching active host sample voices immediately."
+        }
+      ],
+      "inputs": [
+        {
+          "channel": "midi_simulation",
+          "event": "midi_note_off",
+          "policy": "validate channel/note/velocity, apply input channel filter, then map base-note window to bank A pads"
+        },
+        {
+          "channel": "host_audio",
+          "event": "sample_release_intent",
+          "policy": "remove active sample-playback voices matching source sample id, bank, and pad number"
+        }
+      ],
+      "expected_outputs": {
+        "core": {
+          "mapped_release": "MidiNoteReleased followed by SampleReleaseIntent",
+          "ignored_release": "MidiInputIgnored for invalid, filtered, outside-range, or unassigned note-off",
+          "no_playback_side_effect": "no PadTriggered, SamplePlaybackIntent, MidiOutputIntent, SequenceEventRecorded, or last_playback mutation"
+        },
+        "host_audio": {
+          "matching_sample_voices": "removed immediately and counted in released_voice_count",
+          "non_matching_voices": "count-in clicks, other samples, and other pads remain active",
+          "disabled": "records ignored release without voice mutation"
+        },
+        "desktop": {
+          "routing": "MachineOutput::SampleReleaseIntent routes to HostAudioEngine::release_intent",
+          "status": "release intent and released voice count are visible in compact host-audio text"
+        }
+      },
+      "tolerance": null,
+      "fixture_refs": [
+        "crates/mpc_core/tests/core_flow.rs",
+        "crates/mpc_audio/src/lib.rs",
+        "crates/mpc_conformance/tests/fixtures/midi_note_off_release_foundation.json"
+      ],
+      "conflict_notes": [
+        "This is a deterministic internal release contract, not accepted evidence of exact MPC2000XL or JJ-OS note-off behavior.",
+        "Exact release envelopes, mute/choke groups, all-notes-off, outbound MIDI note-off, firmware timing, hardware traces, and native MIDI/audio device I/O remain unmapped."
       ]
     },
     {

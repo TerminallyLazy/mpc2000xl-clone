@@ -8,8 +8,8 @@ use crate::events::{
     MidiOutputIntent, MidiSettingsField, Mode, PadAssignment, PadAssignmentChange, PadBank,
     PanelControl, PlaybackMissReason, Program, ProgramEditField, ProgramPad,
     RECORDED_SAMPLE_LENGTH_FRAMES, SampleCatalogEntry, SamplePlaybackIntent, SamplePlaybackMiss,
-    SamplePlaybackResolution, SampleSourceKind, SampleTrim, SequenceEvent, SetupField,
-    SetupPreferences, SongEditField, SongStep, SyntheticSample, TimingCorrectField,
+    SamplePlaybackResolution, SampleReleaseIntent, SampleSourceKind, SampleTrim, SequenceEvent,
+    SetupField, SetupPreferences, SongEditField, SongStep, SyntheticSample, TimingCorrectField,
     TimingCorrectSettings, TrimEditField, generated_sample_length_frames,
     sample_window_length_frames,
 };
@@ -1805,7 +1805,40 @@ impl MpcCore {
             return Self::midi_ignored(reason);
         }
 
-        Self::midi_ignored("midi note-off is a no-op in this slice")
+        if let Some(input_channel) = self.state.midi_input_channel {
+            if channel != input_channel {
+                return Self::midi_ignored(format!(
+                    "midi channel {channel} ignored; input channel is {input_channel}"
+                ));
+            }
+        }
+
+        let Some(pad) = midi_note_to_bank_a_pad(note, self.state.midi_base_note) else {
+            let range_end = midi_mapped_range_end(self.state.midi_base_note);
+            return Self::midi_ignored(format!(
+                "midi note-off {note} is not mapped in this slice; mapped range is {}..={range_end}",
+                self.state.midi_base_note
+            ));
+        };
+
+        let bank = PadBank::A;
+        let Some(intent) = self.resolve_release(bank, pad, velocity) else {
+            return Self::midi_ignored(format!(
+                "midi note-off {}{pad:02} has no assigned sample",
+                bank.label()
+            ));
+        };
+
+        vec![
+            MachineOutput::MidiNoteReleased {
+                channel,
+                note,
+                bank,
+                pad,
+                velocity,
+            },
+            MachineOutput::SampleReleaseIntent { intent },
+        ]
     }
 
     fn midi_ignored(reason: impl Into<String>) -> Vec<MachineOutput> {
@@ -2192,6 +2225,31 @@ impl MpcCore {
                 reason: PlaybackMissReason::PadUnassigned,
             },
         }
+    }
+
+    fn resolve_release(
+        &self,
+        bank: PadBank,
+        pad: u8,
+        release_velocity: u8,
+    ) -> Option<SampleReleaseIntent> {
+        let program = &self.state.current_program;
+        let program_pad = ProgramPad {
+            bank,
+            pad_number: pad,
+        };
+        let assignment = self.assignment_for(program_pad)?;
+
+        Some(SampleReleaseIntent {
+            selected_track: self.state.selected_track,
+            program_index: program.index,
+            program_name: program.name.clone(),
+            bank,
+            pad_number: pad,
+            sample_id: assignment.sample.id.clone(),
+            sample_name: assignment.sample.name.clone(),
+            release_velocity,
+        })
     }
 
     fn sample_window_for_assignment(&self, assignment: &PadAssignment) -> (u32, u32, u32) {

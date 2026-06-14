@@ -11,10 +11,10 @@ Implemented behavior:
 - MIDI channels are valid only in `1..=16`.
 - MIDI note numbers are valid only in `0..=127`.
 - MIDI note-on velocity is valid only in `1..=127`; velocity `0` is ignored deterministically in this slice instead of being treated as note-off.
-- MIDI note-off velocity is valid in `0..=127`, but note-off is a no-op for playback and recording in this slice.
+- MIDI note-off velocity is valid in `0..=127`. This original slice treated note-off as a playback and recording no-op; the later 2026-06-14 release foundation supersedes that with a typed `SampleReleaseIntent` path.
 - Note-on events for notes `36..=51` map to bank A pads `1..=16` with `pad = note - 35`.
 - Mapped note-on events emit `MidiNoteMapped` and then reuse the existing pad strike path, including `PadTriggered`, playback intent or miss, optional sequence recording, LCD refresh, last playback, and desktop host-audio routing.
-- Notes outside `36..=51`, invalid fields, and note-off no-ops emit `MidiInputIgnored` with a deterministic reason.
+- Notes outside `36..=51`, invalid fields, and unmapped note-offs emit `MidiInputIgnored` with a deterministic reason.
 - Recorded `SequenceEvent` remains pad-based for this slice; raw MIDI channel and note metadata are not persisted yet.
 - The desktop shell includes modest MIDI simulation controls for channel, note, velocity, note-on, note-off, and quick note buttons.
 
@@ -67,11 +67,11 @@ Focused checks added:
 - MIDI note 36 maps to bank A pad 1 and emits the same playback intent as physical pad A01.
 - MIDI note 51 maps to bank A pad 16.
 - Out-of-range mapped notes are ignored without changing last playback or recorded events.
-- MIDI note-off is a no-op for playback and recording.
+- MIDI note-off has no playback or sequence recording side effect; the later release foundation emits `MidiNoteReleased` and `SampleReleaseIntent` for mapped assigned pads.
 - MIDI note-on while overdubbing records a pad-based sequence event with mapped sample metadata.
 - Invalid MIDI channel, note, and velocity inputs emit deterministic ignored outputs.
 - A conformance fixture verifies MIDI note-on 36 produces A01 synthetic playback metadata and render summary.
 
 ## Next Boundaries
 
-Next MIDI slices should map source evidence before claiming MPC2000XL-accurate MIDI behavior. Likely next boundaries are channel/mode settings, host MIDI I/O abstraction, note-off voice semantics, MIDI clock transport, input quantization, raw MIDI event persistence, and evidence-backed screen behavior.
+Next MIDI slices should map source evidence before claiming MPC2000XL-accurate MIDI behavior. Likely next boundaries are channel/mode settings, host MIDI I/O abstraction, note-off envelope/choke semantics, MIDI clock transport, input quantization, raw MIDI event persistence, and evidence-backed screen behavior.

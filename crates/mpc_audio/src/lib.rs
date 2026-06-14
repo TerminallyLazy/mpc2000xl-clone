@@ -1,4 +1,4 @@
-use mpc_core::{CountInClickIntent, PadBank, SamplePlaybackIntent};
+use mpc_core::{CountInClickIntent, PadBank, SamplePlaybackIntent, SampleReleaseIntent};
 use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::VecDeque;
 
@@ -333,8 +333,26 @@ pub struct HostAudioVoiceSummary {
     pub voice_id: u64,
     pub render_kind: AudioRenderKind,
     pub source_label: String,
+    #[serde(default)]
+    pub source_sample_id: String,
+    #[serde(default = "default_voice_bank")]
+    pub bank: PadBank,
+    #[serde(default)]
+    pub pad_number: u8,
     pub total_frame_count: usize,
     pub remaining_frame_count: usize,
+}
+
+fn default_voice_bank() -> PadBank {
+    PadBank::A
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HostAudioReleaseReceipt {
+    pub intent: SampleReleaseIntent,
+    pub released_voice_ids: Vec<u64>,
+    pub released_voice_count: usize,
+    pub active_voice_count: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -353,6 +371,10 @@ pub enum HostAudioEvent {
     Enqueued {
         backend_name: String,
         receipt: HostAudioRenderReceipt,
+    },
+    Released {
+        backend_name: String,
+        receipt: HostAudioReleaseReceipt,
     },
     Failed {
         backend_name: String,
@@ -376,6 +398,8 @@ pub struct HostAudioState {
     pub completed_voice_count: u64,
     #[serde(default)]
     pub stolen_voice_count: u64,
+    #[serde(default)]
+    pub released_voice_count: u64,
     #[serde(default)]
     pub active_voices: Vec<HostAudioVoiceSummary>,
     pub last_event: Option<HostAudioEvent>,
@@ -683,6 +707,7 @@ where
     active_voices: VecDeque<HostAudioVoiceSummary>,
     completed_voice_count: u64,
     stolen_voice_count: u64,
+    released_voice_count: u64,
     last_event: Option<HostAudioEvent>,
 }
 
@@ -715,6 +740,7 @@ where
             active_voices: VecDeque::new(),
             completed_voice_count: 0,
             stolen_voice_count: 0,
+            released_voice_count: 0,
             last_event: None,
         })
     }
@@ -792,6 +818,7 @@ where
             active_voice_count: self.active_voices.len(),
             completed_voice_count: self.completed_voice_count,
             stolen_voice_count: self.stolen_voice_count,
+            released_voice_count: self.released_voice_count,
             active_voices: self.active_voices.iter().cloned().collect(),
             last_event: self.last_event.clone(),
         }
@@ -914,6 +941,50 @@ where
         self.completed_voice_count = self.completed_voice_count.saturating_add(completed);
     }
 
+    pub fn release_intent(&mut self, intent: &SampleReleaseIntent) -> HostAudioEvent {
+        if self.mode == HostAudioMode::Disabled {
+            return self.record_ignored();
+        }
+
+        let released_voice_ids = self.release_matching_voices(intent);
+        let released_voice_count = released_voice_ids.len();
+        self.released_voice_count = self
+            .released_voice_count
+            .saturating_add(u64::try_from(released_voice_count).unwrap_or(u64::MAX));
+
+        let event = HostAudioEvent::Released {
+            backend_name: self.backend.backend_name().to_string(),
+            receipt: HostAudioReleaseReceipt {
+                intent: intent.clone(),
+                released_voice_ids,
+                released_voice_count,
+                active_voice_count: self.active_voices.len(),
+            },
+        };
+        self.last_event = Some(event.clone());
+        event
+    }
+
+    fn release_matching_voices(&mut self, intent: &SampleReleaseIntent) -> Vec<u64> {
+        let mut released_voice_ids = Vec::new();
+        let mut active_voices = VecDeque::with_capacity(self.active_voices.len());
+
+        while let Some(voice) = self.active_voices.pop_front() {
+            if voice.render_kind == AudioRenderKind::SamplePlayback
+                && voice.source_sample_id == intent.sample_id
+                && voice.bank == intent.bank
+                && voice.pad_number == intent.pad_number
+            {
+                released_voice_ids.push(voice.voice_id);
+            } else {
+                active_voices.push_back(voice);
+            }
+        }
+
+        self.active_voices = active_voices;
+        released_voice_ids
+    }
+
     fn allocate_voice(
         &mut self,
         summary: &AudioRenderSummary,
@@ -935,6 +1006,9 @@ where
             voice_id,
             render_kind: summary.render_kind,
             source_label: voice_source_label(summary),
+            source_sample_id: summary.source_sample_id.clone(),
+            bank: summary.bank,
+            pad_number: summary.pad_number,
             total_frame_count: frame_count,
             remaining_frame_count: frame_count,
         });
@@ -1851,6 +1925,9 @@ mod tests {
                 voice_id: 1,
                 render_kind: AudioRenderKind::SamplePlayback,
                 source_label: "SYN-A04".to_string(),
+                source_sample_id: "synthetic_a_04".to_string(),
+                bank: PadBank::A,
+                pad_number: 4,
                 total_frame_count: 64,
                 remaining_frame_count: 64,
             }]
@@ -2005,9 +2082,112 @@ mod tests {
                 voice_id: 1,
                 render_kind: AudioRenderKind::CountInClick,
                 source_label: "COUNT-IN CLICK".to_string(),
+                source_sample_id: "count_in_click".to_string(),
+                bank: PadBank::A,
+                pad_number: 0,
                 total_frame_count: 64,
                 remaining_frame_count: 64,
             }]
+        );
+    }
+
+    #[test]
+    fn release_intent_removes_matching_active_sample_voices() {
+        let mut engine =
+            HostAudioEngine::enabled(CaptureAudioBackend::new(4), settings(44_100, 64))
+                .expect("host audio settings should be valid");
+        engine.play_intent(&test_intent_with_sample("sample-1", "SYN-01"));
+        engine.play_intent(&test_intent_with_sample("sample-2", "SYN-02"));
+        engine.play_intent(&test_intent_with_sample("sample-1", "SYN-01"));
+
+        let event = engine.release_intent(&test_release_intent("sample-1", "SYN-01"));
+
+        let HostAudioEvent::Released { receipt, .. } = &event else {
+            panic!("expected released event, got {event:?}");
+        };
+        assert_eq!(receipt.released_voice_ids, vec![1, 3]);
+        assert_eq!(receipt.released_voice_count, 2);
+        assert_eq!(receipt.active_voice_count, 1);
+
+        let state = engine.state();
+        assert_eq!(state.active_voice_count, 1);
+        assert_eq!(state.released_voice_count, 2);
+        assert_eq!(state.completed_voice_count, 0);
+        assert_eq!(
+            state
+                .active_voices
+                .iter()
+                .map(|voice| (voice.voice_id, voice.source_sample_id.as_str()))
+                .collect::<Vec<_>>(),
+            vec![(2, "sample-2")]
+        );
+    }
+
+    #[test]
+    fn release_intent_does_not_remove_count_in_or_other_pads() {
+        let mut engine =
+            HostAudioEngine::enabled(CaptureAudioBackend::new(4), settings(44_100, 64))
+                .expect("host audio settings should be valid");
+        engine.play_intent(&test_intent_with_sample("sample-1", "SYN-01"));
+        engine.play_count_in_click(&test_count_in_click_intent(96, 1, 2, false));
+        let mut release = test_release_intent("sample-1", "SYN-01");
+        release.pad_number = 5;
+
+        let event = engine.release_intent(&release);
+
+        let HostAudioEvent::Released { receipt, .. } = &event else {
+            panic!("expected released event, got {event:?}");
+        };
+        assert!(receipt.released_voice_ids.is_empty());
+        assert_eq!(receipt.active_voice_count, 2);
+        let state = engine.state();
+        assert_eq!(state.released_voice_count, 0);
+        assert_eq!(state.active_voice_count, 2);
+    }
+
+    #[test]
+    fn disabled_release_intent_is_ignored_without_voice_mutation() {
+        let mut engine =
+            HostAudioEngine::enabled(CaptureAudioBackend::new(4), settings(44_100, 64))
+                .expect("host audio settings should be valid");
+        engine.play_intent(&test_intent_with_sample("sample-1", "SYN-01"));
+        let before_release = engine.state();
+        assert_eq!(before_release.active_voice_count, 1);
+
+        engine.set_mode(HostAudioMode::Disabled);
+
+        let event = engine.release_intent(&test_release_intent("sample-1", "SYN-01"));
+
+        assert!(matches!(event, HostAudioEvent::Ignored { .. }));
+        let state = engine.state();
+        assert_eq!(state.released_voice_count, 0);
+        assert_eq!(state.active_voices, before_release.active_voices);
+        assert_eq!(state.active_voice_count, before_release.active_voice_count);
+    }
+
+    #[test]
+    fn host_audio_voice_summary_deserializes_legacy_json_without_release_metadata() {
+        let summary: HostAudioVoiceSummary = serde_json::from_value(serde_json::json!({
+            "voice_id": 7,
+            "render_kind": "sample_playback",
+            "source_label": "SYN-A01",
+            "total_frame_count": 64,
+            "remaining_frame_count": 32
+        }))
+        .expect("legacy voice summary should deserialize with metadata defaults");
+
+        assert_eq!(
+            summary,
+            HostAudioVoiceSummary {
+                voice_id: 7,
+                render_kind: AudioRenderKind::SamplePlayback,
+                source_label: "SYN-A01".to_string(),
+                source_sample_id: String::new(),
+                bank: PadBank::A,
+                pad_number: 0,
+                total_frame_count: 64,
+                remaining_frame_count: 32,
+            }
         );
     }
 
@@ -2101,6 +2281,19 @@ mod tests {
             sample_id: sample_id.to_string(),
             sample_name: sample_name.to_string(),
             ..test_intent(100, 100, 0)
+        }
+    }
+
+    fn test_release_intent(sample_id: &str, sample_name: &str) -> SampleReleaseIntent {
+        SampleReleaseIntent {
+            selected_track: 1,
+            program_index: 1,
+            program_name: "Program01".to_string(),
+            bank: PadBank::A,
+            pad_number: 4,
+            sample_id: sample_id.to_string(),
+            sample_name: sample_name.to_string(),
+            release_velocity: 64,
         }
     }
 

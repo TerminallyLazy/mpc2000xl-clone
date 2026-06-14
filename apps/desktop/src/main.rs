@@ -399,6 +399,12 @@ impl MpcDesktopApp {
                         playback_error = Some(message);
                     }
                 }
+                MachineOutput::SampleReleaseIntent { intent } => {
+                    let event = self.host_audio.release_intent(intent);
+                    if let Some(message) = host_audio_error_message(&event) {
+                        playback_error = Some(message);
+                    }
+                }
                 MachineOutput::MetronomeClick { intent } => {
                     let report = self
                         .host_audio
@@ -508,6 +514,20 @@ impl MpcDesktopApp {
             .find(|output| matches!(output, MachineOutput::MidiInputIgnored { .. }))
         {
             return format!("MIDI ignored: {reason}");
+        }
+
+        if let Some(MachineOutput::SampleReleaseIntent { intent }) = outputs
+            .iter()
+            .find(|output| matches!(output, MachineOutput::SampleReleaseIntent { .. }))
+        {
+            return format!(
+                "Release intent Trk {:02} {:?}{:02} {} vel {}",
+                intent.selected_track,
+                intent.bank,
+                intent.pad_number,
+                intent.sample_name,
+                intent.release_velocity
+            );
         }
 
         if let Some(MachineOutput::MidiOutputIntent { intent }) = outputs
@@ -1672,7 +1692,9 @@ fn project_file_status_text(
 fn host_audio_error_message(event: &HostAudioEvent) -> Option<String> {
     match event {
         HostAudioEvent::Failed { error, .. } => Some(format!("Host audio failed: {error}")),
-        HostAudioEvent::Ignored { .. } | HostAudioEvent::Enqueued { .. } => None,
+        HostAudioEvent::Ignored { .. }
+        | HostAudioEvent::Enqueued { .. }
+        | HostAudioEvent::Released { .. } => None,
     }
 }
 
@@ -1685,7 +1707,7 @@ fn host_midi_error_message(event: &HostMidiEvent) -> Option<String> {
 
 fn host_audio_state_text(state: &HostAudioState) -> String {
     format!(
-        "Host audio: {:?} backend {} queued {} played {} voices {}/{} done {} stolen {}",
+        "Host audio: {:?} backend {} queued {} played {} voices {}/{} done {} released {} stolen {}",
         state.mode,
         state.backend_name,
         state.queued_render_count,
@@ -1693,6 +1715,7 @@ fn host_audio_state_text(state: &HostAudioState) -> String {
         state.active_voice_count,
         state.voice_limit,
         state.completed_voice_count,
+        state.released_voice_count,
         state.stolen_voice_count
     )
 }
@@ -1730,6 +1753,14 @@ fn last_host_audio_event_text(event: Option<&HostAudioEvent>) -> String {
                 receipt.played
             ),
         },
+        Some(HostAudioEvent::Released { receipt, .. }) => format!(
+            "Host audio event: released {} voice(s) for {:?}{:02} {} active={}",
+            receipt.released_voice_count,
+            receipt.intent.bank,
+            receipt.intent.pad_number,
+            receipt.intent.sample_name,
+            receipt.active_voice_count
+        ),
         Some(HostAudioEvent::Failed { error, summary, .. }) => match summary {
             Some(summary) => match summary.render_kind {
                 AudioRenderKind::SamplePlayback => {

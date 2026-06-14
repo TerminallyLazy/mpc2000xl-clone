@@ -153,6 +153,18 @@ pub struct SamplePlaybackIntent {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SampleReleaseIntent {
+    pub selected_track: u8,
+    pub program_index: u8,
+    pub program_name: String,
+    pub bank: PadBank,
+    pub pad_number: u8,
+    pub sample_id: String,
+    pub sample_name: String,
+    pub release_velocity: u8,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MidiOutputIntent {
     pub selected_track: u8,
     pub program_index: u8,
@@ -811,6 +823,16 @@ pub enum MachineOutput {
         bank: PadBank,
         pad: u8,
         velocity: u8,
+    },
+    MidiNoteReleased {
+        channel: u8,
+        note: u8,
+        bank: PadBank,
+        pad: u8,
+        velocity: u8,
+    },
+    SampleReleaseIntent {
+        intent: SampleReleaseIntent,
     },
     MidiInputIgnored {
         reason: String,

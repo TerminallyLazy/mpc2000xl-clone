@@ -4,8 +4,8 @@ use mpc_core::{
     PadAssignment, PadAssignmentChange, PadBank, PanelControl, PlaybackMissReason,
     ProgramEditField, ProgramPad, ProjectSetupSnapshot, ProjectSnapshot, ProjectSnapshotError,
     ProjectSongSnapshot, RECORDED_SAMPLE_LENGTH_FRAMES, SamplePlaybackIntent,
-    SamplePlaybackResolution, SampleSourceKind, SampleTrim, SequenceEvent, SetupField,
-    SetupPreferences, SongEditField, SongStep, SyntheticSample, TimingCorrectDivision,
+    SamplePlaybackResolution, SampleReleaseIntent, SampleSourceKind, SampleTrim, SequenceEvent,
+    SetupField, SetupPreferences, SongEditField, SongStep, SyntheticSample, TimingCorrectDivision,
     TimingCorrectField, TimingCorrectSettings, TrimEditField, sequence_length_ticks_for_bars,
 };
 
@@ -5298,7 +5298,7 @@ fn midi_out_of_range_note_is_ignored_without_playback_or_recording_change() {
 }
 
 #[test]
-fn midi_note_off_is_noop_and_does_not_trigger_playback_or_recording() {
+fn midi_note_off_maps_to_sample_release_without_playback_or_recording() {
     let mut core = MpcCore::new();
     core.dispatch(HardwareEvent::Press {
         control: PanelControl::Overdub,
@@ -5312,9 +5312,27 @@ fn midi_note_off_is_noop_and_does_not_trigger_playback_or_recording() {
 
     assert_eq!(
         outputs,
-        vec![MachineOutput::MidiInputIgnored {
-            reason: "midi note-off is a no-op in this slice".to_string(),
-        }]
+        vec![
+            MachineOutput::MidiNoteReleased {
+                channel: 1,
+                note: 36,
+                bank: PadBank::A,
+                pad: 1,
+                velocity: 64,
+            },
+            MachineOutput::SampleReleaseIntent {
+                intent: SampleReleaseIntent {
+                    selected_track: 1,
+                    program_index: 1,
+                    program_name: "Program01".to_string(),
+                    bank: PadBank::A,
+                    pad_number: 1,
+                    sample_id: "synthetic_a_01".to_string(),
+                    sample_name: "SYN-A01".to_string(),
+                    release_velocity: 64,
+                }
+            }
+        ]
     );
     assert!(
         !outputs
@@ -5331,6 +5349,96 @@ fn midi_note_off_is_noop_and_does_not_trigger_playback_or_recording() {
     assert!(core.state().recorded_events.is_empty());
     assert!(core.state().playing);
     assert!(core.state().recording);
+}
+
+#[test]
+fn midi_note_off_out_of_range_and_unassigned_pad_are_ignored_deterministically() {
+    let mut out_of_range = MpcCore::new();
+    let out_of_range_outputs = out_of_range.dispatch(HardwareEvent::MidiNoteOff {
+        channel: 1,
+        note: 35,
+        velocity: 64,
+    });
+    assert_eq!(
+        out_of_range_outputs,
+        vec![MachineOutput::MidiInputIgnored {
+            reason: "midi note-off 35 is not mapped in this slice; mapped range is 36..=51"
+                .to_string(),
+        }]
+    );
+
+    let mut unassigned = MpcCore::new();
+    unassigned.dispatch(HardwareEvent::Press {
+        control: PanelControl::Program,
+    });
+    unassigned.dispatch(HardwareEvent::Press {
+        control: PanelControl::SoftKey(1),
+    });
+    let unassigned_outputs = unassigned.dispatch(HardwareEvent::MidiNoteOff {
+        channel: 1,
+        note: 36,
+        velocity: 64,
+    });
+
+    assert_eq!(
+        unassigned_outputs,
+        vec![MachineOutput::MidiInputIgnored {
+            reason: "midi note-off A01 has no assigned sample".to_string(),
+        }]
+    );
+    assert_eq!(unassigned.state().last_playback, None);
+    assert!(unassigned.state().recorded_events.is_empty());
+}
+
+#[test]
+fn midi_note_release_outputs_serialize_stably() {
+    let release = MachineOutput::MidiNoteReleased {
+        channel: 2,
+        note: 40,
+        bank: PadBank::A,
+        pad: 5,
+        velocity: 64,
+    };
+    let sample_release = MachineOutput::SampleReleaseIntent {
+        intent: SampleReleaseIntent {
+            selected_track: 3,
+            program_index: 1,
+            program_name: "Program01".to_string(),
+            bank: PadBank::A,
+            pad_number: 5,
+            sample_id: "synthetic_a_05".to_string(),
+            sample_name: "SYN-A05".to_string(),
+            release_velocity: 64,
+        },
+    };
+
+    assert_eq!(
+        serde_json::to_value(release).expect("MIDI release output should serialize"),
+        serde_json::json!({
+            "type": "midi_note_released",
+            "channel": 2,
+            "note": 40,
+            "bank": "a",
+            "pad": 5,
+            "velocity": 64
+        })
+    );
+    assert_eq!(
+        serde_json::to_value(sample_release).expect("sample release output should serialize"),
+        serde_json::json!({
+            "type": "sample_release_intent",
+            "intent": {
+                "selected_track": 3,
+                "program_index": 1,
+                "program_name": "Program01",
+                "bank": "a",
+                "pad_number": 5,
+                "sample_id": "synthetic_a_05",
+                "sample_name": "SYN-A05",
+                "release_velocity": 64
+            }
+        })
+    );
 }
 
 #[test]
@@ -5621,7 +5729,7 @@ fn midi_settings_input_channel_filter_blocks_non_matching_channel_and_accepts_ma
     assert_eq!(
         note_off_outputs,
         vec![MachineOutput::MidiInputIgnored {
-            reason: "midi note-off is a no-op in this slice".to_string(),
+            reason: "midi channel 1 ignored; input channel is 2".to_string(),
         }]
     );
 
