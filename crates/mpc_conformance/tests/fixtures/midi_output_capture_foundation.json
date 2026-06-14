@@ -3,7 +3,9 @@
   "name": "Physical pad playback emits deterministic MIDI output intent for host capture",
   "source_refs": [
     "docs/superpowers/plans/2026-06-14-mpc2000xl-midi-output-capture-foundation.md#behavior-slice",
-    "docs/evidence/behavior-matrix.json#core.midi-output.capture-foundation"
+    "docs/superpowers/plans/2026-06-14-mpc2000xl-midi-device-io-foundation.md#deterministic-contract",
+    "docs/evidence/behavior-matrix.json#core.midi-output.capture-foundation",
+    "docs/evidence/behavior-matrix.json#host.midi.device-io-foundation"
   ],
   "events": [
     {
@@ -13,6 +15,101 @@
       "velocity": 84
     }
   ],
+  "host_midi": {
+    "enabled": true,
+    "retained_message_capacity": 4,
+    "input_decode_cases": [
+      {
+        "name": "note_on_bytes",
+        "bytes": [
+          144,
+          55,
+          84
+        ],
+        "expect_event": {
+          "type": "note_on",
+          "channel": 1,
+          "note": 55,
+          "velocity": 84
+        }
+      },
+      {
+        "name": "note_off_bytes",
+        "bytes": [
+          128,
+          55,
+          64
+        ],
+        "expect_event": {
+          "type": "note_off",
+          "channel": 1,
+          "note": 55,
+          "velocity": 64
+        }
+      },
+      {
+        "name": "note_on_velocity_zero_is_note_off",
+        "bytes": [
+          144,
+          55,
+          0
+        ],
+        "expect_event": {
+          "type": "note_off",
+          "channel": 1,
+          "note": 55,
+          "velocity": 0
+        }
+      },
+      {
+        "name": "unsupported_control_change_is_ignored",
+        "bytes": [
+          176,
+          1,
+          64
+        ],
+        "expect_ignored": true
+      },
+      {
+        "name": "short_note_message_errors",
+        "bytes": [
+          144,
+          55
+        ],
+        "expect_error_contains": "short MIDI note message"
+      }
+    ],
+    "expect": {
+      "mode": "capture",
+      "backend_name": "capture",
+      "queued_message_count": 1,
+      "ignored_message_count": 0,
+      "failed_message_count": 0,
+      "backend_total_sent_count": 1,
+      "capture_count": 1,
+      "captured_messages": [
+        {
+          "channel": 1,
+          "note": 55,
+          "velocity": 84
+        }
+      ],
+      "captured_encoded_note_on_bytes": [
+        [
+          144,
+          55,
+          84
+        ]
+      ],
+      "last_event_type": "queued",
+      "last_event_message": {
+        "channel": 1,
+        "note": 55,
+        "velocity": 84
+      },
+      "last_event_backend_receipt_message_count": 1
+    }
+  },
   "expect_output_sequence": [
     {
       "type": "pad_triggered",

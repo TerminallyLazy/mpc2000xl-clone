@@ -1591,7 +1591,7 @@
       "id": "host.midi.device-io-foundation",
       "name": "Optional native MIDI device input/output adapter routes note events through host MIDI",
       "area": "midi_host",
-      "state": "unit-backed-internal-spec",
+      "state": "fixture-backed-internal-spec",
       "evidence": [
         {
           "source_id": "midi-device-io-foundation-slice-plan",
@@ -1695,6 +1695,7 @@
       },
       "tolerance": "No native MIDI timing or latency tolerance is claimed; host OS device behavior is platform-dependent.",
       "fixture_refs": [
+        "crates/mpc_conformance/tests/fixtures/midi_output_capture_foundation.json",
         "crates/mpc_midi/src/lib.rs",
         "apps/desktop/src/main.rs",
         "docs/superpowers/plans/2026-06-14-mpc2000xl-midi-device-io-foundation.md"

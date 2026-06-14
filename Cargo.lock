@@ -2156,6 +2156,7 @@ dependencies = [
  "clap",
  "mpc_audio",
  "mpc_core",
+ "mpc_midi",
  "mpc_storage",
  "serde",
  "serde_json",

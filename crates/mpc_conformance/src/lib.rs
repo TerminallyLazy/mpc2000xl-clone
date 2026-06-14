@@ -10,6 +10,10 @@ use mpc_core::{
     SamplePlaybackResolution, SampleSourceKind, SequenceEvent, SetupField, SongEditField, SongStep,
     TimingCorrectDivision, TimingCorrectField, TrimEditField,
 };
+use mpc_midi::{
+    CaptureMidiBackend, HostMidiEngine, HostMidiEvent, HostMidiMode, HostMidiState, MidiInputEvent,
+    MidiMessage, decode_midi_input_event, encode_note_on_message,
+};
 use mpc_storage::{PROJECT_FILE_SUFFIX, load_project_file_with_report, save_project_file};
 use serde::de::{self, Visitor};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -34,6 +38,8 @@ pub struct Fixture {
     pub post_runtime_wav_import_events: Vec<HardwareEvent>,
     #[serde(default)]
     pub host_audio: Option<HostAudioFixture>,
+    #[serde(default)]
+    pub host_midi: Option<HostMidiFixture>,
     #[serde(default)]
     pub expect_output_sequence: Vec<MachineOutput>,
     #[serde(default)]
@@ -152,6 +158,73 @@ pub enum ExpectedHostAudioEventType {
 
 struct HostAudioFixtureRunner {
     engine: HostAudioEngine<CaptureAudioBackend>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HostMidiFixture {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_host_midi_retained_message_capacity")]
+    pub retained_message_capacity: usize,
+    #[serde(default)]
+    pub input_decode_cases: Vec<MidiInputDecodeCase>,
+    pub expect: ExpectedHostMidiState,
+}
+
+fn default_host_midi_retained_message_capacity() -> usize {
+    16
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExpectedHostMidiState {
+    #[serde(default)]
+    pub mode: Option<HostMidiMode>,
+    #[serde(default)]
+    pub backend_name: Option<String>,
+    #[serde(default)]
+    pub queued_message_count: Option<u64>,
+    #[serde(default)]
+    pub ignored_message_count: Option<u64>,
+    #[serde(default)]
+    pub failed_message_count: Option<u64>,
+    #[serde(default)]
+    pub backend_total_sent_count: Option<u64>,
+    #[serde(default)]
+    pub capture_count: Option<usize>,
+    #[serde(default)]
+    pub captured_messages: Option<Vec<MidiMessage>>,
+    #[serde(default)]
+    pub captured_encoded_note_on_bytes: Option<Vec<[u8; 3]>>,
+    #[serde(default)]
+    pub last_event_type: Option<ExpectedHostMidiEventType>,
+    #[serde(default)]
+    pub last_event_message: Option<MidiMessage>,
+    #[serde(default)]
+    pub last_event_backend_receipt_message_count: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExpectedHostMidiEventType {
+    Queued,
+    Ignored,
+    Failed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MidiInputDecodeCase {
+    pub name: String,
+    pub bytes: Vec<u8>,
+    #[serde(default)]
+    pub expect_event: Option<MidiInputEvent>,
+    #[serde(default)]
+    pub expect_ignored: bool,
+    #[serde(default)]
+    pub expect_error_contains: Option<String>,
+}
+
+struct HostMidiFixtureRunner {
+    engine: HostMidiEngine<CaptureMidiBackend>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -516,10 +589,12 @@ pub fn run_fixture(fixture: &Fixture) -> FixtureReport {
     let mut output_sequence = Vec::new();
     let mut details = Vec::new();
     let mut host_audio = build_host_audio_runner(&mut details, fixture);
+    let mut host_midi = build_host_midi_runner(fixture);
 
     for event in &fixture.events {
         let outputs = core.dispatch(event.clone());
         route_host_audio_outputs(&mut details, &mut host_audio, &outputs, &runtime_samples);
+        route_host_midi_outputs(&mut host_midi, &outputs);
         output_sequence.extend(outputs);
     }
 
@@ -534,6 +609,7 @@ pub fn run_fixture(fixture: &Fixture) -> FixtureReport {
     for event in &fixture.post_runtime_wav_import_events {
         let outputs = core.dispatch(event.clone());
         route_host_audio_outputs(&mut details, &mut host_audio, &outputs, &runtime_samples);
+        route_host_midi_outputs(&mut host_midi, &outputs);
         output_sequence.extend(outputs);
     }
 
@@ -556,6 +632,7 @@ pub fn run_fixture(fixture: &Fixture) -> FixtureReport {
         validate_project_round_trip(&mut details, &core, project_round_trip);
     }
     validate_host_audio(&mut details, fixture, host_audio.as_ref());
+    validate_host_midi(&mut details, fixture, host_midi.as_ref());
 
     FixtureReport {
         id: fixture.id.clone(),
@@ -597,6 +674,18 @@ fn build_host_audio_runner(
     Some(HostAudioFixtureRunner { engine })
 }
 
+fn build_host_midi_runner(fixture: &Fixture) -> Option<HostMidiFixtureRunner> {
+    let Some(config) = &fixture.host_midi else {
+        return None;
+    };
+
+    let backend = CaptureMidiBackend::new(config.retained_message_capacity);
+    let mut engine = HostMidiEngine::new(backend);
+    engine.set_enabled(config.enabled);
+
+    Some(HostMidiFixtureRunner { engine })
+}
+
 fn route_host_audio_outputs(
     _details: &mut Vec<String>,
     host_audio: &mut Option<HostAudioFixtureRunner>,
@@ -623,6 +712,21 @@ fn route_host_audio_outputs(
                 runner.engine.release_intent(intent);
             }
             _ => {}
+        }
+    }
+}
+
+fn route_host_midi_outputs(
+    host_midi: &mut Option<HostMidiFixtureRunner>,
+    outputs: &[MachineOutput],
+) {
+    let Some(runner) = host_midi.as_mut() else {
+        return;
+    };
+
+    for output in outputs {
+        if let MachineOutput::MidiOutputIntent { intent } = output {
+            runner.engine.send_intent(intent);
         }
     }
 }
@@ -1120,6 +1224,237 @@ fn validate_expected_host_audio_last_event(
                 choked_voice_count, actual
             ));
         }
+    }
+}
+
+fn validate_host_midi(
+    details: &mut Vec<String>,
+    fixture: &Fixture,
+    runner: Option<&HostMidiFixtureRunner>,
+) {
+    let Some(config) = &fixture.host_midi else {
+        return;
+    };
+
+    validate_midi_input_decode_cases(details, &config.input_decode_cases);
+
+    let Some(runner) = runner else {
+        details.push("host_midi state mismatch: host MIDI runner was not created".to_string());
+        return;
+    };
+
+    let state = runner.engine.state();
+    let expected = &config.expect;
+
+    if let Some(mode) = expected.mode {
+        push_mismatch(details, "host_midi.mode", &mode, &state.mode);
+    }
+    if let Some(backend_name) = &expected.backend_name {
+        push_mismatch(
+            details,
+            "host_midi.backend_name",
+            backend_name,
+            &state.backend_name,
+        );
+    }
+    if let Some(queued_message_count) = expected.queued_message_count {
+        push_mismatch(
+            details,
+            "host_midi.queued_message_count",
+            &queued_message_count,
+            &state.queued_message_count,
+        );
+    }
+    if let Some(ignored_message_count) = expected.ignored_message_count {
+        push_mismatch(
+            details,
+            "host_midi.ignored_message_count",
+            &ignored_message_count,
+            &state.ignored_message_count,
+        );
+    }
+    if let Some(failed_message_count) = expected.failed_message_count {
+        push_mismatch(
+            details,
+            "host_midi.failed_message_count",
+            &failed_message_count,
+            &state.failed_message_count,
+        );
+    }
+
+    validate_expected_host_midi_captures(details, runner, expected);
+    validate_expected_host_midi_last_event(details, &state, expected);
+}
+
+fn validate_expected_host_midi_captures(
+    details: &mut Vec<String>,
+    runner: &HostMidiFixtureRunner,
+    expected: &ExpectedHostMidiState,
+) {
+    let backend = runner.engine.backend();
+    let messages = backend.messages();
+
+    if let Some(backend_total_sent_count) = expected.backend_total_sent_count {
+        push_mismatch(
+            details,
+            "host_midi.backend_total_sent_count",
+            &backend_total_sent_count,
+            &backend.total_sent_count(),
+        );
+    }
+    if let Some(capture_count) = expected.capture_count {
+        push_mismatch(
+            details,
+            "host_midi.capture_count",
+            &capture_count,
+            &messages.len(),
+        );
+    }
+    if let Some(captured_messages) = &expected.captured_messages {
+        push_mismatch(
+            details,
+            "host_midi.captured_messages",
+            captured_messages,
+            &messages.to_vec(),
+        );
+    }
+    if let Some(captured_encoded_note_on_bytes) = &expected.captured_encoded_note_on_bytes {
+        let mut encoded_messages = Vec::with_capacity(messages.len());
+        for (index, message) in messages.iter().enumerate() {
+            match encode_note_on_message(message) {
+                Ok(bytes) => encoded_messages.push(bytes),
+                Err(error) => details.push(format!(
+                    "host_midi.captured_encoded_note_on_bytes[{index}] encode error: {error}"
+                )),
+            }
+        }
+        push_mismatch(
+            details,
+            "host_midi.captured_encoded_note_on_bytes",
+            captured_encoded_note_on_bytes,
+            &encoded_messages,
+        );
+    }
+}
+
+fn validate_expected_host_midi_last_event(
+    details: &mut Vec<String>,
+    state: &HostMidiState,
+    expected: &ExpectedHostMidiState,
+) {
+    let Some(event) = &state.last_event else {
+        if expected.last_event_type.is_some()
+            || expected.last_event_message.is_some()
+            || expected.last_event_backend_receipt_message_count.is_some()
+        {
+            details.push("host_midi.last_event mismatch: expected event, got None".to_string());
+        }
+        return;
+    };
+
+    if let Some(event_type) = expected.last_event_type {
+        push_mismatch(
+            details,
+            "host_midi.last_event_type",
+            &event_type,
+            &host_midi_event_type(event),
+        );
+    }
+    if let Some(message) = &expected.last_event_message {
+        let actual = host_midi_event_message(event).cloned();
+        if actual.as_ref() != Some(message) {
+            details.push(format!(
+                "host_midi.last_event_message mismatch: expected {:?}, got {:?}",
+                message, actual
+            ));
+        }
+    }
+    if let Some(message_count) = expected.last_event_backend_receipt_message_count {
+        let actual = host_midi_event_backend_receipt_message_count(event);
+        if actual != Some(message_count) {
+            details.push(format!(
+                "host_midi.last_event_backend_receipt_message_count mismatch: expected {}, got {:?}",
+                message_count, actual
+            ));
+        }
+    }
+}
+
+fn host_midi_event_type(event: &HostMidiEvent) -> ExpectedHostMidiEventType {
+    match event {
+        HostMidiEvent::Queued { .. } => ExpectedHostMidiEventType::Queued,
+        HostMidiEvent::Ignored { .. } => ExpectedHostMidiEventType::Ignored,
+        HostMidiEvent::Failed { .. } => ExpectedHostMidiEventType::Failed,
+    }
+}
+
+fn host_midi_event_message(event: &HostMidiEvent) -> Option<&MidiMessage> {
+    match event {
+        HostMidiEvent::Queued { receipt } => Some(&receipt.message),
+        HostMidiEvent::Ignored { .. } | HostMidiEvent::Failed { .. } => None,
+    }
+}
+
+fn host_midi_event_backend_receipt_message_count(event: &HostMidiEvent) -> Option<u64> {
+    match event {
+        HostMidiEvent::Queued { receipt } => Some(receipt.backend_receipt.message_count),
+        HostMidiEvent::Ignored { .. } | HostMidiEvent::Failed { .. } => None,
+    }
+}
+
+fn validate_midi_input_decode_cases(details: &mut Vec<String>, cases: &[MidiInputDecodeCase]) {
+    for case in cases {
+        let result = decode_midi_input_event(&case.bytes);
+        let label = format!("host_midi.input_decode_cases.{}", case.name);
+
+        if let Some(expected_error) = &case.expect_error_contains {
+            match result {
+                Ok(actual) => details.push(format!(
+                    "{label} error mismatch: expected substring {:?}, got decoded {:?}",
+                    expected_error, actual
+                )),
+                Err(error) if !error.contains(expected_error) => details.push(format!(
+                    "{label} error mismatch: expected substring {:?}, got {:?}",
+                    expected_error, error
+                )),
+                Err(_) => {}
+            }
+            continue;
+        }
+
+        if case.expect_ignored {
+            match result {
+                Ok(None) => {}
+                Ok(Some(actual)) => details.push(format!(
+                    "{label} ignored mismatch: expected None, got {:?}",
+                    actual
+                )),
+                Err(error) => details.push(format!(
+                    "{label} ignored mismatch: expected None, got error {:?}",
+                    error
+                )),
+            }
+            continue;
+        }
+
+        if let Some(expected_event) = &case.expect_event {
+            match result {
+                Ok(Some(actual)) => push_mismatch(details, &label, expected_event, &actual),
+                Ok(None) => details.push(format!(
+                    "{label} event mismatch: expected {:?}, got None",
+                    expected_event
+                )),
+                Err(error) => details.push(format!(
+                    "{label} event mismatch: expected {:?}, got error {:?}",
+                    expected_event, error
+                )),
+            }
+            continue;
+        }
+
+        details.push(format!(
+            "{label} expectation missing: set expect_event, expect_ignored, or expect_error_contains"
+        ));
     }
 }
 
