@@ -2,6 +2,8 @@ use serde::{Deserialize, Serialize};
 
 const SAMPLE_BASE_LENGTH_FRAMES: u32 = 48_000;
 const SAMPLE_LENGTH_STEP_FRAMES: u32 = 1_200;
+pub const RECORDED_SAMPLE_LENGTH_FRAMES: u32 = 44_100;
+pub const IMPORTED_SAMPLE_LENGTH_FRAMES: u32 = 88_200;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -43,10 +45,48 @@ pub struct ProgramPad {
     pub pad_number: u8,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SampleSourceKind {
+    #[default]
+    Generated,
+    Recorded,
+    Imported,
+}
+
+impl SampleSourceKind {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Generated => "Generated",
+            Self::Recorded => "Recorded",
+            Self::Imported => "Imported",
+        }
+    }
+
+    pub fn is_generated(&self) -> bool {
+        *self == Self::Generated
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SyntheticSample {
     pub id: String,
     pub name: String,
+    #[serde(default, skip_serializing_if = "SampleSourceKind::is_generated")]
+    pub source_kind: SampleSourceKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub length_frames: Option<u32>,
+}
+
+impl SyntheticSample {
+    pub fn effective_length_frames(&self, source_pad: ProgramPad) -> u32 {
+        match self.source_kind {
+            SampleSourceKind::Generated => generated_sample_length_frames(source_pad),
+            SampleSourceKind::Recorded | SampleSourceKind::Imported => self
+                .length_frames
+                .unwrap_or_else(|| generated_sample_length_frames(source_pad)),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -54,6 +94,8 @@ pub struct SampleCatalogEntry {
     pub index: usize,
     pub count: usize,
     pub sample: SyntheticSample,
+    #[serde(default)]
+    pub source_kind: SampleSourceKind,
     pub source_pad: ProgramPad,
     pub start_frame: u32,
     pub end_frame: u32,
@@ -217,6 +259,7 @@ pub enum SamplePlaybackResolution {
 pub enum PadAssignmentChange {
     Cleared,
     Restored,
+    Assigned,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -713,6 +756,12 @@ pub enum MachineOutput {
     },
     SampleSelected {
         entry: SampleCatalogEntry,
+    },
+    SampleMetadataCreated {
+        sample: SyntheticSample,
+        source_kind: SampleSourceKind,
+        target_pad: ProgramPad,
+        length_frames: u32,
     },
     SampleTrimChanged {
         sample_id: String,

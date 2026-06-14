@@ -3,7 +3,7 @@ use mpc_audio::{AudioRenderSettings, AudioSourceKind, ChannelBalance, render_int
 use mpc_core::{
     DiskOperation, HardwareEvent, MachineOutput, MainScreenField, MidiSettingsField, Mode, MpcCore,
     MpcState, PROJECT_SNAPSHOT_VERSION, PadBank, ProgramEditField, ProgramPad,
-    SamplePlaybackResolution, SequenceEvent, SetupField, SongEditField, SongStep,
+    SamplePlaybackResolution, SampleSourceKind, SequenceEvent, SetupField, SongEditField, SongStep,
     TimingCorrectDivision, TimingCorrectField, TrimEditField,
 };
 use serde::de::{self, Visitor};
@@ -20,9 +20,20 @@ pub struct Fixture {
     pub events: Vec<HardwareEvent>,
     #[serde(default)]
     pub expect_output_sequence: Vec<MachineOutput>,
+    #[serde(default)]
+    pub expect_sample_metadata_created: Vec<ExpectedSampleMetadataCreated>,
     pub expect: ExpectedState,
     #[serde(default)]
     pub project_round_trip: Option<ProjectRoundTripExpectation>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExpectedSampleMetadataCreated {
+    pub sample_id: String,
+    pub sample_name: String,
+    pub source_kind: SampleSourceKind,
+    pub target_pad: ProgramPad,
+    pub length_frames: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -286,6 +297,10 @@ pub struct ExpectedState {
     #[serde(default)]
     pub selected_sample_name: Option<String>,
     #[serde(default)]
+    pub selected_sample_source_kind: Option<SampleSourceKind>,
+    #[serde(default)]
+    pub selected_sample_length_frames: Option<u32>,
+    #[serde(default)]
     pub selected_trim_edit_field: Option<TrimEditField>,
     #[serde(default)]
     pub selected_sample_start_frame: Option<u32>,
@@ -357,6 +372,7 @@ pub fn run_fixture(fixture: &Fixture) -> FixtureReport {
 
     let mut details = Vec::new();
     validate_expected_output_sequence(&mut details, &output_sequence, fixture);
+    validate_expected_sample_metadata_created(&mut details, &output_sequence, fixture);
     validate_expected_state(&mut details, "", core.state(), &fixture.expect);
     if let Some(project_round_trip) = &fixture.project_round_trip {
         validate_project_round_trip(&mut details, &core, project_round_trip);
@@ -405,6 +421,46 @@ fn validate_output_sequence(
         details.push(format!(
             "{label} mismatch: expected {:?}, got {:?}",
             expected, actual
+        ));
+    }
+}
+
+fn validate_expected_sample_metadata_created(
+    details: &mut Vec<String>,
+    actual: &[MachineOutput],
+    fixture: &Fixture,
+) {
+    if fixture.expect_sample_metadata_created.is_empty() {
+        return;
+    }
+
+    let actual_created = actual
+        .iter()
+        .filter_map(|output| {
+            if let MachineOutput::SampleMetadataCreated {
+                sample,
+                source_kind,
+                target_pad,
+                length_frames,
+            } = output
+            {
+                Some(ExpectedSampleMetadataCreated {
+                    sample_id: sample.id.clone(),
+                    sample_name: sample.name.clone(),
+                    source_kind: *source_kind,
+                    target_pad: *target_pad,
+                    length_frames: *length_frames,
+                })
+            } else {
+                None
+            }
+        })
+        .collect::<Vec<_>>();
+
+    if actual_created != fixture.expect_sample_metadata_created {
+        details.push(format!(
+            "sample_metadata_created sequence mismatch: expected {:?}, got {:?}",
+            fixture.expect_sample_metadata_created, actual_created
         ));
     }
 }
@@ -890,6 +946,26 @@ fn validate_expected_state(
             details.push(format!(
                 "{prefix}selected_sample_name mismatch: expected {}, got {:?}",
                 selected_sample_name, actual
+            ));
+        }
+    }
+
+    if let Some(selected_sample_source_kind) = expected.selected_sample_source_kind {
+        let actual = selected_sample.as_ref().map(|entry| entry.source_kind);
+        if actual != Some(selected_sample_source_kind) {
+            details.push(format!(
+                "{prefix}selected_sample_source_kind mismatch: expected {:?}, got {:?}",
+                selected_sample_source_kind, actual
+            ));
+        }
+    }
+
+    if let Some(selected_sample_length_frames) = expected.selected_sample_length_frames {
+        let actual = selected_sample.as_ref().map(|entry| entry.length_frames);
+        if actual != Some(selected_sample_length_frames) {
+            details.push(format!(
+                "{prefix}selected_sample_length_frames mismatch: expected {}, got {:?}",
+                selected_sample_length_frames, actual
             ));
         }
     }

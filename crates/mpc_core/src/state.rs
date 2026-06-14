@@ -4,12 +4,13 @@ use std::collections::BTreeSet;
 use std::fmt;
 
 use crate::events::{
-    DiskOperation, HardwareEvent, MachineOutput, MidiSettingsField, Mode, PadAssignment,
-    PadAssignmentChange, PadBank, PanelControl, PlaybackMissReason, Program, ProgramEditField,
-    ProgramPad, SampleCatalogEntry, SamplePlaybackIntent, SamplePlaybackMiss,
-    SamplePlaybackResolution, SampleTrim, SequenceEvent, SetupField, SetupPreferences,
-    SongEditField, SongStep, SyntheticSample, TimingCorrectField, TimingCorrectSettings,
-    TrimEditField, generated_sample_length_frames, sample_window_length_frames,
+    DiskOperation, HardwareEvent, IMPORTED_SAMPLE_LENGTH_FRAMES, MachineOutput, MidiSettingsField,
+    Mode, PadAssignment, PadAssignmentChange, PadBank, PanelControl, PlaybackMissReason, Program,
+    ProgramEditField, ProgramPad, RECORDED_SAMPLE_LENGTH_FRAMES, SampleCatalogEntry,
+    SamplePlaybackIntent, SamplePlaybackMiss, SamplePlaybackResolution, SampleSourceKind,
+    SampleTrim, SequenceEvent, SetupField, SetupPreferences, SongEditField, SongStep,
+    SyntheticSample, TimingCorrectField, TimingCorrectSettings, TrimEditField,
+    generated_sample_length_frames, sample_window_length_frames,
 };
 use crate::lcd::LcdFrame;
 
@@ -43,6 +44,8 @@ const DEFAULT_PROGRAM_NAME: &str = "Program01";
 const DEFAULT_PAD_LEVEL: u8 = 100;
 const DEFAULT_PAD_PAN: i8 = 0;
 const DEFAULT_PAD_TUNE_CENTS: i16 = 0;
+const MAX_USER_SAMPLE_LENGTH_FRAMES: u32 = 48_000 * 60 * 10;
+const MAX_USER_SAMPLE_INDEX: u16 = 999;
 const MAX_PAD_LEVEL: u8 = 127;
 const MIN_PAD_PAN: i8 = -50;
 const MAX_PAD_PAN: i8 = 50;
@@ -1014,6 +1017,12 @@ impl MpcCore {
         match index {
             1 => self.adjust_selected_sample(-1),
             2 => self.adjust_selected_sample(1),
+            3 if self.state.mode == Mode::Sample => {
+                self.create_sample_metadata(SampleSourceKind::Recorded)
+            }
+            4 if self.state.mode == Mode::Sample => {
+                self.create_sample_metadata(SampleSourceKind::Imported)
+            }
             6 if self.state.mode == Mode::Sample => self.set_mode(Mode::Trim),
             6 if self.state.mode == Mode::Trim => self.set_mode(Mode::Sample),
             _ => Self::ignored(format!(
@@ -1041,6 +1050,81 @@ impl MpcCore {
             3 => self.delete_selected_song_step(),
             _ => Self::ignored(format!("song.soft_key.{index}_unmapped")),
         }
+    }
+
+    fn create_sample_metadata(&mut self, source_kind: SampleSourceKind) -> Vec<MachineOutput> {
+        let target_pad = self.state.selected_program_pad;
+        if !(1..=16).contains(&target_pad.pad_number) {
+            return Self::ignored(format!(
+                "sample.{}.invalid_target_pad",
+                sample_source_reason(source_kind)
+            ));
+        }
+
+        let Some(next_index) = next_user_sample_index(
+            &self.state.current_program,
+            sample_source_id_prefix(source_kind),
+        ) else {
+            return Self::ignored(format!(
+                "sample.{}.capacity",
+                sample_source_reason(source_kind)
+            ));
+        };
+        let length_frames = sample_source_length_frames(source_kind);
+        let sample = SyntheticSample {
+            id: format!("{}_{next_index:03}", sample_source_id_prefix(source_kind)),
+            name: format!("{}-{next_index:03}", sample_source_name_prefix(source_kind)),
+            source_kind,
+            length_frames: Some(length_frames),
+        };
+
+        let (level, pan, tune_cents) = self
+            .assignment_for(target_pad)
+            .map(|assignment| (assignment.level, assignment.pan, assignment.tune_cents))
+            .unwrap_or((DEFAULT_PAD_LEVEL, DEFAULT_PAD_PAN, DEFAULT_PAD_TUNE_CENTS));
+        let assignment = PadAssignment {
+            pad: target_pad,
+            sample: sample.clone(),
+            level,
+            pan,
+            tune_cents,
+        };
+        self.state
+            .current_program
+            .pad_assignments
+            .retain(|existing| existing.pad != target_pad);
+        self.state
+            .current_program
+            .pad_assignments
+            .push(assignment.clone());
+        self.state
+            .current_program
+            .pad_assignments
+            .sort_by_key(|existing| existing.pad);
+        self.state.selected_sample_id = Some(sample.id.clone());
+        self.prune_sample_trims_for_current_program();
+        let entry = self.state.selected_sample();
+        self.refresh_lcd();
+
+        let mut outputs = vec![
+            MachineOutput::SampleMetadataCreated {
+                sample,
+                source_kind,
+                target_pad,
+                length_frames,
+            },
+            MachineOutput::PadAssignmentChanged {
+                bank: target_pad.bank,
+                pad: target_pad.pad_number,
+                action: PadAssignmentChange::Assigned,
+                assignment: Some(assignment),
+            },
+        ];
+        if let Some(entry) = entry {
+            outputs.push(MachineOutput::SampleSelected { entry });
+        }
+        outputs.push(MachineOutput::LcdChanged);
+        outputs
     }
 
     fn adjust_disk_operation(&mut self, delta: i32) -> Vec<MachineOutput> {
@@ -1986,7 +2070,7 @@ impl MpcCore {
     }
 
     fn sample_window_for_assignment(&self, assignment: &PadAssignment) -> (u32, u32, u32) {
-        let length_frames = generated_sample_length_frames(assignment.pad);
+        let length_frames = assignment.sample.effective_length_frames(assignment.pad);
         let (start_frame, end_frame) = self
             .state
             .sample_trims
@@ -2256,7 +2340,11 @@ fn validate_assignment_json_fields(field: &str, value: &Value) -> Result<(), Pro
 }
 
 fn validate_sample_json_fields(field: &str, value: &Value) -> Result<(), ProjectSnapshotError> {
-    reject_unknown_json_fields(field, value, &["id", "name"])?;
+    reject_unknown_json_fields(
+        field,
+        value,
+        &["id", "name", "source_kind", "length_frames"],
+    )?;
     Ok(())
 }
 
@@ -2518,11 +2606,6 @@ fn validate_project_snapshot(snapshot: &ProjectSnapshot) -> Result<(), ProjectSn
         ));
     }
 
-    validate_playback_resolution(
-        "machine.last_playback",
-        snapshot.machine.last_playback.as_ref(),
-    )?;
-
     let mut seen_assignments = BTreeSet::new();
     for (index, assignment) in snapshot.program.pad_assignments.iter().enumerate() {
         let field = format!("program.pad_assignments[{index}]");
@@ -2549,9 +2632,18 @@ fn validate_project_snapshot(snapshot: &ProjectSnapshot) -> Result<(), ProjectSn
         }
     }
     validate_sample_trims(&snapshot.program.sample_trims, &default_catalog)?;
+    validate_playback_resolution(
+        "machine.last_playback",
+        snapshot.machine.last_playback.as_ref(),
+        &snapshot.program.pad_assignments,
+    )?;
 
     for (index, event) in snapshot.sequence.recorded_events.iter().enumerate() {
-        validate_sequence_event(&format!("sequence.recorded_events[{index}]"), event)?;
+        validate_sequence_event(
+            &format!("sequence.recorded_events[{index}]"),
+            event,
+            &snapshot.program.pad_assignments,
+        )?;
     }
 
     validate_song_snapshot(&snapshot.song)?;
@@ -2650,6 +2742,7 @@ fn validate_assignment(
     validate_program_pad(&format!("{field}.pad"), assignment.pad)?;
     validate_non_empty(&format!("{field}.sample.id"), &assignment.sample.id)?;
     validate_non_empty(&format!("{field}.sample.name"), &assignment.sample.name)?;
+    validate_sample_metadata(&format!("{field}.sample"), &assignment.sample)?;
     validate_range_u8(
         &format!("{field}.level"),
         assignment.level,
@@ -2668,6 +2761,37 @@ fn validate_assignment(
         MIN_PAD_TUNE_CENTS,
         MAX_PAD_TUNE_CENTS,
     )
+}
+
+fn validate_sample_metadata(
+    field: &str,
+    sample: &SyntheticSample,
+) -> Result<(), ProjectSnapshotError> {
+    match sample.source_kind {
+        SampleSourceKind::Generated => {
+            if sample.length_frames.is_some() {
+                return Err(invalid_value(
+                    &format!("{field}.length_frames"),
+                    "generated samples must use pad-derived length",
+                ));
+            }
+        }
+        SampleSourceKind::Recorded | SampleSourceKind::Imported => {
+            let Some(length_frames) = sample.length_frames else {
+                return Err(invalid_value(
+                    &format!("{field}.length_frames"),
+                    "recorded/imported samples require metadata length_frames",
+                ));
+            };
+            validate_range_u32(
+                &format!("{field}.length_frames"),
+                length_frames,
+                1,
+                MAX_USER_SAMPLE_LENGTH_FRAMES,
+            )?;
+        }
+    }
+    Ok(())
 }
 
 fn validate_sample_trims(
@@ -2701,7 +2825,11 @@ fn validate_sample_trims(
     Ok(())
 }
 
-fn validate_sequence_event(field: &str, event: &SequenceEvent) -> Result<(), ProjectSnapshotError> {
+fn validate_sequence_event(
+    field: &str,
+    event: &SequenceEvent,
+    assignments: &[PadAssignment],
+) -> Result<(), ProjectSnapshotError> {
     validate_range_u8(
         &format!("{field}.selected_track"),
         event.selected_track,
@@ -2712,7 +2840,7 @@ fn validate_sequence_event(field: &str, event: &SequenceEvent) -> Result<(), Pro
     validate_velocity(&format!("{field}.velocity"), event.velocity)?;
 
     if let Some(playback) = &event.playback {
-        validate_playback_intent(&format!("{field}.playback"), playback)?;
+        validate_playback_intent(&format!("{field}.playback"), playback, assignments)?;
         if playback.selected_track != event.selected_track {
             return Err(invalid_value(
                 &format!("{field}.playback.selected_track"),
@@ -2745,10 +2873,11 @@ fn validate_sequence_event(field: &str, event: &SequenceEvent) -> Result<(), Pro
 fn validate_playback_resolution(
     field: &str,
     playback: Option<&SamplePlaybackResolution>,
+    assignments: &[PadAssignment],
 ) -> Result<(), ProjectSnapshotError> {
     match playback {
         Some(SamplePlaybackResolution::Intent { intent }) => {
-            validate_playback_intent(&format!("{field}.intent"), intent)
+            validate_playback_intent(&format!("{field}.intent"), intent, assignments)
         }
         Some(SamplePlaybackResolution::Miss { miss }) => {
             validate_playback_miss(&format!("{field}.miss"), miss)
@@ -2760,6 +2889,7 @@ fn validate_playback_resolution(
 fn validate_playback_intent(
     field: &str,
     intent: &SamplePlaybackIntent,
+    assignments: &[PadAssignment],
 ) -> Result<(), ProjectSnapshotError> {
     validate_range_u8(
         &format!("{field}.selected_track"),
@@ -2791,10 +2921,7 @@ fn validate_playback_intent(
         MIN_PAD_TUNE_CENTS,
         MAX_PAD_TUNE_CENTS,
     )?;
-    let length_frames = generated_sample_length_frames(ProgramPad {
-        bank: intent.bank,
-        pad_number: intent.pad_number,
-    });
+    let length_frames = playback_intent_length_frames(field, intent, assignments)?;
     validate_sample_window(
         field,
         intent.start_frame,
@@ -2802,6 +2929,32 @@ fn validate_playback_intent(
         intent.window_length_frames,
         length_frames,
     )
+}
+
+fn playback_intent_length_frames(
+    field: &str,
+    intent: &SamplePlaybackIntent,
+    assignments: &[PadAssignment],
+) -> Result<u32, ProjectSnapshotError> {
+    assignments
+        .iter()
+        .find(|assignment| {
+            assignment.pad.bank == intent.bank
+                && assignment.pad.pad_number == intent.pad_number
+                && assignment.sample.id == intent.sample_id
+        })
+        .map(|assignment| assignment.sample.effective_length_frames(assignment.pad))
+        .ok_or_else(|| {
+            invalid_value(
+                &format!("{field}.sample_id"),
+                format!(
+                    "unknown sample id {:?} for pad {}{:02}",
+                    intent.sample_id,
+                    intent.bank.label(),
+                    intent.pad_number
+                ),
+            )
+        })
 }
 
 fn validate_playback_miss(
@@ -2853,7 +3006,7 @@ fn validate_sample_window(
     if end_frame >= length_frames {
         return Err(invalid_value(
             &format!("{field}.end_frame"),
-            format!("must be less than generated sample length {length_frames}"),
+            format!("must be less than effective sample length {length_frames}"),
         ));
     }
     let expected_window_length = sample_window_length_frames(start_frame, end_frame);
@@ -3108,7 +3261,8 @@ fn sample_catalog_for_program(
             continue;
         }
 
-        let length_frames = generated_sample_length_frames(assignment.pad);
+        let length_frames = assignment.sample.effective_length_frames(assignment.pad);
+        let source_kind = assignment.sample.source_kind;
         let (start_frame, end_frame) = sample_trims
             .iter()
             .find(|trim| trim.sample_id == assignment.sample.id)
@@ -3118,6 +3272,7 @@ fn sample_catalog_for_program(
             index: 0,
             count: 0,
             sample: assignment.sample,
+            source_kind,
             source_pad: assignment.pad,
             start_frame,
             end_frame,
@@ -3220,6 +3375,57 @@ fn generated_sample(pad: ProgramPad) -> SyntheticSample {
             pad.pad_number
         ),
         name: format!("SYN-{}{:02}", pad.bank.label(), pad.pad_number),
+        source_kind: SampleSourceKind::Generated,
+        length_frames: None,
+    }
+}
+
+fn next_user_sample_index(program: &Program, id_prefix: &str) -> Option<u16> {
+    let prefix = format!("{id_prefix}_");
+    let max_existing = program
+        .pad_assignments
+        .iter()
+        .filter_map(|assignment| assignment.sample.id.strip_prefix(&prefix))
+        .filter_map(|suffix| suffix.parse::<u16>().ok())
+        .max()
+        .unwrap_or(0);
+    max_existing
+        .checked_add(1)
+        .filter(|next| *next <= MAX_USER_SAMPLE_INDEX)
+}
+
+fn sample_source_length_frames(source_kind: SampleSourceKind) -> u32 {
+    match source_kind {
+        SampleSourceKind::Generated => generated_sample_length_frames(ProgramPad {
+            bank: PadBank::A,
+            pad_number: 1,
+        }),
+        SampleSourceKind::Recorded => RECORDED_SAMPLE_LENGTH_FRAMES,
+        SampleSourceKind::Imported => IMPORTED_SAMPLE_LENGTH_FRAMES,
+    }
+}
+
+fn sample_source_id_prefix(source_kind: SampleSourceKind) -> &'static str {
+    match source_kind {
+        SampleSourceKind::Generated => "synthetic",
+        SampleSourceKind::Recorded => "recorded",
+        SampleSourceKind::Imported => "imported",
+    }
+}
+
+fn sample_source_name_prefix(source_kind: SampleSourceKind) -> &'static str {
+    match source_kind {
+        SampleSourceKind::Generated => "SYN",
+        SampleSourceKind::Recorded => "REC",
+        SampleSourceKind::Imported => "IMP",
+    }
+}
+
+fn sample_source_reason(source_kind: SampleSourceKind) -> &'static str {
+    match source_kind {
+        SampleSourceKind::Generated => "generated",
+        SampleSourceKind::Recorded => "record",
+        SampleSourceKind::Imported => "import",
     }
 }
 

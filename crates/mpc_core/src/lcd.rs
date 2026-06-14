@@ -236,7 +236,7 @@ impl LcdFrame {
                         entry.count.min(99),
                         entry.sample.name
                     ),
-                    format!("ID {}", entry.sample.id),
+                    format!("{} ID {}", entry.source_kind.label(), entry.sample.id),
                     format!(
                         "Pad {} Len {:06}",
                         pad_label(entry.source_pad),
@@ -460,8 +460,8 @@ fn sample_soft_keys() -> [String; 6] {
     [
         "Prev".to_string(),
         "Next".to_string(),
-        "F3".to_string(),
-        "F4".to_string(),
+        "Record".to_string(),
+        "Import".to_string(),
         "F5".to_string(),
         "Trim".to_string(),
     ]

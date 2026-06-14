@@ -44,6 +44,7 @@ This file tracks evidence sources without copying proprietary source pages, scan
 | sequence-event-erase-slice-plan | internal_spec | plan | Deterministic MAIN F5 erase-latest-current-track sequence event foundation | `docs/superpowers/plans/2026-06-13-mpc2000xl-sequence-event-erase.md` |
 | sample-catalog-navigation-slice-plan | internal_spec | plan | Metadata-only SAMPLE/TRIM generated sample catalog navigation foundation | `docs/superpowers/plans/2026-06-13-mpc2000xl-sample-catalog-navigation.md` |
 | sample-trim-window-slice-plan | internal_spec | plan | Metadata-only TRIM generated sample playback window editing foundation | `docs/superpowers/plans/2026-06-13-mpc2000xl-sample-trim-window.md` |
+| sample-record-import-metadata-slice-plan | internal_spec | plan | SAMPLE mode deterministic recorded/imported metadata-only source identity foundation | `docs/superpowers/plans/2026-06-13-mpc2000xl-sample-record-import-metadata.md` |
 | disk-mode-project-operations-slice-plan | internal_spec | plan | DISK mode project JSON save/load request foundation | `docs/superpowers/plans/2026-06-13-mpc2000xl-disk-mode-project-operations.md` |
 | song-mode-chain-editor-slice-plan | internal_spec | plan | SONG mode deterministic sequence-chain metadata editor foundation | `docs/superpowers/plans/2026-06-13-mpc2000xl-song-mode-chain-editor.md` |
 | setup-preferences-slice-plan | internal_spec | plan | SETUP mode deterministic preferences editor foundation | `docs/superpowers/plans/2026-06-13-mpc2000xl-setup-preferences.md` |

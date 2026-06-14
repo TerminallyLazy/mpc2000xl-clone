@@ -2690,6 +2690,113 @@
         "Manual, firmware, hardware capture, native project, and JJ-OS parity are deferred.",
         "No proprietary manuals, service scans, firmware bytes, JJ-OS assets, samples, media, binary fixtures, or copied third-party code are stored in the repo."
       ]
+    },
+    {
+      "id": "core.sample.record-import-metadata",
+      "name": "SAMPLE mode creates recorded/imported sample metadata identities",
+      "area": "sample",
+      "state": "fixture-backed",
+      "evidence": [
+        {
+          "source_id": "sample-record-import-metadata-slice-plan",
+          "source_category": "internal_spec",
+          "type": "plan",
+          "status": "mapped",
+          "ref": "docs/superpowers/plans/2026-06-13-mpc2000xl-sample-record-import-metadata.md#source-and-evidence-status"
+        },
+        {
+          "source_id": "conformance-lab-spec",
+          "source_category": "internal_spec",
+          "type": "spec",
+          "status": "mapped",
+          "ref": "docs/superpowers/specs/2026-06-13-mpc2000xl-conformance-lab-design.md#fixture-strategy"
+        }
+      ],
+      "source_coverage": [
+        {
+          "source_category": "manual",
+          "source_id": "owner-manual",
+          "status": "investigation",
+          "ref": null,
+          "note": "Manual mapping for real SAMPLE record/import workflows is deferred; this slice is not accepted as manual parity."
+        },
+        {
+          "source_category": "firmware",
+          "source_id": "mpc2000xl-os-local-reference",
+          "status": "investigation",
+          "ref": null,
+          "note": "No firmware trace or native project sample-import metadata comparison has been captured."
+        },
+        {
+          "source_category": "jjos",
+          "source_id": "jjos-unverified-boundary",
+          "status": "conflict-note",
+          "ref": "docs/superpowers/specs/2026-06-13-mpc2000xl-full-app-product-design.md#jj-os-evidence-boundary",
+          "note": "No JJ-OS parity claim is made for SAMPLE record/import behavior."
+        },
+        {
+          "source_category": "internal_spec",
+          "source_id": "sample-record-import-metadata-slice-plan",
+          "status": "mapped",
+          "ref": "docs/superpowers/plans/2026-06-13-mpc2000xl-sample-record-import-metadata.md#deterministic-contract",
+          "note": "The current contract is deterministic metadata-only source identity and length propagation."
+        }
+      ],
+      "inputs": [
+        {
+          "channel": "front_panel",
+          "event": "press",
+          "mode": "sample",
+          "control": "soft_key_3",
+          "policy": "create recorded metadata and assign it to the selected program pad"
+        },
+        {
+          "channel": "front_panel",
+          "event": "press",
+          "mode": "sample",
+          "control": "soft_key_4",
+          "policy": "create imported metadata and assign it to the selected program pad"
+        }
+      ],
+      "expected_outputs": {
+        "state": {
+          "sample_source_kind": "generated defaults remain generated; F3 creates recorded and F4 creates imported",
+          "length_frames": "generated uses pad-derived length; recorded uses 44100; imported uses 88200",
+          "assignment": "new metadata replaces the selected pad assignment and selects the new sample id",
+          "snapshot": "old generated snapshots without source/length restore; malformed present recorded/imported metadata is rejected"
+        },
+        "outputs": [
+          "SampleMetadataCreated before PadAssignmentChanged, SampleSelected, and LcdChanged",
+          "PadAssignmentChanged uses assigned for metadata creation",
+          "Ignored is returned for impossible metadata allocation instead of panicking"
+        ],
+        "lcd": {
+          "title": "SAMPLE",
+          "content": "source kind, sample id, source pad, effective length, and metadata-only boundary"
+        },
+        "desktop": {
+          "controls": "Record meta and Import meta buttons enabled in SAMPLE mode",
+          "status": "created sample source kind, name, target pad, and length"
+        },
+        "deferred": [
+          "real sampling",
+          "WAV decode",
+          "waveform display",
+          "external file path import",
+          "audio byte persistence",
+          "MPC2000XL manual parity",
+          "JJ-OS parity"
+        ]
+      },
+      "tolerance": null,
+      "fixture_refs": [
+        "crates/mpc_core/tests/core_flow.rs",
+        "crates/mpc_conformance/tests/fixtures/sample_record_import_metadata_round_trip.json"
+      ],
+      "conflict_notes": [
+        "This is an internal deterministic metadata-only foundation, not full MPC2000XL or JJ-OS SAMPLE behavior.",
+        "No real audio bytes, file paths, binary blobs, external media, manuals, service scans, firmware, or proprietary data are stored."
+      ]
     }
   ]
 }

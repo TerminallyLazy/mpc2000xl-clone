@@ -1,0 +1,183 @@
+{
+  "id": "core.sample.record-import-metadata-round-trip",
+  "name": "SAMPLE creates recorded/imported metadata identities and restored playback uses imported metadata",
+  "source_refs": [
+    "docs/superpowers/plans/2026-06-13-mpc2000xl-sample-record-import-metadata.md#source-and-evidence-status",
+    "docs/superpowers/plans/2026-06-13-mpc2000xl-sample-catalog-navigation.md#source-and-evidence-status",
+    "docs/superpowers/specs/2026-06-13-mpc2000xl-full-app-product-design.md#rights-and-source-boundary"
+  ],
+  "events": [
+    {
+      "type": "press",
+      "control": "sample"
+    },
+    {
+      "type": "press",
+      "control": {
+        "soft_key": 3
+      }
+    },
+    {
+      "type": "press",
+      "control": "program"
+    },
+    {
+      "type": "press",
+      "control": "cursor_right"
+    },
+    {
+      "type": "press",
+      "control": "sample"
+    },
+    {
+      "type": "press",
+      "control": {
+        "soft_key": 4
+      }
+    },
+    {
+      "type": "press",
+      "control": "rec"
+    },
+    {
+      "type": "press",
+      "control": "play"
+    },
+    {
+      "type": "tick",
+      "micros": 500000
+    },
+    {
+      "type": "strike_pad",
+      "bank": "a",
+      "pad": 2,
+      "velocity": 96
+    },
+    {
+      "type": "press",
+      "control": "stop"
+    }
+  ],
+  "expect_sample_metadata_created": [
+    {
+      "sample_id": "recorded_001",
+      "sample_name": "REC-001",
+      "source_kind": "recorded",
+      "target_pad": {
+        "bank": "a",
+        "pad_number": 1
+      },
+      "length_frames": 44100
+    },
+    {
+      "sample_id": "imported_001",
+      "sample_name": "IMP-001",
+      "source_kind": "imported",
+      "target_pad": {
+        "bank": "a",
+        "pad_number": 2
+      },
+      "length_frames": 88200
+    }
+  ],
+  "expect": {
+    "mode": "sample",
+    "lcd_title": "SAMPLE",
+    "playing": false,
+    "recording": false,
+    "event_count": 11,
+    "playhead_ticks": 96,
+    "recorded_event_count": 1,
+    "selected_program_pad": {
+      "bank": "a",
+      "pad_number": 2
+    },
+    "sample_catalog_count": 64,
+    "selected_sample_index": 2,
+    "selected_sample_id": "imported_001",
+    "selected_sample_name": "IMP-001",
+    "selected_sample_source_kind": "imported",
+    "selected_sample_length_frames": 88200,
+    "selected_sample_start_frame": 0,
+    "selected_sample_end_frame": 88199,
+    "selected_sample_window_length_frames": 88200,
+    "last_recorded_sample_id": "imported_001",
+    "last_recorded_sample_name": "IMP-001",
+    "last_playback": {
+      "type": "intent",
+      "intent": {
+        "selected_track": 1,
+        "program_index": 1,
+        "program_name": "Program01",
+        "bank": "a",
+        "pad_number": 2,
+        "sample_id": "imported_001",
+        "sample_name": "IMP-001",
+        "velocity": 96,
+        "level": 100,
+        "pan": 0,
+        "tune_cents": 0,
+        "start_frame": 0,
+        "end_frame": 88199,
+        "window_length_frames": 88200
+      }
+    }
+  },
+  "project_round_trip": {
+    "expect_snapshot_version": 1,
+    "restore_playhead_ticks": 0,
+    "restore_playhead_tick_remainder": 0,
+    "clear_last_playback_before_restore": true,
+    "post_restore_events": [
+      {
+        "type": "press",
+        "control": "play"
+      },
+      {
+        "type": "tick",
+        "micros": 500000
+      }
+    ],
+    "expect": {
+      "mode": "sample",
+      "lcd_title": "SAMPLE",
+      "playing": true,
+      "recording": false,
+      "event_count": 13,
+      "playhead_ticks": 96,
+      "recorded_event_count": 1,
+      "selected_program_pad": {
+        "bank": "a",
+        "pad_number": 2
+      },
+      "sample_catalog_count": 64,
+      "selected_sample_index": 2,
+      "selected_sample_id": "imported_001",
+      "selected_sample_name": "IMP-001",
+      "selected_sample_source_kind": "imported",
+      "selected_sample_length_frames": 88200,
+      "selected_sample_start_frame": 0,
+      "selected_sample_end_frame": 88199,
+      "selected_sample_window_length_frames": 88200,
+      "last_playback": {
+        "type": "intent",
+        "intent": {
+          "selected_track": 1,
+          "program_index": 1,
+          "program_name": "Program01",
+          "bank": "a",
+          "pad_number": 2,
+          "sample_id": "imported_001",
+          "sample_name": "IMP-001",
+          "velocity": 96,
+          "level": 100,
+          "pan": 0,
+          "tune_cents": 0,
+          "start_frame": 0,
+          "end_frame": 88199,
+          "window_length_frames": 88200
+        }
+      }
+    }
+  }
+}

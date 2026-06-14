@@ -1,11 +1,12 @@
 use mpc_core::{
-    DiskOperation, HardwareEvent, INTERNAL_PPQN, MachineOutput, MainScreenField, MidiSettingsField,
-    Mode, MpcCore, PROJECT_SNAPSHOT_VERSION, PadAssignment, PadAssignmentChange, PadBank,
-    PanelControl, PlaybackMissReason, ProgramEditField, ProgramPad, ProjectSetupSnapshot,
-    ProjectSnapshot, ProjectSnapshotError, ProjectSongSnapshot, SamplePlaybackIntent,
-    SamplePlaybackResolution, SampleTrim, SequenceEvent, SetupField, SetupPreferences,
-    SongEditField, SongStep, SyntheticSample, TimingCorrectDivision, TimingCorrectField,
-    TimingCorrectSettings, TrimEditField, sequence_length_ticks_for_bars,
+    DiskOperation, HardwareEvent, IMPORTED_SAMPLE_LENGTH_FRAMES, INTERNAL_PPQN, MachineOutput,
+    MainScreenField, MidiSettingsField, Mode, MpcCore, PROJECT_SNAPSHOT_VERSION, PadAssignment,
+    PadAssignmentChange, PadBank, PanelControl, PlaybackMissReason, ProgramEditField, ProgramPad,
+    ProjectSetupSnapshot, ProjectSnapshot, ProjectSnapshotError, ProjectSongSnapshot,
+    RECORDED_SAMPLE_LENGTH_FRAMES, SamplePlaybackIntent, SamplePlaybackResolution,
+    SampleSourceKind, SampleTrim, SequenceEvent, SetupField, SetupPreferences, SongEditField,
+    SongStep, SyntheticSample, TimingCorrectDivision, TimingCorrectField, TimingCorrectSettings,
+    TrimEditField, sequence_length_ticks_for_bars,
 };
 
 #[test]
@@ -231,6 +232,8 @@ fn sample_catalog_default_selection_is_deterministic_and_lcd_reflects_metadata_o
     assert_eq!(selected_sample.count, 64);
     assert_eq!(selected_sample.sample.id, "synthetic_a_01");
     assert_eq!(selected_sample.sample.name, "SYN-A01");
+    assert_eq!(selected_sample.source_kind, SampleSourceKind::Generated);
+    assert_eq!(selected_sample.length_frames, 48_000);
     assert_eq!(
         selected_sample.source_pad,
         ProgramPad {
@@ -315,6 +318,8 @@ fn sample_catalog_dedupes_by_sample_id_so_selection_identity_is_stable() {
             sample: SyntheticSample {
                 id: "shared_sample".to_string(),
                 name: "FIRST-NAME".to_string(),
+                source_kind: SampleSourceKind::Generated,
+                length_frames: None,
             },
             level: 100,
             pan: 0,
@@ -328,6 +333,8 @@ fn sample_catalog_dedupes_by_sample_id_so_selection_identity_is_stable() {
             sample: SyntheticSample {
                 id: "shared_sample".to_string(),
                 name: "SECOND-NAME".to_string(),
+                source_kind: SampleSourceKind::Generated,
+                length_frames: None,
             },
             level: 100,
             pan: 0,
@@ -341,16 +348,42 @@ fn sample_catalog_dedupes_by_sample_id_so_selection_identity_is_stable() {
             sample: SyntheticSample {
                 id: "unique_sample".to_string(),
                 name: "UNIQUE".to_string(),
+                source_kind: SampleSourceKind::Generated,
+                length_frames: None,
             },
             level: 100,
             pan: 0,
             tune_cents: 0,
         },
     ];
+    let shared_second_pad_length = mpc_core::generated_sample_length_frames(ProgramPad {
+        bank: PadBank::A,
+        pad_number: 2,
+    });
+    snapshot.machine.event_count = 1;
+    snapshot.machine.last_playback = Some(SamplePlaybackResolution::Intent {
+        intent: SamplePlaybackIntent {
+            selected_track: 1,
+            program_index: 1,
+            program_name: "Program01".to_string(),
+            bank: PadBank::A,
+            pad_number: 2,
+            sample_id: "shared_sample".to_string(),
+            sample_name: "SECOND-NAME".to_string(),
+            velocity: 96,
+            level: 100,
+            pan: 0,
+            tune_cents: 0,
+            start_frame: 0,
+            end_frame: shared_second_pad_length - 1,
+            window_length_frames: shared_second_pad_length,
+        },
+    });
 
     let mut core = MpcCore::new();
-    core.restore_project_snapshot(snapshot)
-        .expect("duplicate sample ids should collapse in the catalog");
+    core.restore_project_snapshot(snapshot).expect(
+        "duplicate sample ids should collapse in the catalog without breaking playback validation",
+    );
 
     let catalog = core.state().sample_catalog();
     assert_eq!(catalog.len(), 2);
@@ -358,6 +391,13 @@ fn sample_catalog_dedupes_by_sample_id_so_selection_identity_is_stable() {
     assert_eq!(catalog[0].sample.name, "FIRST-NAME");
     assert_eq!(catalog[0].source_pad.pad_number, 1);
     assert_eq!(catalog[1].sample.id, "unique_sample");
+    assert!(matches!(
+        &core.state().last_playback,
+        Some(SamplePlaybackResolution::Intent { intent })
+            if intent.sample_id == "shared_sample"
+                && intent.pad_number == 2
+                && intent.window_length_frames == shared_second_pad_length
+    ));
 
     let outputs = core.dispatch(HardwareEvent::TurnDataWheel { delta: 1 });
 
@@ -487,6 +527,7 @@ fn sample_catalog_output_serializes_with_stable_shape() {
                     "id": "synthetic_b_01",
                     "name": "SYN-B01"
                 },
+                "source_kind": "generated",
                 "source_pad": {
                     "bank": "b",
                     "pad_number": 1
@@ -498,6 +539,334 @@ fn sample_catalog_output_serializes_with_stable_shape() {
             }
         })
     );
+}
+
+#[test]
+fn sample_mode_soft_keys_create_recorded_and_imported_metadata_assignments() {
+    let mut core = MpcCore::new();
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::Sample,
+    });
+
+    let recorded_outputs = core.dispatch(HardwareEvent::Press {
+        control: PanelControl::SoftKey(3),
+    });
+
+    assert_eq!(
+        core.state().selected_sample_id.as_deref(),
+        Some("recorded_001")
+    );
+    let recorded = core.state().selected_sample().unwrap();
+    assert_eq!(recorded.sample.name, "REC-001");
+    assert_eq!(recorded.source_kind, SampleSourceKind::Recorded);
+    assert_eq!(recorded.length_frames, RECORDED_SAMPLE_LENGTH_FRAMES);
+    assert_eq!(recorded.end_frame, RECORDED_SAMPLE_LENGTH_FRAMES - 1);
+    assert!(core.state().lcd.lines[1].contains("Recorded ID recorded_001"));
+    assert!(matches!(
+        recorded_outputs.as_slice(),
+        [
+            MachineOutput::SampleMetadataCreated {
+                source_kind: SampleSourceKind::Recorded,
+                target_pad: ProgramPad {
+                    bank: PadBank::A,
+                    pad_number: 1
+                },
+                length_frames: RECORDED_SAMPLE_LENGTH_FRAMES,
+                ..
+            },
+            MachineOutput::PadAssignmentChanged {
+                action: PadAssignmentChange::Assigned,
+                assignment: Some(_),
+                ..
+            },
+            MachineOutput::SampleSelected { entry },
+            MachineOutput::LcdChanged
+        ] if entry.sample.id == "recorded_001"
+    ));
+
+    let imported_outputs = core.dispatch(HardwareEvent::Press {
+        control: PanelControl::SoftKey(4),
+    });
+
+    assert_eq!(
+        core.state().selected_sample_id.as_deref(),
+        Some("imported_001")
+    );
+    let imported = core.state().selected_sample().unwrap();
+    assert_eq!(imported.sample.name, "IMP-001");
+    assert_eq!(imported.source_kind, SampleSourceKind::Imported);
+    assert_eq!(imported.length_frames, IMPORTED_SAMPLE_LENGTH_FRAMES);
+    assert_eq!(imported.end_frame, IMPORTED_SAMPLE_LENGTH_FRAMES - 1);
+    assert!(matches!(
+        imported_outputs.first(),
+        Some(MachineOutput::SampleMetadataCreated {
+            sample,
+            source_kind: SampleSourceKind::Imported,
+            length_frames: IMPORTED_SAMPLE_LENGTH_FRAMES,
+            ..
+        }) if sample.id == "imported_001" && sample.length_frames == Some(IMPORTED_SAMPLE_LENGTH_FRAMES)
+    ));
+}
+
+#[test]
+fn sample_metadata_assignment_replaces_selected_pad_and_preserves_pad_params() {
+    let mut snapshot = MpcCore::new().export_project_snapshot();
+    let pad = ProgramPad {
+        bank: PadBank::A,
+        pad_number: 1,
+    };
+    let assignment = snapshot
+        .program
+        .pad_assignments
+        .iter_mut()
+        .find(|assignment| assignment.pad == pad)
+        .expect("A01 assignment should exist");
+    assignment.level = 87;
+    assignment.pan = -5;
+    assignment.tune_cents = 300;
+    snapshot.machine.mode = Mode::Sample;
+    snapshot.machine.selected_program_pad = pad;
+
+    let mut core = restore_snapshot(snapshot);
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::SoftKey(3),
+    });
+
+    let assignment = core
+        .state()
+        .current_program
+        .pad_assignments
+        .iter()
+        .find(|assignment| assignment.pad == pad)
+        .expect("replacement assignment should exist");
+    assert_eq!(assignment.sample.id, "recorded_001");
+    assert_eq!(assignment.level, 87);
+    assert_eq!(assignment.pan, -5);
+    assert_eq!(assignment.tune_cents, 300);
+}
+
+#[test]
+fn sample_metadata_creation_output_serializes_with_stable_shape() {
+    let mut core = MpcCore::new();
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::Sample,
+    });
+    let outputs = core.dispatch(HardwareEvent::Press {
+        control: PanelControl::SoftKey(3),
+    });
+    let created = outputs
+        .iter()
+        .find(|output| matches!(output, MachineOutput::SampleMetadataCreated { .. }))
+        .expect("record action should emit creation output");
+
+    assert_eq!(
+        serde_json::to_value(created).expect("creation output should serialize"),
+        serde_json::json!({
+            "type": "sample_metadata_created",
+            "sample": {
+                "id": "recorded_001",
+                "name": "REC-001",
+                "source_kind": "recorded",
+                "length_frames": RECORDED_SAMPLE_LENGTH_FRAMES
+            },
+            "source_kind": "recorded",
+            "target_pad": {
+                "bank": "a",
+                "pad_number": 1
+            },
+            "length_frames": RECORDED_SAMPLE_LENGTH_FRAMES
+        })
+    );
+}
+
+#[test]
+fn sample_metadata_project_snapshot_round_trips_defaults_and_validates() {
+    let mut core = MpcCore::new();
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::Sample,
+    });
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::SoftKey(3),
+    });
+    let json = core
+        .to_project_json()
+        .expect("sample metadata should encode");
+    assert!(json.contains(r#""source_kind": "recorded""#));
+    assert!(json.contains(r#""length_frames": 44100"#));
+    assert!(!json.contains(r#""audio_bytes""#));
+
+    let mut restored = MpcCore::new();
+    restored
+        .restore_project_json(&json)
+        .expect("sample metadata should restore");
+    let selected = restored.state().selected_sample().unwrap();
+    assert_eq!(selected.sample.id, "recorded_001");
+    assert_eq!(selected.source_kind, SampleSourceKind::Recorded);
+    assert_eq!(selected.length_frames, RECORDED_SAMPLE_LENGTH_FRAMES);
+
+    let mut older_value =
+        serde_json::to_value(MpcCore::new().export_project_snapshot()).expect("snapshot value");
+    let sample = older_value
+        .pointer_mut("/program/pad_assignments/0/sample")
+        .unwrap()
+        .as_object_mut()
+        .unwrap();
+    sample.remove("source_kind");
+    sample.remove("length_frames");
+    let older_json = serde_json::to_string(&older_value).expect("older JSON should encode");
+    let mut older = MpcCore::new();
+    older
+        .restore_project_json(&older_json)
+        .expect("older generated sample JSON should restore");
+    let generated = older.state().sample_catalog()[0].clone();
+    assert_eq!(generated.source_kind, SampleSourceKind::Generated);
+    assert_eq!(generated.length_frames, 48_000);
+    let generated_pad = ProgramPad {
+        bank: PadBank::B,
+        pad_number: 1,
+    };
+    let generated_with_explicit_length = SyntheticSample {
+        id: "synthetic_b_01".to_string(),
+        name: "SYN-B01".to_string(),
+        source_kind: SampleSourceKind::Generated,
+        length_frames: Some(12_345),
+    };
+    assert_eq!(
+        generated_with_explicit_length.effective_length_frames(generated_pad),
+        mpc_core::generated_sample_length_frames(generated_pad)
+    );
+
+    let mut generated_with_length = MpcCore::new().export_project_snapshot();
+    generated_with_length.program.pad_assignments[0]
+        .sample
+        .length_frames = Some(12_345);
+    let error = MpcCore::new()
+        .restore_project_snapshot(generated_with_length)
+        .expect_err("generated sample with explicit length should be rejected");
+    assert_invalid_project_field(
+        error,
+        "program.pad_assignments[0].sample.length_frames",
+        "generated samples must use pad-derived length",
+    );
+
+    let mut missing_length = restored.export_project_snapshot();
+    let sample = &mut missing_length.program.pad_assignments[0].sample;
+    sample.source_kind = SampleSourceKind::Recorded;
+    sample.length_frames = None;
+    let error = MpcCore::new()
+        .restore_project_snapshot(missing_length)
+        .expect_err("recorded metadata without length should be rejected");
+    assert_invalid_project_field(
+        error,
+        "program.pad_assignments[0].sample.length_frames",
+        "require metadata length_frames",
+    );
+
+    for source_kind in [SampleSourceKind::Recorded, SampleSourceKind::Imported] {
+        let mut zero_length = restored.export_project_snapshot();
+        let sample = &mut zero_length.program.pad_assignments[0].sample;
+        sample.source_kind = source_kind;
+        sample.length_frames = Some(0);
+        let error = MpcCore::new()
+            .restore_project_snapshot(zero_length)
+            .expect_err("zero-length recorded/imported metadata should be rejected");
+        assert_invalid_project_field(
+            error,
+            "program.pad_assignments[0].sample.length_frames",
+            "must be in range",
+        );
+    }
+
+    let mut too_long = restored.export_project_snapshot();
+    too_long.program.pad_assignments[0].sample.length_frames = Some(48_000 * 60 * 10 + 1);
+    let error = MpcCore::new()
+        .restore_project_snapshot(too_long)
+        .expect_err("oversized metadata-only length should be rejected");
+    assert_invalid_project_field(
+        error,
+        "program.pad_assignments[0].sample.length_frames",
+        "must be in range",
+    );
+
+    let mut stale_playback = restored.export_project_snapshot();
+    stale_playback.machine.last_playback = Some(SamplePlaybackResolution::Intent {
+        intent: SamplePlaybackIntent {
+            selected_track: 1,
+            program_index: 1,
+            program_name: "Program01".to_string(),
+            bank: PadBank::A,
+            pad_number: 1,
+            sample_id: "missing_user_sample".to_string(),
+            sample_name: "MISSING".to_string(),
+            velocity: 96,
+            level: 100,
+            pan: 0,
+            tune_cents: 0,
+            start_frame: 0,
+            end_frame: 47_999,
+            window_length_frames: 48_000,
+        },
+    });
+    let error = MpcCore::new()
+        .restore_project_snapshot(stale_playback)
+        .expect_err("stale playback sample id should be rejected");
+    assert_invalid_project_field(
+        error,
+        "machine.last_playback.intent.sample_id",
+        "unknown sample id",
+    );
+}
+
+#[test]
+fn imported_sample_metadata_length_drives_trim_and_playback_windows() {
+    let mut core = MpcCore::new();
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::Sample,
+    });
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::SoftKey(4),
+    });
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::Trim,
+    });
+
+    let selected = core.state().selected_sample().unwrap();
+    assert_eq!(selected.source_kind, SampleSourceKind::Imported);
+    assert_eq!(selected.end_frame, IMPORTED_SAMPLE_LENGTH_FRAMES - 1);
+    assert_eq!(selected.window_length_frames, IMPORTED_SAMPLE_LENGTH_FRAMES);
+
+    let outputs = core.dispatch(HardwareEvent::StrikePad {
+        bank: PadBank::A,
+        pad: 1,
+        velocity: 100,
+    });
+    let intent = playback_intents(&outputs)
+        .into_iter()
+        .next()
+        .expect("imported metadata strike should emit playback intent");
+    assert_eq!(intent.sample_id, "imported_001");
+    assert_eq!(intent.sample_name, "IMP-001");
+    assert_eq!(intent.end_frame, IMPORTED_SAMPLE_LENGTH_FRAMES - 1);
+    assert_eq!(intent.window_length_frames, IMPORTED_SAMPLE_LENGTH_FRAMES);
+
+    let json = core
+        .to_project_json()
+        .expect("imported sample snapshot should encode");
+    let mut restored = MpcCore::new();
+    restored
+        .restore_project_json(&json)
+        .expect("imported sample snapshot should restore");
+    let outputs = restored.dispatch(HardwareEvent::StrikePad {
+        bank: PadBank::A,
+        pad: 1,
+        velocity: 100,
+    });
+    let intent = playback_intents(&outputs)
+        .into_iter()
+        .next()
+        .expect("restored imported metadata should emit playback intent");
+    assert_eq!(intent.sample_id, "imported_001");
+    assert_eq!(intent.window_length_frames, IMPORTED_SAMPLE_LENGTH_FRAMES);
 }
 
 #[test]
@@ -932,7 +1301,7 @@ fn trim_project_snapshot_defaults_round_trips_and_validates_entries() {
                 end_frame: 48_000,
             }],
             "program.sample_trims[0].end_frame",
-            "generated sample length",
+            "effective sample length",
         ),
         (
             vec![SampleTrim {

@@ -570,15 +570,34 @@ impl MpcDesktopApp {
             return format!("Ignored: {reason}");
         }
 
+        if let Some(MachineOutput::SampleMetadataCreated {
+            sample,
+            source_kind,
+            target_pad,
+            length_frames,
+        }) = outputs
+            .iter()
+            .find(|output| matches!(output, MachineOutput::SampleMetadataCreated { .. }))
+        {
+            return format!(
+                "{} sample metadata {} created for {} ({} frames, assigned)",
+                source_kind.label(),
+                sample.name,
+                program_pad_label(*target_pad),
+                length_frames
+            );
+        }
+
         if let Some(MachineOutput::SampleSelected { entry }) = outputs
             .iter()
             .find(|output| matches!(output, MachineOutput::SampleSelected { .. }))
         {
             return format!(
-                "Selected sample {:02}/{:02} {} ({}, {} frames, metadata only)",
+                "Selected sample {:02}/{:02} {} {} ({}, {} frames, metadata only)",
                 entry.index.min(99),
                 entry.count.min(99),
                 entry.sample.name,
+                entry.source_kind.label(),
                 program_pad_label(entry.source_pad),
                 entry.length_frames
             );
@@ -1123,6 +1142,7 @@ impl MpcDesktopApp {
         let selected_sample = state.selected_sample();
         let sample_text = selected_sample_text(selected_sample.as_ref());
         let sample_mode = matches!(state.mode, Mode::Sample | Mode::Trim);
+        let sample_create_mode = state.mode == Mode::Sample;
         let trim_mode = state.mode == Mode::Trim;
         let selected_trim_edit_field = state.selected_trim_edit_field;
 
@@ -1146,6 +1166,18 @@ impl MpcDesktopApp {
                 self.dispatch_event(HardwareEvent::Press {
                     control: PanelControl::SoftKey(2),
                 });
+            }
+            if sample_create_mode {
+                if ui.button("Record meta").clicked() {
+                    self.dispatch_event(HardwareEvent::Press {
+                        control: PanelControl::SoftKey(3),
+                    });
+                }
+                if ui.button("Import meta").clicked() {
+                    self.dispatch_event(HardwareEvent::Press {
+                        control: PanelControl::SoftKey(4),
+                    });
+                }
             }
             ui.separator();
             ui.label(format!("TRIM field {}", selected_trim_edit_field.label()));
@@ -1340,6 +1372,7 @@ fn assignment_action_text(action: PadAssignmentChange) -> &'static str {
     match action {
         PadAssignmentChange::Cleared => "cleared",
         PadAssignmentChange::Restored => "assigned",
+        PadAssignmentChange::Assigned => "assigned",
     }
 }
 
@@ -1369,10 +1402,11 @@ fn selected_assignment_text(state: &MpcState) -> String {
 fn selected_sample_text(selected_sample: Option<&SampleCatalogEntry>) -> String {
     match selected_sample {
         Some(entry) => format!(
-            "Sample: {:02}/{:02} {} {} len {} frames trim {}..{} window {}",
+            "Sample: {:02}/{:02} {} {} {} len {} frames trim {}..{} window {}",
             entry.index.min(99),
             entry.count.min(99),
             entry.sample.name,
+            entry.source_kind.label(),
             program_pad_label(entry.source_pad),
             entry.length_frames,
             entry.start_frame,
