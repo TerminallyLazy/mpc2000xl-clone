@@ -125,6 +125,8 @@ pub struct PadAssignment {
     pub pan: i8,
     #[serde(default)]
     pub tune_cents: i16,
+    #[serde(default, skip_serializing_if = "is_zero_u8")]
+    pub mute_group: u8,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -147,6 +149,8 @@ pub struct SamplePlaybackIntent {
     pub level: u8,
     pub pan: i8,
     pub tune_cents: i16,
+    #[serde(default, skip_serializing_if = "is_zero_u8")]
+    pub mute_group: u8,
     pub start_frame: u32,
     pub end_frame: u32,
     pub window_length_frames: u32,
@@ -199,6 +203,8 @@ impl<'de> Deserialize<'de> for SamplePlaybackIntent {
             #[serde(default)]
             tune_cents: i16,
             #[serde(default)]
+            mute_group: u8,
+            #[serde(default)]
             start_frame: Option<u32>,
             #[serde(default)]
             end_frame: Option<u32>,
@@ -249,11 +255,16 @@ impl<'de> Deserialize<'de> for SamplePlaybackIntent {
             level: raw.level,
             pan: raw.pan,
             tune_cents: raw.tune_cents,
+            mute_group: raw.mute_group,
             start_frame,
             end_frame,
             window_length_frames,
         })
     }
+}
+
+fn is_zero_u8(value: &u8) -> bool {
+    *value == 0
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -295,6 +306,7 @@ pub enum ProgramEditField {
     Level,
     Pan,
     Tune,
+    MuteGroup,
 }
 
 impl Default for ProgramEditField {
@@ -310,15 +322,17 @@ impl ProgramEditField {
             Self::Level => "level",
             Self::Pan => "pan",
             Self::Tune => "tune",
+            Self::MuteGroup => "mute_group",
         }
     }
 
     pub fn previous(self) -> Self {
         match self {
-            Self::Pad => Self::Tune,
+            Self::Pad => Self::MuteGroup,
             Self::Level => Self::Pad,
             Self::Pan => Self::Level,
             Self::Tune => Self::Pan,
+            Self::MuteGroup => Self::Tune,
         }
     }
 
@@ -327,7 +341,8 @@ impl ProgramEditField {
             Self::Pad => Self::Level,
             Self::Level => Self::Pan,
             Self::Pan => Self::Tune,
-            Self::Tune => Self::Pad,
+            Self::Tune => Self::MuteGroup,
+            Self::MuteGroup => Self::Pad,
         }
     }
 }

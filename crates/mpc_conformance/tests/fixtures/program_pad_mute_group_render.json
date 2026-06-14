@@ -1,0 +1,96 @@
+{
+  "id": "core.program.pad-mute-group-render",
+  "name": "PROGRAM pad mute group edit propagates to playback and render metadata",
+  "source_refs": [
+    "docs/superpowers/plans/2026-06-14-mpc2000xl-program-pad-mute-group-foundation.md#behavior-slice",
+    "docs/evidence/behavior-matrix.json#core.program.pad-mute-group-foundation"
+  ],
+  "events": [
+    {
+      "type": "press",
+      "control": "program"
+    },
+    {
+      "type": "press",
+      "control": "cursor_down"
+    },
+    {
+      "type": "press",
+      "control": "cursor_down"
+    },
+    {
+      "type": "press",
+      "control": "cursor_down"
+    },
+    {
+      "type": "press",
+      "control": "cursor_down"
+    },
+    {
+      "type": "turn_data_wheel",
+      "delta": 5
+    },
+    {
+      "type": "strike_pad",
+      "bank": "a",
+      "pad": 1,
+      "velocity": 100
+    }
+  ],
+  "expect": {
+    "mode": "program",
+    "lcd_title": "PROGRAM",
+    "playing": false,
+    "recording": false,
+    "event_count": 7,
+    "selected_track": 1,
+    "current_program_index": 1,
+    "current_program_name": "Program01",
+    "pad_assignment_count": 64,
+    "selected_program_pad": {
+      "bank": "a",
+      "pad_number": 1
+    },
+    "selected_program_edit_field": "mute_group",
+    "last_playback": {
+      "type": "intent",
+      "intent": {
+        "selected_track": 1,
+        "program_index": 1,
+        "program_name": "Program01",
+        "bank": "a",
+        "pad_number": 1,
+        "sample_id": "synthetic_a_01",
+        "sample_name": "SYN-A01",
+        "velocity": 100,
+        "level": 100,
+        "pan": 0,
+        "tune_cents": 0,
+        "mute_group": 5
+      }
+    },
+    "last_audio_render": {
+      "settings": {
+        "sample_rate_hz": 44100,
+        "frame_count": 128
+      },
+      "sample_rate_hz": 44100,
+      "frame_count": 128,
+      "source_sample_id": "synthetic_a_01",
+      "source_sample_name": "SYN-A01",
+      "selected_track": 1,
+      "program_index": 1,
+      "program_name": "Program01",
+      "bank": "a",
+      "pad_number": 1,
+      "tune_cents": 0,
+      "mute_group": 5,
+      "peak_left": 20315,
+      "peak_right": 20315,
+      "peak_amplitude": 20315,
+      "channel_balance": "center",
+      "source_kind": "rights_safe_generated",
+      "loaded_audio_byte_count": 0
+    }
+  }
+}

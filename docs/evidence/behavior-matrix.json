@@ -2363,7 +2363,7 @@
           "source_id": "mpc2000xl-os-local-reference",
           "status": "investigation",
           "ref": null,
-          "note": "No firmware trace has been captured for PROGRAM Level, Pan, or Tune edit behavior."
+          "note": "No firmware trace has been captured for PROGRAM Level, Pan, Tune, or mute-group edit behavior."
         },
         {
           "source_category": "vmpc",
@@ -2377,7 +2377,7 @@
           "source_id": "program-pad-parameter-editing-slice-plan",
           "status": "mapped",
           "ref": "docs/superpowers/plans/2026-06-13-mpc2000xl-program-pad-parameter-editing.md#source-and-evidence-status",
-          "note": "Level, Pan, and Tune editing is currently an internal foundation contract with explicit reference-behavior gaps."
+          "note": "Level, Pan, and Tune editing is currently an internal foundation contract with explicit reference-behavior gaps; mute-group behavior is covered by a later internal foundation slice."
         }
       ],
       "inputs": [
@@ -2399,7 +2399,8 @@
             "pad",
             "level",
             "pan",
-            "tune"
+            "tune",
+            "mute_group"
           ]
         },
         {
@@ -2414,12 +2415,14 @@
           "selected_program_edit_field": "persisted in project machine metadata",
           "assignment_level_range": "0..=127",
           "assignment_pan_range": "-50..=50",
-          "assignment_tune_cents_range": "-1200..=1200"
+          "assignment_tune_cents_range": "-1200..=1200",
+          "assignment_mute_group_range": "0..=16 in the later mute-group foundation"
         },
         "outputs": [
           "PadParameterChanged for assigned Level/Pan/Tune edits",
           "Ignored for unassigned Level/Pan/Tune edits",
-          "SamplePlaybackIntent carries level, pan, and tune_cents"
+          "SamplePlaybackIntent carries level, pan, and tune_cents",
+          "Later mute-group foundation extends the same output contract with mute_group"
         ],
         "render": {
           "summary": "AudioRenderSummary includes tune_cents",
@@ -2441,6 +2444,108 @@
       ],
       "conflict_notes": [
         "Exact MPC2000XL PROGRAM screen behavior and audio pitch/interpolation behavior are evidence gaps; this is a rights-safe deterministic foundation."
+      ]
+    },
+    {
+      "id": "core.program.pad-mute-group-foundation",
+      "name": "PROGRAM pad mute group metadata chokes matching active host voices",
+      "area": "program_audio_host",
+      "state": "fixture-backed-internal-spec",
+      "evidence": [
+        {
+          "source_id": "program-pad-mute-group-foundation-slice-plan",
+          "source_category": "internal_spec",
+          "type": "plan",
+          "status": "mapped",
+          "ref": "docs/superpowers/plans/2026-06-14-mpc2000xl-program-pad-mute-group-foundation.md#behavior-slice"
+        },
+        {
+          "source_id": "program-pad-parameter-editing-slice-plan",
+          "source_category": "internal_spec",
+          "type": "plan",
+          "status": "mapped",
+          "ref": "docs/superpowers/plans/2026-06-13-mpc2000xl-program-pad-parameter-editing.md#behavior-slice"
+        },
+        {
+          "source_id": "host-audio-voice-lifecycle-foundation-slice-plan",
+          "source_category": "internal_spec",
+          "type": "plan",
+          "status": "mapped",
+          "ref": "docs/superpowers/plans/2026-06-14-mpc2000xl-host-audio-voice-lifecycle-foundation.md#behavior-slice"
+        }
+      ],
+      "source_coverage": [
+        {
+          "source_category": "manual",
+          "source_id": "owner-manual",
+          "status": "investigation",
+          "ref": null,
+          "note": "Exact MPC2000XL PROGRAM mute-group field name, range, and choke semantics are pending."
+        },
+        {
+          "source_category": "firmware",
+          "source_id": "mpc2000xl-os-local-reference",
+          "status": "investigation",
+          "ref": null,
+          "note": "No firmware trace has validated mute group persistence, voice cutoff order, envelopes, or timing."
+        },
+        {
+          "source_category": "jjos",
+          "source_id": "jjos-unverified-boundary",
+          "status": "conflict-note",
+          "ref": "docs/superpowers/specs/2026-06-13-mpc2000xl-full-app-product-design.md#jj-os-evidence-boundary",
+          "note": "JJ-OS mute/choke behavior is not accepted as MPC2000XL evidence for this foundation slice."
+        },
+        {
+          "source_category": "internal_spec",
+          "source_id": "program-pad-mute-group-foundation-slice-plan",
+          "status": "mapped",
+          "ref": "docs/superpowers/plans/2026-06-14-mpc2000xl-program-pad-mute-group-foundation.md#deterministic-contract",
+          "note": "Current mute group behavior is deterministic metadata plus host voice accounting only."
+        }
+      ],
+      "inputs": [
+        {
+          "channel": "front_panel",
+          "event": "program_edit",
+          "selected_field": "mute_group",
+          "range": "0..=16"
+        },
+        {
+          "channel": "host_audio",
+          "event": "queued_positive_frame_sample_playback",
+          "policy": "nonzero mute group chokes prior active sample voices in the same group before allocation"
+        }
+      ],
+      "expected_outputs": {
+        "state": {
+          "assignment_mute_group": "defaults 0/off, persists in project snapshots, rejects values above 16",
+          "selected_program_edit_field": "cycles through mute_group after tune"
+        },
+        "playback": {
+          "intent": "SamplePlaybackIntent carries mute_group",
+          "render_summary": "AudioRenderSummary carries mute_group",
+          "recording": "recorded playback snapshots preserve mute_group after later assignment edits"
+        },
+        "host_audio": {
+          "group_zero": "does not choke",
+          "nonzero_group": "removes existing active sample-playback voices with the same group",
+          "count_in": "count-in click voices are never choked by program mute group",
+          "accounting": "choked_voice_count is separate from completed, released, and stolen counts"
+        },
+        "desktop": {
+          "status": "selected assignment, playback/render, and host-audio choke counts visible"
+        }
+      },
+      "tolerance": null,
+      "fixture_refs": [
+        "crates/mpc_core/tests/core_flow.rs",
+        "crates/mpc_audio/src/lib.rs",
+        "crates/mpc_conformance/tests/fixtures/program_pad_mute_group_render.json"
+      ],
+      "conflict_notes": [
+        "This is an internal deterministic mute-group foundation only.",
+        "Exact MPC2000XL or JJ-OS mute group ranges, envelope tails, pad mute mode, MIDI output muting, and hardware timing remain unmapped."
       ]
     },
     {

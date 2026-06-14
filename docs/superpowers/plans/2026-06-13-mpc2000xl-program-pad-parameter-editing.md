@@ -2,14 +2,14 @@
 
 ## Behavior Slice
 
-This slice extends PROGRAM pad assignment metadata with editable Level, Pan, and Tune values. It is an internal-spec foundation toward full MPC2000XL program editing, not a claim of exact reference PROGRAM-screen behavior.
+This slice extends PROGRAM pad assignment metadata with editable Level, Pan, and Tune values. The later mute-group foundation extends the same edit-field surface with internal mute-group metadata. It is an internal-spec foundation toward full MPC2000XL program editing, not a claim of exact reference PROGRAM-screen behavior.
 
 Implemented behavior:
 
 - `PadAssignment` stores `level`, `pan`, and `tune_cents`.
 - `SamplePlaybackIntent` and render summaries carry the current assignment Level, Pan, and Tune values.
 - Tune uses a rights-safe foundation range of `-1200..=1200` cents and defaults to `0`.
-- PROGRAM mode has a selected edit field: Pad, Level, Pan, or Tune.
+- PROGRAM mode has a selected edit field: Pad, Level, Pan, or Tune in this original slice; the later mute-group foundation adds Mute Group to the cycle.
 - Cursor up/down cycles the selected PROGRAM edit field.
 - Cursor left/right still moves the selected PROGRAM pad.
 - Data wheel behavior depends on the selected field:
@@ -67,4 +67,4 @@ Focused checks added:
 
 ## Next Boundaries
 
-Next slices should map accepted source evidence before claiming exact MPC2000XL PROGRAM edit behavior. Practical boundaries are reference PROGRAM-screen field flow, pad bank switching in PROGRAM edit contexts, sample start/end, velocity layers, envelopes, filters, mute groups, voice allocation, and a source-backed pitch/interpolation model.
+Next slices should map accepted source evidence before claiming exact MPC2000XL PROGRAM edit behavior. Practical boundaries are reference PROGRAM-screen field flow, pad bank switching in PROGRAM edit contexts, sample start/end, velocity layers, envelopes, filters, evidence-backed mute/choke semantics, voice allocation, and a source-backed pitch/interpolation model.

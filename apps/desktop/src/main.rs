@@ -1491,6 +1491,14 @@ fn tune_text(tune_cents: i16) -> String {
     format!("{tune_cents:+04}c")
 }
 
+fn mute_group_text(mute_group: u8) -> String {
+    if mute_group == 0 {
+        "off".to_string()
+    } else {
+        format!("{mute_group:02}")
+    }
+}
+
 fn assignment_action_text(action: PadAssignmentChange) -> &'static str {
     match action {
         PadAssignmentChange::Cleared => "cleared",
@@ -1512,11 +1520,12 @@ fn selected_assignment_text(state: &MpcState) -> String {
         .find(|assignment| assignment.pad == selected_pad)
     {
         Some(assignment) => format!(
-            "Assignment: {} level {} pan {} tune {}",
+            "Assignment: {} level {} pan {} tune {} mute group {}",
             assignment.sample.name,
             assignment.level,
             assignment.pan,
-            tune_text(assignment.tune_cents)
+            tune_text(assignment.tune_cents),
+            mute_group_text(assignment.mute_group)
         ),
         None => "Assignment: unassigned".to_string(),
     }
@@ -1589,7 +1598,7 @@ fn last_playback_text(state: &MpcState) -> String {
 fn playback_resolution_text(resolution: &SamplePlaybackResolution) -> String {
     match resolution {
         SamplePlaybackResolution::Intent { intent } => format!(
-            "Last playback: {} {} vel {} tune {} trim {}..{} window {}",
+            "Last playback: {} {} vel {} tune {} mute group {} trim {}..{} window {}",
             program_pad_label(ProgramPad {
                 bank: intent.bank,
                 pad_number: intent.pad_number,
@@ -1597,6 +1606,7 @@ fn playback_resolution_text(resolution: &SamplePlaybackResolution) -> String {
             intent.sample_name,
             intent.velocity,
             tune_text(intent.tune_cents),
+            mute_group_text(intent.mute_group),
             intent.start_frame,
             intent.end_frame,
             intent.window_length_frames
@@ -1614,12 +1624,13 @@ fn playback_resolution_text(resolution: &SamplePlaybackResolution) -> String {
 
 fn playback_intent_status_text(intent: &SamplePlaybackIntent) -> String {
     format!(
-        "{:?}{:02} {} velocity {} tune {} trim {}..{} ({} frames)",
+        "{:?}{:02} {} velocity {} tune {} mute group {} trim {}..{} ({} frames)",
         intent.bank,
         intent.pad_number,
         intent.sample_name,
         intent.velocity,
         tune_text(intent.tune_cents),
+        mute_group_text(intent.mute_group),
         intent.start_frame,
         intent.end_frame,
         intent.window_length_frames
@@ -1638,7 +1649,7 @@ fn last_synthetic_render_text(summary: Option<&AudioRenderSummary>, error: Optio
         (_, Some(error)) => error.to_string(),
         (Some(summary), None) => match summary.render_kind {
             AudioRenderKind::SamplePlayback => format!(
-                "Synthetic render: {} {} frames @ {} Hz trim {}..{} window {} tune {} peak L{} R{} balance {:?}",
+                "Synthetic render: {} {} frames @ {} Hz trim {}..{} window {} tune {} mute group {} peak L{} R{} balance {:?}",
                 summary.source_sample_name,
                 summary.frame_count,
                 summary.sample_rate_hz,
@@ -1646,6 +1657,7 @@ fn last_synthetic_render_text(summary: Option<&AudioRenderSummary>, error: Optio
                 summary.end_frame,
                 summary.window_length_frames,
                 tune_text(summary.tune_cents),
+                mute_group_text(summary.mute_group),
                 summary.peak_left,
                 summary.peak_right,
                 summary.channel_balance
@@ -1707,7 +1719,7 @@ fn host_midi_error_message(event: &HostMidiEvent) -> Option<String> {
 
 fn host_audio_state_text(state: &HostAudioState) -> String {
     format!(
-        "Host audio: {:?} backend {} queued {} played {} voices {}/{} done {} released {} stolen {}",
+        "Host audio: {:?} backend {} queued {} played {} voices {}/{} done {} released {} choked {} stolen {}",
         state.mode,
         state.backend_name,
         state.queued_render_count,
@@ -1716,6 +1728,7 @@ fn host_audio_state_text(state: &HostAudioState) -> String {
         state.voice_limit,
         state.completed_voice_count,
         state.released_voice_count,
+        state.choked_voice_count,
         state.stolen_voice_count
     )
 }
@@ -1738,12 +1751,18 @@ fn last_host_audio_event_text(event: Option<&HostAudioEvent>) -> String {
         }
         Some(HostAudioEvent::Enqueued { receipt, .. }) => match receipt.summary.render_kind {
             AudioRenderKind::SamplePlayback => format!(
-                "Host audio event: {} {} frames tune {} queued={} played={}",
+                "Host audio event: {} {} frames tune {} mute group {} queued={} played={} choked={}",
                 receipt.summary.source_sample_name,
                 receipt.frame_count,
                 tune_text(receipt.summary.tune_cents),
+                mute_group_text(receipt.summary.mute_group),
                 receipt.queued,
-                receipt.played
+                receipt.played,
+                receipt
+                    .voice_allocation
+                    .as_ref()
+                    .map(|allocation| allocation.choked_voice_count)
+                    .unwrap_or(0)
             ),
             AudioRenderKind::CountInClick => format!(
                 "Host audio event: {} {} frames queued={} played={}",

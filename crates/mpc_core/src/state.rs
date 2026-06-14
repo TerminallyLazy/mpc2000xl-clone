@@ -46,6 +46,7 @@ const DEFAULT_PROGRAM_NAME: &str = "Program01";
 const DEFAULT_PAD_LEVEL: u8 = 100;
 const DEFAULT_PAD_PAN: i8 = 0;
 const DEFAULT_PAD_TUNE_CENTS: i16 = 0;
+const DEFAULT_PAD_MUTE_GROUP: u8 = 0;
 const MAX_USER_SAMPLE_LENGTH_FRAMES: u32 = 48_000 * 60 * 10;
 const MAX_USER_SAMPLE_INDEX: u16 = 999;
 const MAX_PAD_LEVEL: u8 = 127;
@@ -53,6 +54,7 @@ const MIN_PAD_PAN: i8 = -50;
 const MAX_PAD_PAN: i8 = 50;
 const MIN_PAD_TUNE_CENTS: i16 = -1200;
 const MAX_PAD_TUNE_CENTS: i16 = 1200;
+const MAX_PAD_MUTE_GROUP: u8 = 16;
 const MIDI_MIN_CHANNEL: u8 = 1;
 const MIDI_MAX_CHANNEL: u8 = 16;
 const MIDI_MAX_NOTE: u8 = 127;
@@ -1125,16 +1127,29 @@ impl MpcCore {
             length_frames: Some(length_frames),
         };
 
-        let (level, pan, tune_cents) = self
+        let (level, pan, tune_cents, mute_group) = self
             .assignment_for(target_pad)
-            .map(|assignment| (assignment.level, assignment.pan, assignment.tune_cents))
-            .unwrap_or((DEFAULT_PAD_LEVEL, DEFAULT_PAD_PAN, DEFAULT_PAD_TUNE_CENTS));
+            .map(|assignment| {
+                (
+                    assignment.level,
+                    assignment.pan,
+                    assignment.tune_cents,
+                    assignment.mute_group,
+                )
+            })
+            .unwrap_or((
+                DEFAULT_PAD_LEVEL,
+                DEFAULT_PAD_PAN,
+                DEFAULT_PAD_TUNE_CENTS,
+                DEFAULT_PAD_MUTE_GROUP,
+            ));
         let assignment = PadAssignment {
             pad: target_pad,
             sample: sample.clone(),
             level,
             pan,
             tune_cents,
+            mute_group,
         };
         self.state
             .current_program
@@ -2076,9 +2091,10 @@ impl MpcCore {
                 self.refresh_lcd();
                 vec![MachineOutput::LcdChanged]
             }
-            ProgramEditField::Level | ProgramEditField::Pan | ProgramEditField::Tune => {
-                self.adjust_selected_pad_parameter(delta)
-            }
+            ProgramEditField::Level
+            | ProgramEditField::Pan
+            | ProgramEditField::Tune
+            | ProgramEditField::MuteGroup => self.adjust_selected_pad_parameter(delta),
         }
     }
 
@@ -2111,6 +2127,11 @@ impl MpcCore {
                     MAX_PAD_TUNE_CENTS,
                 );
                 assignment.tune_cents
+            }
+            ProgramEditField::MuteGroup => {
+                assignment.mute_group =
+                    clamp_delta_u8(assignment.mute_group, delta, 0, MAX_PAD_MUTE_GROUP);
+                i16::from(assignment.mute_group)
             }
             ProgramEditField::Pad => unreachable!("pad edits are handled before parameter edits"),
         };
@@ -2154,7 +2175,13 @@ impl MpcCore {
 
     fn restore_selected_pad_assignment(&mut self) -> Vec<MachineOutput> {
         let pad = self.state.selected_program_pad;
-        let assignment = generated_assignment(pad);
+        let mut assignment = generated_assignment(pad);
+        if let Some(existing) = self.assignment_for(pad) {
+            assignment.level = existing.level;
+            assignment.pan = existing.pan;
+            assignment.tune_cents = existing.tune_cents;
+            assignment.mute_group = existing.mute_group;
+        }
         self.state
             .current_program
             .pad_assignments
@@ -2207,6 +2234,7 @@ impl MpcCore {
                     level: assignment.level,
                     pan: assignment.pan,
                     tune_cents: assignment.tune_cents,
+                    mute_group: assignment.mute_group,
                     start_frame,
                     end_frame,
                     window_length_frames,
@@ -2527,7 +2555,7 @@ fn validate_assignment_json_fields(field: &str, value: &Value) -> Result<(), Pro
     let Some(assignment) = reject_unknown_json_fields(
         field,
         value,
-        &["pad", "sample", "level", "pan", "tune_cents"],
+        &["pad", "sample", "level", "pan", "tune_cents", "mute_group"],
     )?
     else {
         return Ok(());
@@ -2626,6 +2654,7 @@ fn validate_playback_intent_json_fields(
             "level",
             "pan",
             "tune_cents",
+            "mute_group",
             "start_frame",
             "end_frame",
             "window_length_frames",
@@ -2964,6 +2993,12 @@ fn validate_assignment(
         assignment.tune_cents,
         MIN_PAD_TUNE_CENTS,
         MAX_PAD_TUNE_CENTS,
+    )?;
+    validate_range_u8(
+        &format!("{field}.mute_group"),
+        assignment.mute_group,
+        0,
+        MAX_PAD_MUTE_GROUP,
     )
 }
 
@@ -3158,6 +3193,12 @@ fn validate_playback_intent_fields(
         intent.tune_cents,
         MIN_PAD_TUNE_CENTS,
         MAX_PAD_TUNE_CENTS,
+    )?;
+    validate_range_u8(
+        &format!("{field}.mute_group"),
+        intent.mute_group,
+        0,
+        MAX_PAD_MUTE_GROUP,
     )?;
     Ok(())
 }
@@ -3655,6 +3696,7 @@ fn generated_assignment(pad: ProgramPad) -> PadAssignment {
         level: DEFAULT_PAD_LEVEL,
         pan: DEFAULT_PAD_PAN,
         tune_cents: DEFAULT_PAD_TUNE_CENTS,
+        mute_group: DEFAULT_PAD_MUTE_GROUP,
     }
 }
 

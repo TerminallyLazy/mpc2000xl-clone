@@ -339,6 +339,8 @@ pub struct ExpectedAudioRender {
     #[serde(default)]
     pub tune_cents: i16,
     #[serde(default)]
+    pub mute_group: u8,
+    #[serde(default)]
     pub start_frame: Option<u32>,
     #[serde(default)]
     pub end_frame: Option<u32>,
@@ -1176,6 +1178,12 @@ fn validate_expected_audio_render(
         &expected.tune_cents,
         &summary.tune_cents,
     );
+    push_mismatch(
+        details,
+        "last_audio_render.mute_group",
+        &expected.mute_group,
+        &summary.mute_group,
+    );
     if let Some(start_frame) = expected.start_frame {
         push_mismatch(
             details,
@@ -1270,6 +1278,7 @@ mod tests {
                 level: 100,
                 pan: 0,
                 tune_cents: 0,
+                mute_group: 0,
                 start_frame: 0,
                 end_frame: 47_999,
                 window_length_frames: 48_000,
@@ -1290,6 +1299,7 @@ mod tests {
             bank: PadBank::A,
             pad_number: 1,
             tune_cents: 0,
+            mute_group: 0,
             start_frame: Some(0),
             end_frame: Some(47_999),
             window_length_frames: Some(48_000),

@@ -110,13 +110,15 @@ impl LcdFrame {
                 ),
                 format!("Sample {}", assignment.sample.id),
                 format!(
-                    "{}Level {:03} {}Pan {} {}Tune {}",
+                    "{}Level {:03} {}Pan {} {}Tune {} {}MG {}",
                     marker(ProgramEditField::Level),
                     assignment.level,
                     marker(ProgramEditField::Pan),
                     pan_text(assignment.pan),
                     marker(ProgramEditField::Tune),
-                    tune_text(assignment.tune_cents)
+                    tune_text(assignment.tune_cents),
+                    marker(ProgramEditField::MuteGroup),
+                    mute_group_text(assignment.mute_group)
                 ),
             ),
             None => (
@@ -126,10 +128,11 @@ impl LcdFrame {
                 ),
                 "Sample none".to_string(),
                 format!(
-                    "{}Level --- {}Pan -- {}Tune ----",
+                    "{}Level --- {}Pan -- {}Tune ---- {}MG --",
                     marker(ProgramEditField::Level),
                     marker(ProgramEditField::Pan),
-                    marker(ProgramEditField::Tune)
+                    marker(ProgramEditField::Tune),
+                    marker(ProgramEditField::MuteGroup)
                 ),
             ),
         };
@@ -503,4 +506,12 @@ fn pan_text(pan: i8) -> String {
 
 fn tune_text(tune_cents: i16) -> String {
     format!("{tune_cents:+04}")
+}
+
+fn mute_group_text(mute_group: u8) -> String {
+    if mute_group == 0 {
+        "off".to_string()
+    } else {
+        format!("{mute_group:02}")
+    }
 }

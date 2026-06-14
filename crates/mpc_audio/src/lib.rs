@@ -184,6 +184,8 @@ pub struct AudioRenderSummary {
     pub level: u8,
     pub pan: i8,
     pub tune_cents: i16,
+    #[serde(default, skip_serializing_if = "is_zero_u8")]
+    pub mute_group: u8,
     pub start_frame: u32,
     pub end_frame: u32,
     pub window_length_frames: u32,
@@ -225,6 +227,8 @@ impl<'de> Deserialize<'de> for AudioRenderSummary {
             level: u8,
             pan: i8,
             tune_cents: i16,
+            #[serde(default)]
+            mute_group: u8,
             #[serde(default)]
             start_frame: Option<u32>,
             #[serde(default)]
@@ -270,6 +274,7 @@ impl<'de> Deserialize<'de> for AudioRenderSummary {
             level: data.level,
             pan: data.pan,
             tune_cents: data.tune_cents,
+            mute_group: data.mute_group,
             start_frame: data.start_frame.unwrap_or(0),
             end_frame: data.end_frame.unwrap_or(default_end_frame),
             window_length_frames: data
@@ -324,6 +329,10 @@ pub struct HostAudioVoiceAllocationReceipt {
     pub voice_id: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stolen_voice_id: Option<u64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub choked_voice_ids: Vec<u64>,
+    #[serde(default)]
+    pub choked_voice_count: usize,
     pub voice_limit: usize,
     pub active_voice_count: usize,
 }
@@ -339,12 +348,18 @@ pub struct HostAudioVoiceSummary {
     pub bank: PadBank,
     #[serde(default)]
     pub pad_number: u8,
+    #[serde(default, skip_serializing_if = "is_zero_u8")]
+    pub mute_group: u8,
     pub total_frame_count: usize,
     pub remaining_frame_count: usize,
 }
 
 fn default_voice_bank() -> PadBank {
     PadBank::A
+}
+
+fn is_zero_u8(value: &u8) -> bool {
+    *value == 0
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -400,6 +415,8 @@ pub struct HostAudioState {
     pub stolen_voice_count: u64,
     #[serde(default)]
     pub released_voice_count: u64,
+    #[serde(default)]
+    pub choked_voice_count: u64,
     #[serde(default)]
     pub active_voices: Vec<HostAudioVoiceSummary>,
     pub last_event: Option<HostAudioEvent>,
@@ -708,6 +725,7 @@ where
     completed_voice_count: u64,
     stolen_voice_count: u64,
     released_voice_count: u64,
+    choked_voice_count: u64,
     last_event: Option<HostAudioEvent>,
 }
 
@@ -741,6 +759,7 @@ where
             completed_voice_count: 0,
             stolen_voice_count: 0,
             released_voice_count: 0,
+            choked_voice_count: 0,
             last_event: None,
         })
     }
@@ -819,6 +838,7 @@ where
             completed_voice_count: self.completed_voice_count,
             stolen_voice_count: self.stolen_voice_count,
             released_voice_count: self.released_voice_count,
+            choked_voice_count: self.choked_voice_count,
             active_voices: self.active_voices.iter().cloned().collect(),
             last_event: self.last_event.clone(),
         }
@@ -990,6 +1010,12 @@ where
         summary: &AudioRenderSummary,
         frame_count: usize,
     ) -> HostAudioVoiceAllocationReceipt {
+        let choked_voice_ids = self.choke_matching_mute_group(summary);
+        let choked_voice_count = choked_voice_ids.len();
+        self.choked_voice_count = self
+            .choked_voice_count
+            .saturating_add(u64::try_from(choked_voice_count).unwrap_or(u64::MAX));
+
         let stolen_voice_id = if self.active_voices.len() >= self.voice_limit {
             let stolen_voice_id = self.active_voices.pop_front().map(|voice| voice.voice_id);
             if stolen_voice_id.is_some() {
@@ -1009,6 +1035,7 @@ where
             source_sample_id: summary.source_sample_id.clone(),
             bank: summary.bank,
             pad_number: summary.pad_number,
+            mute_group: summary.mute_group,
             total_frame_count: frame_count,
             remaining_frame_count: frame_count,
         });
@@ -1016,9 +1043,33 @@ where
         HostAudioVoiceAllocationReceipt {
             voice_id,
             stolen_voice_id,
+            choked_voice_ids,
+            choked_voice_count,
             voice_limit: self.voice_limit,
             active_voice_count: self.active_voices.len(),
         }
+    }
+
+    fn choke_matching_mute_group(&mut self, summary: &AudioRenderSummary) -> Vec<u64> {
+        if summary.render_kind != AudioRenderKind::SamplePlayback || summary.mute_group == 0 {
+            return Vec::new();
+        }
+
+        let mut choked_voice_ids = Vec::new();
+        let mut active_voices = VecDeque::with_capacity(self.active_voices.len());
+
+        while let Some(voice) = self.active_voices.pop_front() {
+            if voice.render_kind == AudioRenderKind::SamplePlayback
+                && voice.mute_group == summary.mute_group
+            {
+                choked_voice_ids.push(voice.voice_id);
+            } else {
+                active_voices.push_back(voice);
+            }
+        }
+
+        self.active_voices = active_voices;
+        choked_voice_ids
     }
 
     fn record_ignored(&mut self) -> HostAudioEvent {
@@ -1104,6 +1155,7 @@ pub fn render_intent(
         level: intent.level,
         pan: intent.pan,
         tune_cents: intent.tune_cents,
+        mute_group: intent.mute_group,
         start_frame: intent.start_frame,
         end_frame: intent.end_frame,
         window_length_frames: intent.window_length_frames,
@@ -1171,6 +1223,7 @@ pub fn render_count_in_click(
         level: 127,
         pan: 0,
         tune_cents: 0,
+        mute_group: 0,
         start_frame: 0,
         end_frame: frame_count_u32.saturating_sub(1),
         window_length_frames: frame_count_u32,
@@ -1828,6 +1881,7 @@ mod tests {
         assert_eq!(state.active_voice_count, 0);
         assert_eq!(state.completed_voice_count, 0);
         assert_eq!(state.stolen_voice_count, 0);
+        assert_eq!(state.choked_voice_count, 0);
         assert!(state.active_voices.is_empty());
         assert_eq!(engine.backend().captured_renders().len(), 0);
     }
@@ -1860,6 +1914,7 @@ mod tests {
         assert_eq!(state.active_voice_count, 0);
         assert_eq!(state.completed_voice_count, 0);
         assert_eq!(state.stolen_voice_count, 0);
+        assert_eq!(state.choked_voice_count, 0);
         assert!(state.active_voices.is_empty());
     }
 
@@ -1911,6 +1966,8 @@ mod tests {
             .expect("queued render should allocate a voice");
         assert_eq!(allocation.voice_id, 1);
         assert_eq!(allocation.stolen_voice_id, None);
+        assert!(allocation.choked_voice_ids.is_empty());
+        assert_eq!(allocation.choked_voice_count, 0);
         assert_eq!(allocation.voice_limit, DEFAULT_HOST_AUDIO_VOICE_LIMIT);
         assert_eq!(allocation.active_voice_count, 1);
 
@@ -1919,6 +1976,7 @@ mod tests {
         assert_eq!(state.active_voice_count, 1);
         assert_eq!(state.completed_voice_count, 0);
         assert_eq!(state.stolen_voice_count, 0);
+        assert_eq!(state.choked_voice_count, 0);
         assert_eq!(
             state.active_voices,
             vec![HostAudioVoiceSummary {
@@ -1928,6 +1986,7 @@ mod tests {
                 source_sample_id: "synthetic_a_04".to_string(),
                 bank: PadBank::A,
                 pad_number: 4,
+                mute_group: 0,
                 total_frame_count: 64,
                 remaining_frame_count: 64,
             }]
@@ -1956,6 +2015,42 @@ mod tests {
         assert_eq!(state.completed_voice_count, 0);
         assert_eq!(state.stolen_voice_count, 0);
         assert!(state.active_voices.is_empty());
+    }
+
+    #[test]
+    fn zero_frame_queued_render_does_not_choke_existing_mute_group_voice() {
+        let mut engine =
+            HostAudioEngine::enabled(CaptureAudioBackend::new(4), settings(44_100, 64))
+                .expect("host audio settings should be valid");
+        engine.play_intent(&test_intent_with_mute_group("group-6-a", "GRP6-A", 6));
+
+        let zero_frame_render = render(
+            &test_intent_with_mute_group("group-6-b", "GRP6-B", 6),
+            settings(44_100, 0),
+        );
+        let event = engine.play_rendered(zero_frame_render);
+
+        let HostAudioEvent::Enqueued { receipt, .. } = &event else {
+            panic!("expected enqueued event, got {event:?}");
+        };
+        assert!(receipt.queued);
+        assert_eq!(receipt.frame_count, 0);
+        assert_eq!(receipt.voice_allocation, None);
+        let state = engine.state();
+        assert_eq!(state.choked_voice_count, 0);
+        assert_eq!(state.active_voice_count, 1);
+        assert_eq!(
+            state
+                .active_voices
+                .iter()
+                .map(|voice| (
+                    voice.voice_id,
+                    voice.source_sample_id.as_str(),
+                    voice.mute_group
+                ))
+                .collect::<Vec<_>>(),
+            vec![(1, "group-6-a", 6)]
+        );
     }
 
     #[test]
@@ -1990,6 +2085,36 @@ mod tests {
         assert_eq!(state.completed_voice_count, 0);
         assert_eq!(state.stolen_voice_count, 0);
         assert!(state.active_voices.is_empty());
+    }
+
+    #[test]
+    fn backend_failure_does_not_choke_existing_mute_group_voice() {
+        let mut engine = HostAudioEngine::enabled(
+            ReceiptAudioBackend::new(HostAudioBackendReceipt::queued_and_played(64)),
+            settings(44_100, 64),
+        )
+        .expect("host audio settings should be valid");
+        engine.play_intent(&test_intent_with_mute_group("group-7-a", "GRP7-A", 7));
+        engine.backend_mut().set_fail(true);
+
+        let event = engine.play_intent(&test_intent_with_mute_group("group-7-b", "GRP7-B", 7));
+
+        assert!(matches!(event, HostAudioEvent::Failed { .. }));
+        let state = engine.state();
+        assert_eq!(state.choked_voice_count, 0);
+        assert_eq!(state.active_voice_count, 1);
+        assert_eq!(
+            state
+                .active_voices
+                .iter()
+                .map(|voice| (
+                    voice.voice_id,
+                    voice.source_sample_id.as_str(),
+                    voice.mute_group
+                ))
+                .collect::<Vec<_>>(),
+            vec![(1, "group-7-a", 7)]
+        );
     }
 
     #[test]
@@ -2072,6 +2197,8 @@ mod tests {
             .expect("queued count-in click should allocate a voice");
         assert_eq!(allocation.voice_id, 1);
         assert_eq!(allocation.stolen_voice_id, None);
+        assert!(allocation.choked_voice_ids.is_empty());
+        assert_eq!(allocation.choked_voice_count, 0);
         assert_eq!(receipt.summary.render_kind, AudioRenderKind::CountInClick);
 
         let state = engine.state();
@@ -2085,6 +2212,7 @@ mod tests {
                 source_sample_id: "count_in_click".to_string(),
                 bank: PadBank::A,
                 pad_number: 0,
+                mute_group: 0,
                 total_frame_count: 64,
                 remaining_frame_count: 64,
             }]
@@ -2121,6 +2249,71 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![(2, "sample-2")]
         );
+    }
+
+    #[test]
+    fn nonzero_mute_group_chokes_prior_matching_sample_voices() {
+        let mut engine =
+            HostAudioEngine::enabled(CaptureAudioBackend::new(8), settings(44_100, 64))
+                .expect("host audio settings should be valid");
+        engine.play_intent(&test_intent_with_mute_group("group-3-a", "GRP3-A", 3));
+        engine.play_intent(&test_intent_with_mute_group("group-off", "OFF", 0));
+        engine.play_count_in_click(&test_count_in_click_intent(96, 1, 2, false));
+
+        let event = engine.play_intent(&test_intent_with_mute_group("group-3-b", "GRP3-B", 3));
+
+        let HostAudioEvent::Enqueued { receipt, .. } = &event else {
+            panic!("expected enqueued event, got {event:?}");
+        };
+        let allocation = receipt
+            .voice_allocation
+            .as_ref()
+            .expect("queued render should allocate a voice");
+        assert_eq!(allocation.voice_id, 4);
+        assert_eq!(allocation.choked_voice_ids, vec![1]);
+        assert_eq!(allocation.choked_voice_count, 1);
+        assert_eq!(allocation.stolen_voice_id, None);
+        assert_eq!(allocation.active_voice_count, 3);
+
+        let state = engine.state();
+        assert_eq!(state.choked_voice_count, 1);
+        assert_eq!(state.active_voice_count, 3);
+        assert_eq!(
+            state
+                .active_voices
+                .iter()
+                .map(|voice| (voice.voice_id, voice.render_kind, voice.mute_group))
+                .collect::<Vec<_>>(),
+            vec![
+                (2, AudioRenderKind::SamplePlayback, 0),
+                (3, AudioRenderKind::CountInClick, 0),
+                (4, AudioRenderKind::SamplePlayback, 3),
+            ]
+        );
+    }
+
+    #[test]
+    fn mute_group_zero_does_not_choke_existing_sample_voices() {
+        let mut engine =
+            HostAudioEngine::enabled(CaptureAudioBackend::new(4), settings(44_100, 64))
+                .expect("host audio settings should be valid");
+        engine.play_intent(&test_intent_with_mute_group("off-a", "OFF-A", 0));
+
+        let event = engine.play_intent(&test_intent_with_mute_group("off-b", "OFF-B", 0));
+
+        let HostAudioEvent::Enqueued { receipt, .. } = &event else {
+            panic!("expected enqueued event, got {event:?}");
+        };
+        let allocation = receipt
+            .voice_allocation
+            .as_ref()
+            .expect("queued render should allocate a voice");
+        assert!(allocation.choked_voice_ids.is_empty());
+        assert_eq!(allocation.choked_voice_count, 0);
+        assert_eq!(allocation.active_voice_count, 2);
+        let state = engine.state();
+        assert_eq!(state.choked_voice_count, 0);
+        assert_eq!(state.active_voice_count, 2);
     }
 
     #[test]
@@ -2185,6 +2378,7 @@ mod tests {
                 source_sample_id: String::new(),
                 bank: PadBank::A,
                 pad_number: 0,
+                mute_group: 0,
                 total_frame_count: 64,
                 remaining_frame_count: 32,
             }
@@ -2214,6 +2408,42 @@ mod tests {
         assert_eq!(state.completed_voice_count, 0);
         assert_eq!(state.stolen_voice_count, 0);
         assert!(state.active_voices.is_empty());
+    }
+
+    #[test]
+    fn non_queued_backend_receipt_does_not_choke_existing_mute_group_voice() {
+        let mut engine = HostAudioEngine::enabled(
+            ReceiptAudioBackend::new(HostAudioBackendReceipt::queued_and_played(64)),
+            settings(44_100, 64),
+        )
+        .expect("host audio settings should be valid");
+        engine.play_intent(&test_intent_with_mute_group("group-8-a", "GRP8-A", 8));
+        engine
+            .backend_mut()
+            .set_receipt(HostAudioBackendReceipt::not_queued(64));
+
+        let event = engine.play_intent(&test_intent_with_mute_group("group-8-b", "GRP8-B", 8));
+
+        let HostAudioEvent::Enqueued { receipt, .. } = event else {
+            panic!("expected receipt event, got {event:?}");
+        };
+        assert!(!receipt.queued);
+        assert_eq!(receipt.voice_allocation, None);
+        let state = engine.state();
+        assert_eq!(state.choked_voice_count, 0);
+        assert_eq!(state.active_voice_count, 1);
+        assert_eq!(
+            state
+                .active_voices
+                .iter()
+                .map(|voice| (
+                    voice.voice_id,
+                    voice.source_sample_id.as_str(),
+                    voice.mute_group
+                ))
+                .collect::<Vec<_>>(),
+            vec![(1, "group-8-a", 8)]
+        );
     }
 
     #[test]
@@ -2270,6 +2500,7 @@ mod tests {
             level,
             pan,
             tune_cents,
+            mute_group: 0,
             start_frame: 0,
             end_frame: 51_599,
             window_length_frames: 51_600,
@@ -2280,6 +2511,19 @@ mod tests {
         SamplePlaybackIntent {
             sample_id: sample_id.to_string(),
             sample_name: sample_name.to_string(),
+            ..test_intent(100, 100, 0)
+        }
+    }
+
+    fn test_intent_with_mute_group(
+        sample_id: &str,
+        sample_name: &str,
+        mute_group: u8,
+    ) -> SamplePlaybackIntent {
+        SamplePlaybackIntent {
+            sample_id: sample_id.to_string(),
+            sample_name: sample_name.to_string(),
+            mute_group,
             ..test_intent(100, 100, 0)
         }
     }
@@ -2333,11 +2577,23 @@ mod tests {
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     struct ReceiptAudioBackend {
         receipt: HostAudioBackendReceipt,
+        fail: bool,
     }
 
     impl ReceiptAudioBackend {
         fn new(receipt: HostAudioBackendReceipt) -> Self {
-            Self { receipt }
+            Self {
+                receipt,
+                fail: false,
+            }
+        }
+
+        fn set_receipt(&mut self, receipt: HostAudioBackendReceipt) {
+            self.receipt = receipt;
+        }
+
+        fn set_fail(&mut self, fail: bool) {
+            self.fail = fail;
         }
     }
 
@@ -2350,6 +2606,12 @@ mod tests {
             &mut self,
             _rendered: &RenderedAudio,
         ) -> Result<HostAudioBackendReceipt, HostAudioBackendError> {
+            if self.fail {
+                return Err(HostAudioBackendError::backend_unavailable(
+                    self.backend_name(),
+                    "injected test failure",
+                ));
+            }
             Ok(self.receipt)
         }
     }

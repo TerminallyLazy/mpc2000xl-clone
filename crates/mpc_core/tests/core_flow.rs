@@ -324,6 +324,7 @@ fn sample_catalog_dedupes_by_sample_id_so_selection_identity_is_stable() {
             level: 100,
             pan: 0,
             tune_cents: 0,
+            mute_group: 0,
         },
         PadAssignment {
             pad: ProgramPad {
@@ -339,6 +340,7 @@ fn sample_catalog_dedupes_by_sample_id_so_selection_identity_is_stable() {
             level: 100,
             pan: 0,
             tune_cents: 0,
+            mute_group: 0,
         },
         PadAssignment {
             pad: ProgramPad {
@@ -354,6 +356,7 @@ fn sample_catalog_dedupes_by_sample_id_so_selection_identity_is_stable() {
             level: 100,
             pan: 0,
             tune_cents: 0,
+            mute_group: 0,
         },
     ];
     let shared_second_pad_length = mpc_core::generated_sample_length_frames(ProgramPad {
@@ -374,6 +377,7 @@ fn sample_catalog_dedupes_by_sample_id_so_selection_identity_is_stable() {
             level: 100,
             pan: 0,
             tune_cents: 0,
+            mute_group: 0,
             start_frame: 0,
             end_frame: shared_second_pad_length - 1,
             window_length_frames: shared_second_pad_length,
@@ -624,6 +628,7 @@ fn sample_metadata_assignment_replaces_selected_pad_and_preserves_pad_params() {
     assignment.level = 87;
     assignment.pan = -5;
     assignment.tune_cents = 300;
+    assignment.mute_group = 4;
     snapshot.machine.mode = Mode::Sample;
     snapshot.machine.selected_program_pad = pad;
 
@@ -643,6 +648,7 @@ fn sample_metadata_assignment_replaces_selected_pad_and_preserves_pad_params() {
     assert_eq!(assignment.level, 87);
     assert_eq!(assignment.pan, -5);
     assert_eq!(assignment.tune_cents, 300);
+    assert_eq!(assignment.mute_group, 4);
 }
 
 #[test]
@@ -802,6 +808,7 @@ fn sample_metadata_project_snapshot_round_trips_defaults_and_validates() {
             level: 100,
             pan: 0,
             tune_cents: 0,
+            mute_group: 0,
             start_frame: 0,
             end_frame: 47_999,
             window_length_frames: 48_000,
@@ -4556,6 +4563,55 @@ fn program_mode_soft_key_reassign_restores_generated_assignment() {
 }
 
 #[test]
+fn program_mode_soft_key_reassign_preserves_existing_pad_params() {
+    let pad = ProgramPad {
+        bank: PadBank::A,
+        pad_number: 7,
+    };
+    let mut snapshot = MpcCore::new().export_project_snapshot();
+    snapshot.machine.mode = Mode::Program;
+    snapshot.machine.selected_program_pad = pad;
+    let assignment = snapshot
+        .program
+        .pad_assignments
+        .iter_mut()
+        .find(|assignment| assignment.pad == pad)
+        .expect("A07 assignment should exist");
+    assignment.sample.id = "recorded_999".to_string();
+    assignment.sample.name = "REC-999".to_string();
+    assignment.level = 72;
+    assignment.pan = -11;
+    assignment.tune_cents = 400;
+    assignment.mute_group = 5;
+
+    let mut core = restore_snapshot(snapshot);
+    let restore_outputs = core.dispatch(HardwareEvent::Press {
+        control: PanelControl::SoftKey(2),
+    });
+
+    assert!(restore_outputs.iter().any(|output| matches!(
+        output,
+        MachineOutput::PadAssignmentChanged {
+            bank: PadBank::A,
+            pad: 7,
+            action: PadAssignmentChange::Restored,
+            assignment: Some(assignment),
+        } if assignment.sample.id == "synthetic_a_07"
+            && assignment.sample.name == "SYN-A07"
+            && assignment.level == 72
+            && assignment.pan == -11
+            && assignment.tune_cents == 400
+            && assignment.mute_group == 5
+    )));
+    let assignment = assignment_for_pad(&core, pad).expect("restored assignment should exist");
+    assert_eq!(assignment.sample.id, "synthetic_a_07");
+    assert_eq!(assignment.level, 72);
+    assert_eq!(assignment.pan, -11);
+    assert_eq!(assignment.tune_cents, 400);
+    assert_eq!(assignment.mute_group, 5);
+}
+
+#[test]
 fn program_mode_pad_strike_selects_pad_and_triggers_assignment() {
     let mut core = MpcCore::new();
 
@@ -4635,6 +4691,15 @@ fn program_parameter_cursor_up_down_cycles_edit_field_and_lcd_reflects_it() {
     });
     assert_eq!(
         core.state().selected_program_edit_field,
+        ProgramEditField::MuteGroup
+    );
+    assert!(core.state().lcd.lines[3].contains(">MG"));
+
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::CursorDown,
+    });
+    assert_eq!(
+        core.state().selected_program_edit_field,
         ProgramEditField::Pad
     );
 
@@ -4643,12 +4708,12 @@ fn program_parameter_cursor_up_down_cycles_edit_field_and_lcd_reflects_it() {
     });
     assert_eq!(
         core.state().selected_program_edit_field,
-        ProgramEditField::Tune
+        ProgramEditField::MuteGroup
     );
 }
 
 #[test]
-fn program_parameter_data_wheel_edits_level_pan_tune_with_clamping() {
+fn program_parameter_data_wheel_edits_level_pan_tune_and_mute_group_with_clamping() {
     let mut core = MpcCore::new();
     let pad = ProgramPad {
         bank: PadBank::A,
@@ -4734,6 +4799,35 @@ fn program_parameter_data_wheel_edits_level_pan_tune_with_clamping() {
             .tune_cents,
         -1200
     );
+
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::CursorDown,
+    });
+    let mute_group_outputs = core.dispatch(HardwareEvent::TurnDataWheel { delta: 20 });
+    assert!(matches!(
+        mute_group_outputs.as_slice(),
+        [
+            MachineOutput::PadParameterChanged {
+                parameter: ProgramEditField::MuteGroup,
+                value: 16,
+                ..
+            },
+            MachineOutput::LcdChanged,
+        ]
+    ));
+    assert_eq!(
+        assignment_for_pad(&core, pad)
+            .expect("selected pad should be assigned")
+            .mute_group,
+        16
+    );
+    core.dispatch(HardwareEvent::TurnDataWheel { delta: -30 });
+    assert_eq!(
+        assignment_for_pad(&core, pad)
+            .expect("selected pad should be assigned")
+            .mute_group,
+        0
+    );
 }
 
 #[test]
@@ -4765,6 +4859,36 @@ fn program_parameter_unassigned_pad_edit_returns_structured_ignore_without_assig
 }
 
 #[test]
+fn program_parameter_unassigned_mute_group_edit_reports_mute_group_reason() {
+    let mut core = MpcCore::new();
+    let pad = ProgramPad {
+        bank: PadBank::A,
+        pad_number: 1,
+    };
+
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::Program,
+    });
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::SoftKey(1),
+    });
+    for _ in 0..4 {
+        core.dispatch(HardwareEvent::Press {
+            control: PanelControl::CursorDown,
+        });
+    }
+    let outputs = core.dispatch(HardwareEvent::TurnDataWheel { delta: 7 });
+
+    assert_eq!(
+        outputs,
+        vec![MachineOutput::Ignored {
+            reason: "program.mute_group.unassigned_a01".to_string(),
+        }]
+    );
+    assert!(assignment_for_pad(&core, pad).is_none());
+}
+
+#[test]
 fn program_parameter_pad_strike_playback_intent_carries_edited_values() {
     let mut core = MpcCore::new();
 
@@ -4783,6 +4907,10 @@ fn program_parameter_pad_strike_playback_intent_carries_edited_values() {
         control: PanelControl::CursorDown,
     });
     core.dispatch(HardwareEvent::TurnDataWheel { delta: 3 });
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::CursorDown,
+    });
+    core.dispatch(HardwareEvent::TurnDataWheel { delta: 6 });
 
     let outputs = core.dispatch(HardwareEvent::StrikePad {
         bank: PadBank::A,
@@ -4797,6 +4925,7 @@ fn program_parameter_pad_strike_playback_intent_carries_edited_values() {
     assert_eq!(intent.level, 107);
     assert_eq!(intent.pan, -12);
     assert_eq!(intent.tune_cents, 300);
+    assert_eq!(intent.mute_group, 6);
 }
 
 #[test]
@@ -4827,6 +4956,10 @@ fn program_parameter_recording_snapshots_edited_values_and_replays_stored_metada
         control: PanelControl::CursorDown,
     });
     core.dispatch(HardwareEvent::TurnDataWheel { delta: 5 });
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::CursorDown,
+    });
+    core.dispatch(HardwareEvent::TurnDataWheel { delta: 3 });
 
     core.dispatch(HardwareEvent::Press {
         control: PanelControl::Rec,
@@ -4844,6 +4977,10 @@ fn program_parameter_recording_snapshots_edited_values_and_replays_stored_metada
         control: PanelControl::Stop,
     });
 
+    core.dispatch(HardwareEvent::TurnDataWheel { delta: -3 });
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::CursorUp,
+    });
     core.dispatch(HardwareEvent::TurnDataWheel { delta: -10 });
     core.dispatch(HardwareEvent::Press {
         control: PanelControl::CursorUp,
@@ -4861,10 +4998,12 @@ fn program_parameter_recording_snapshots_edited_values_and_replays_stored_metada
     assert_eq!(recorded_playback.level, 90);
     assert_eq!(recorded_playback.pan, -7);
     assert_eq!(recorded_playback.tune_cents, 500);
+    assert_eq!(recorded_playback.mute_group, 3);
     let current_assignment = assignment_for_pad(&core, pad).expect("pad should remain assigned");
     assert_eq!(current_assignment.level, 120);
     assert_eq!(current_assignment.pan, 13);
     assert_eq!(current_assignment.tune_cents, -500);
+    assert_eq!(current_assignment.mute_group, 0);
 
     let mut snapshot = core.export_project_snapshot();
     reset_snapshot_playhead(&mut snapshot, 0);
@@ -4880,10 +5019,11 @@ fn program_parameter_recording_snapshots_edited_values_and_replays_stored_metada
     assert_eq!(intents[0].level, 90);
     assert_eq!(intents[0].pan, -7);
     assert_eq!(intents[0].tune_cents, 500);
+    assert_eq!(intents[0].mute_group, 3);
 }
 
 #[test]
-fn program_parameter_project_snapshot_round_trip_preserves_tune_and_edit_field() {
+fn program_parameter_project_snapshot_round_trip_preserves_tune_mute_group_and_edit_field() {
     let mut core = MpcCore::new();
     let pad = ProgramPad {
         bank: PadBank::A,
@@ -4903,10 +5043,15 @@ fn program_parameter_project_snapshot_round_trip_preserves_tune_and_edit_field()
         control: PanelControl::CursorDown,
     });
     core.dispatch(HardwareEvent::TurnDataWheel { delta: 4 });
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::CursorDown,
+    });
+    core.dispatch(HardwareEvent::TurnDataWheel { delta: 9 });
 
     let json = core.to_project_json().expect("snapshot should encode");
-    assert!(json.contains(r#""selected_program_edit_field": "tune""#));
+    assert!(json.contains(r#""selected_program_edit_field": "mute_group""#));
     assert!(json.contains(r#""tune_cents": 400"#));
+    assert!(json.contains(r#""mute_group": 9"#));
 
     let mut restored = MpcCore::new();
     restored
@@ -4915,16 +5060,13 @@ fn program_parameter_project_snapshot_round_trip_preserves_tune_and_edit_field()
 
     assert_eq!(
         restored.state().selected_program_edit_field,
-        ProgramEditField::Tune
+        ProgramEditField::MuteGroup
     );
-    assert_eq!(
-        assignment_for_pad(&restored, pad)
-            .expect("pad should remain assigned")
-            .tune_cents,
-        400
-    );
-    assert!(restored.state().lcd.lines[0].contains("Edit tune"));
-    assert!(restored.state().lcd.lines[3].contains(">Tune +400"));
+    let assignment = assignment_for_pad(&restored, pad).expect("pad should remain assigned");
+    assert_eq!(assignment.tune_cents, 400);
+    assert_eq!(assignment.mute_group, 9);
+    assert!(restored.state().lcd.lines[0].contains("Edit mute_group"));
+    assert!(restored.state().lcd.lines[3].contains(">MG 09"));
 }
 
 #[test]
@@ -4943,6 +5085,20 @@ fn program_parameter_project_snapshot_rejects_invalid_tune() {
         "program.pad_assignments[0].tune_cents",
         "-1200..=1200",
     );
+}
+
+#[test]
+fn program_parameter_project_snapshot_rejects_invalid_mute_group() {
+    let core = MpcCore::new();
+    let mut snapshot = core.export_project_snapshot();
+    snapshot.program.pad_assignments[0].mute_group = 17;
+    let mut restored = MpcCore::new();
+
+    let error = restored
+        .restore_project_snapshot(snapshot)
+        .expect_err("assignment mute group outside foundation range should be rejected");
+
+    assert_invalid_project_field(error, "program.pad_assignments[0].mute_group", "0..=16");
 }
 
 #[test]
@@ -6735,6 +6891,7 @@ fn sample_playback_intent_for_track_bank_pad(
         level: 100,
         pan: 0,
         tune_cents: 0,
+        mute_group: 0,
         start_frame: 0,
         end_frame: length_frames.saturating_sub(1),
         window_length_frames: length_frames,
