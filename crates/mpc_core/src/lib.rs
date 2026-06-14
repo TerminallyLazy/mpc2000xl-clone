@@ -3,12 +3,12 @@ pub mod lcd;
 pub mod state;
 
 pub use events::{
-    DiskOperation, HardwareEvent, IMPORTED_SAMPLE_LENGTH_FRAMES, MachineOutput, MidiSettingsField,
-    Mode, PadAssignment, PadAssignmentChange, PadBank, PanelControl, PlaybackMissReason, Program,
-    ProgramEditField, ProgramPad, RECORDED_SAMPLE_LENGTH_FRAMES, SampleCatalogEntry,
-    SamplePlaybackIntent, SamplePlaybackMiss, SamplePlaybackResolution, SampleSourceKind,
-    SampleTrim, SequenceEvent, SetupField, SetupPreferences, SongEditField, SongStep,
-    SyntheticSample, TimingCorrectDivision, TimingCorrectField, TimingCorrectSettings,
+    CountInClickIntent, DiskOperation, HardwareEvent, IMPORTED_SAMPLE_LENGTH_FRAMES, MachineOutput,
+    MidiSettingsField, Mode, PadAssignment, PadAssignmentChange, PadBank, PanelControl,
+    PlaybackMissReason, Program, ProgramEditField, ProgramPad, RECORDED_SAMPLE_LENGTH_FRAMES,
+    SampleCatalogEntry, SamplePlaybackIntent, SamplePlaybackMiss, SamplePlaybackResolution,
+    SampleSourceKind, SampleTrim, SequenceEvent, SetupField, SetupPreferences, SongEditField,
+    SongStep, SyntheticSample, TimingCorrectDivision, TimingCorrectField, TimingCorrectSettings,
     TrimEditField, generated_sample_length_frames, sample_window_length_frames,
 };
 pub use lcd::LcdFrame;

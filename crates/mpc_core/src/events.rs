@@ -651,6 +651,14 @@ pub struct SequenceEvent {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CountInClickIntent {
+    pub count_in_tick: u64,
+    pub bar_index: u8,
+    pub beat_index: u8,
+    pub accent: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SongStep {
     pub sequence_index: u8,
     pub repeats: u8,
@@ -728,6 +736,16 @@ pub enum MachineOutput {
     TransportChanged {
         playing: bool,
         recording: bool,
+    },
+    CountInStarted {
+        total_ticks: u64,
+        bars: u8,
+    },
+    CountInCompleted {
+        total_ticks: u64,
+    },
+    MetronomeClick {
+        intent: CountInClickIntent,
     },
     PlayheadLocated {
         tick: u64,

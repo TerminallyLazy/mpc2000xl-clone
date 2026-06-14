@@ -4,12 +4,12 @@ use std::collections::BTreeSet;
 use std::fmt;
 
 use crate::events::{
-    DiskOperation, HardwareEvent, IMPORTED_SAMPLE_LENGTH_FRAMES, MachineOutput, MidiSettingsField,
-    Mode, PadAssignment, PadAssignmentChange, PadBank, PanelControl, PlaybackMissReason, Program,
-    ProgramEditField, ProgramPad, RECORDED_SAMPLE_LENGTH_FRAMES, SampleCatalogEntry,
-    SamplePlaybackIntent, SamplePlaybackMiss, SamplePlaybackResolution, SampleSourceKind,
-    SampleTrim, SequenceEvent, SetupField, SetupPreferences, SongEditField, SongStep,
-    SyntheticSample, TimingCorrectField, TimingCorrectSettings, TrimEditField,
+    CountInClickIntent, DiskOperation, HardwareEvent, IMPORTED_SAMPLE_LENGTH_FRAMES, MachineOutput,
+    MidiSettingsField, Mode, PadAssignment, PadAssignmentChange, PadBank, PanelControl,
+    PlaybackMissReason, Program, ProgramEditField, ProgramPad, RECORDED_SAMPLE_LENGTH_FRAMES,
+    SampleCatalogEntry, SamplePlaybackIntent, SamplePlaybackMiss, SamplePlaybackResolution,
+    SampleSourceKind, SampleTrim, SequenceEvent, SetupField, SetupPreferences, SongEditField,
+    SongStep, SyntheticSample, TimingCorrectField, TimingCorrectSettings, TrimEditField,
     generated_sample_length_frames, sample_window_length_frames,
 };
 use crate::lcd::LcdFrame;
@@ -21,6 +21,7 @@ use crate::lcd::LcdFrame;
 pub const INTERNAL_PPQN: u32 = 96;
 pub const FOUNDATION_BEATS_PER_BAR: u32 = 4;
 pub const PROJECT_SNAPSHOT_VERSION: u16 = 1;
+const COUNT_IN_BEAT_TICKS: u64 = INTERNAL_PPQN as u64;
 
 const PROJECT_SNAPSHOT_KIND: &str = "mpc2000xl_clone_project";
 const PROJECT_RIGHTS_BOUNDARY: &str = "metadata_only_no_audio_bytes";
@@ -302,6 +303,12 @@ pub struct MpcState {
     pub last_playback: Option<SamplePlaybackResolution>,
     pub playhead_ticks: u64,
     pub playhead_tick_remainder: u64,
+    #[serde(default, skip_serializing)]
+    pub count_in_active: bool,
+    #[serde(default, skip_serializing)]
+    pub count_in_ticks_remaining: u64,
+    #[serde(default, skip_serializing)]
+    pub count_in_total_ticks: u64,
     pub recorded_events: Vec<SequenceEvent>,
     pub lcd: LcdFrame,
     pub event_count: u64,
@@ -372,6 +379,9 @@ impl Default for MpcState {
             last_playback: None,
             playhead_ticks: 0,
             playhead_tick_remainder: 0,
+            count_in_active: false,
+            count_in_ticks_remaining: 0,
+            count_in_total_ticks: 0,
             recorded_events: Vec::new(),
             event_count: 0,
         }
@@ -394,6 +404,11 @@ impl MpcState {
 
     pub fn is_track_muted(&self, track: u8) -> bool {
         self.muted_tracks.contains(&track)
+    }
+
+    pub fn count_in_elapsed_ticks(&self) -> u64 {
+        self.count_in_total_ticks
+            .saturating_sub(self.count_in_ticks_remaining)
     }
 }
 
@@ -484,6 +499,7 @@ impl MpcCore {
         self.state.tempo_bpm_x100 = snapshot.sequence.tempo_bpm_x100;
         self.state.playing = false;
         self.state.recording = false;
+        self.clear_count_in();
         self.state.loop_enabled = snapshot.sequence.loop_enabled;
         self.state.selected_track = snapshot.sequence.selected_track;
         self.state.muted_tracks = sorted_tracks(snapshot.sequence.muted_tracks);
@@ -602,19 +618,21 @@ impl MpcCore {
             PanelControl::Disk => self.set_mode(Mode::Disk),
             PanelControl::Setup => self.set_mode(Mode::Setup),
             PanelControl::Play => {
+                let was_record_playing = self.state.playing && self.state.recording;
                 self.state.playing = true;
+                let mut outputs = self.start_count_in_if_needed(!was_record_playing);
                 self.refresh_lcd();
-                vec![
-                    MachineOutput::TransportChanged {
-                        playing: true,
-                        recording: self.state.recording,
-                    },
-                    MachineOutput::LcdChanged,
-                ]
+                outputs.push(MachineOutput::TransportChanged {
+                    playing: true,
+                    recording: self.state.recording,
+                });
+                outputs.push(MachineOutput::LcdChanged);
+                outputs
             }
             PanelControl::Stop => {
                 self.state.playing = false;
                 self.state.recording = false;
+                self.clear_count_in();
                 self.refresh_lcd();
                 vec![
                     MachineOutput::TransportChanged {
@@ -636,16 +654,17 @@ impl MpcCore {
                 ]
             }
             PanelControl::Overdub => {
+                let was_record_playing = self.state.playing && self.state.recording;
                 self.state.recording = true;
                 self.state.playing = true;
+                let mut outputs = self.start_count_in_if_needed(!was_record_playing);
                 self.refresh_lcd();
-                vec![
-                    MachineOutput::TransportChanged {
-                        playing: true,
-                        recording: true,
-                    },
-                    MachineOutput::LcdChanged,
-                ]
+                outputs.push(MachineOutput::TransportChanged {
+                    playing: true,
+                    recording: true,
+                });
+                outputs.push(MachineOutput::LcdChanged);
+                outputs
             }
             PanelControl::LocateStart => self.locate_start(),
             PanelControl::ToggleLoop => self.toggle_loop(),
@@ -680,11 +699,38 @@ impl MpcCore {
     fn locate_start(&mut self) -> Vec<MachineOutput> {
         self.state.playhead_ticks = 0;
         self.state.playhead_tick_remainder = 0;
+        self.clear_count_in();
         self.refresh_lcd();
         vec![
             MachineOutput::PlayheadLocated { tick: 0 },
             MachineOutput::LcdChanged,
         ]
+    }
+
+    fn start_count_in_if_needed(&mut self, entering_record_play: bool) -> Vec<MachineOutput> {
+        if !entering_record_play {
+            return Vec::new();
+        }
+
+        if !self.state.recording || self.state.setup_preferences.count_in_bars == 0 {
+            self.clear_count_in();
+            return Vec::new();
+        }
+
+        let bars = self.state.setup_preferences.count_in_bars;
+        let total_ticks = count_in_total_ticks(bars);
+        self.state.count_in_active = true;
+        self.state.count_in_ticks_remaining = total_ticks;
+        self.state.count_in_total_ticks = total_ticks;
+        self.state.playhead_tick_remainder = 0;
+
+        vec![MachineOutput::CountInStarted { total_ticks, bars }]
+    }
+
+    fn clear_count_in(&mut self) {
+        self.state.count_in_active = false;
+        self.state.count_in_ticks_remaining = 0;
+        self.state.count_in_total_ticks = 0;
     }
 
     fn toggle_loop(&mut self) -> Vec<MachineOutput> {
@@ -1668,7 +1714,7 @@ impl MpcCore {
         }
         self.state.last_playback = Some(playback.clone());
 
-        if self.state.playing && self.state.recording {
+        if self.state.playing && self.state.recording && !self.state.count_in_active {
             let raw_tick = self.state.playhead_ticks;
             let quantized_tick = quantize_tick(
                 raw_tick,
@@ -1767,6 +1813,11 @@ impl MpcCore {
         let tick_delta = numerator / TICK_DENOMINATOR;
         let remainder = numerator % TICK_DENOMINATOR;
         let tick_delta = u64::try_from(tick_delta).unwrap_or(u64::MAX);
+
+        if self.state.count_in_active {
+            return self.consume_count_in_ticks(tick_delta, remainder as u64, previous_lcd);
+        }
+
         let scheduled_events;
         let mut transport_stopped = false;
 
@@ -1825,6 +1876,61 @@ impl MpcCore {
                 playing: false,
                 recording: false,
             });
+        }
+
+        self.refresh_lcd();
+        if self.state.lcd != previous_lcd {
+            outputs.push(MachineOutput::LcdChanged);
+        }
+
+        outputs
+    }
+
+    fn consume_count_in_ticks(
+        &mut self,
+        tick_delta: u64,
+        remainder: u64,
+        previous_lcd: LcdFrame,
+    ) -> Vec<MachineOutput> {
+        let mut outputs = Vec::new();
+
+        if tick_delta == 0 {
+            self.state.playhead_tick_remainder = remainder;
+            self.refresh_lcd();
+            if self.state.lcd != previous_lcd {
+                outputs.push(MachineOutput::LcdChanged);
+            }
+            return outputs;
+        }
+
+        let previous_elapsed = self.state.count_in_elapsed_ticks();
+        let consumed_ticks = tick_delta.min(self.state.count_in_ticks_remaining);
+        let next_elapsed = previous_elapsed.saturating_add(consumed_ticks);
+
+        if self.state.setup_preferences.metronome_enabled {
+            outputs.extend(
+                count_in_clicks_between(
+                    previous_elapsed,
+                    next_elapsed,
+                    self.state.count_in_total_ticks,
+                )
+                .into_iter()
+                .map(|intent| MachineOutput::MetronomeClick { intent }),
+            );
+        }
+
+        self.state.count_in_ticks_remaining = self
+            .state
+            .count_in_ticks_remaining
+            .saturating_sub(consumed_ticks);
+
+        if self.state.count_in_ticks_remaining == 0 {
+            let total_ticks = self.state.count_in_total_ticks;
+            self.clear_count_in();
+            self.state.playhead_tick_remainder = 0;
+            outputs.push(MachineOutput::CountInCompleted { total_ticks });
+        } else {
+            self.state.playhead_tick_remainder = remainder;
         }
 
         self.refresh_lcd();
@@ -2840,7 +2946,7 @@ fn validate_sequence_event(
     validate_velocity(&format!("{field}.velocity"), event.velocity)?;
 
     if let Some(playback) = &event.playback {
-        validate_playback_intent(&format!("{field}.playback"), playback, assignments)?;
+        validate_recorded_playback_intent(&format!("{field}.playback"), playback, assignments)?;
         if playback.selected_track != event.selected_track {
             return Err(invalid_value(
                 &format!("{field}.playback.selected_track"),
@@ -2891,6 +2997,40 @@ fn validate_playback_intent(
     intent: &SamplePlaybackIntent,
     assignments: &[PadAssignment],
 ) -> Result<(), ProjectSnapshotError> {
+    validate_playback_intent_fields(field, intent)?;
+    let Some(length_frames) = playback_intent_length_frames(intent, assignments) else {
+        return Err(unknown_playback_sample_id(field, intent));
+    };
+    validate_sample_window(
+        field,
+        intent.start_frame,
+        intent.end_frame,
+        intent.window_length_frames,
+        length_frames,
+    )
+}
+
+fn validate_recorded_playback_intent(
+    field: &str,
+    intent: &SamplePlaybackIntent,
+    assignments: &[PadAssignment],
+) -> Result<(), ProjectSnapshotError> {
+    validate_playback_intent_fields(field, intent)?;
+    let length_frames = playback_intent_length_frames(intent, assignments)
+        .unwrap_or_else(|| intent.end_frame.saturating_add(1));
+    validate_sample_window(
+        field,
+        intent.start_frame,
+        intent.end_frame,
+        intent.window_length_frames,
+        length_frames,
+    )
+}
+
+fn validate_playback_intent_fields(
+    field: &str,
+    intent: &SamplePlaybackIntent,
+) -> Result<(), ProjectSnapshotError> {
     validate_range_u8(
         &format!("{field}.selected_track"),
         intent.selected_track,
@@ -2921,21 +3061,13 @@ fn validate_playback_intent(
         MIN_PAD_TUNE_CENTS,
         MAX_PAD_TUNE_CENTS,
     )?;
-    let length_frames = playback_intent_length_frames(field, intent, assignments)?;
-    validate_sample_window(
-        field,
-        intent.start_frame,
-        intent.end_frame,
-        intent.window_length_frames,
-        length_frames,
-    )
+    Ok(())
 }
 
 fn playback_intent_length_frames(
-    field: &str,
     intent: &SamplePlaybackIntent,
     assignments: &[PadAssignment],
-) -> Result<u32, ProjectSnapshotError> {
+) -> Option<u32> {
     assignments
         .iter()
         .find(|assignment| {
@@ -2944,17 +3076,18 @@ fn playback_intent_length_frames(
                 && assignment.sample.id == intent.sample_id
         })
         .map(|assignment| assignment.sample.effective_length_frames(assignment.pad))
-        .ok_or_else(|| {
-            invalid_value(
-                &format!("{field}.sample_id"),
-                format!(
-                    "unknown sample id {:?} for pad {}{:02}",
-                    intent.sample_id,
-                    intent.bank.label(),
-                    intent.pad_number
-                ),
-            )
-        })
+}
+
+fn unknown_playback_sample_id(field: &str, intent: &SamplePlaybackIntent) -> ProjectSnapshotError {
+    invalid_value(
+        &format!("{field}.sample_id"),
+        format!(
+            "unknown sample id {:?} for pad {}{:02}",
+            intent.sample_id,
+            intent.bank.label(),
+            intent.pad_number
+        ),
+    )
 }
 
 fn validate_playback_miss(
@@ -3195,6 +3328,44 @@ pub fn sequence_length_ticks_for_bars(bar_count: u16) -> u64 {
     u64::from(bar_count.max(MIN_BAR_COUNT))
         .saturating_mul(u64::from(INTERNAL_PPQN))
         .saturating_mul(u64::from(FOUNDATION_BEATS_PER_BAR))
+}
+
+fn count_in_total_ticks(bars: u8) -> u64 {
+    u64::from(bars)
+        .saturating_mul(u64::from(INTERNAL_PPQN))
+        .saturating_mul(u64::from(FOUNDATION_BEATS_PER_BAR))
+}
+
+fn count_in_clicks_between(
+    previous_elapsed: u64,
+    next_elapsed: u64,
+    total_ticks: u64,
+) -> Vec<CountInClickIntent> {
+    if next_elapsed <= previous_elapsed || total_ticks == 0 {
+        return Vec::new();
+    }
+
+    let first_beat = previous_elapsed.div_ceil(COUNT_IN_BEAT_TICKS);
+    let last_beat = next_elapsed.saturating_sub(1) / COUNT_IN_BEAT_TICKS;
+
+    (first_beat..=last_beat)
+        .map(|beat_offset| beat_offset.saturating_mul(COUNT_IN_BEAT_TICKS))
+        .filter(|count_in_tick| *count_in_tick < total_ticks)
+        .map(count_in_click_intent)
+        .collect()
+}
+
+fn count_in_click_intent(count_in_tick: u64) -> CountInClickIntent {
+    let beat_offset = count_in_tick / COUNT_IN_BEAT_TICKS;
+    let bar_index = (beat_offset / u64::from(FOUNDATION_BEATS_PER_BAR)) + 1;
+    let beat_index = (beat_offset % u64::from(FOUNDATION_BEATS_PER_BAR)) + 1;
+
+    CountInClickIntent {
+        count_in_tick,
+        bar_index: u8::try_from(bar_index).unwrap_or(u8::MAX),
+        beat_index: u8::try_from(beat_index).unwrap_or(u8::MAX),
+        accent: beat_index == 1,
+    }
 }
 
 fn quantize_tick(tick: u64, sequence_length_ticks: u64, settings: TimingCorrectSettings) -> u64 {

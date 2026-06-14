@@ -2558,8 +2558,7 @@
           "status": "summarizes selected SETUP field and current preferences"
         },
         "deferred": [
-          "metronome audio scheduling",
-          "transport count-in behavior",
+          "real metronome audio scheduling",
           "hardware LCD calibration",
           "native MPC setup files",
           "JJ-OS behavior",
@@ -2573,7 +2572,138 @@
       ],
       "conflict_notes": [
         "This is an internal-spec preferences editor, not full MPC2000XL or JJ-OS SETUP behavior.",
-        "Manual, firmware, native project, metronome audio, transport count-in, hardware LCD calibration, and JJ-OS parity are deferred.",
+        "Manual, firmware, native project, real metronome audio, hardware LCD calibration, and JJ-OS parity are deferred.",
+        "No proprietary manuals, service scans, firmware bytes, JJ-OS assets, samples, media, binary fixtures, or copied third-party code are stored in the repo."
+      ]
+    },
+    {
+      "id": "core.count-in.click-foundation",
+      "name": "Count-in gates recording/playhead advancement and emits deterministic click intents",
+      "area": "transport",
+      "state": "fixture-backed-internal-spec",
+      "evidence": [
+        {
+          "source_id": "count-in-click-foundation-slice-plan",
+          "source_category": "internal_spec",
+          "type": "plan",
+          "status": "mapped",
+          "ref": "docs/superpowers/plans/2026-06-13-mpc2000xl-count-in-click-foundation.md#deterministic-contract"
+        },
+        {
+          "source_id": "setup-preferences-slice-plan",
+          "source_category": "internal_spec",
+          "type": "plan",
+          "status": "mapped",
+          "ref": "docs/superpowers/plans/2026-06-13-mpc2000xl-setup-preferences.md#behavior-slice"
+        }
+      ],
+      "source_coverage": [
+        {
+          "source_category": "manual",
+          "source_id": "owner-manual",
+          "status": "investigation",
+          "ref": null,
+          "note": "Exact MPC2000XL count-in and metronome behavior is not mapped yet."
+        },
+        {
+          "source_category": "firmware",
+          "source_id": "mpc2000xl-os-local-reference",
+          "status": "investigation",
+          "ref": null,
+          "note": "No firmware trace has been captured for count-in transport behavior."
+        },
+        {
+          "source_category": "jjos",
+          "source_id": "jjos-unverified-boundary",
+          "status": "conflict-note",
+          "ref": "docs/superpowers/specs/2026-06-13-mpc2000xl-full-app-product-design.md#jj-os-evidence-boundary",
+          "note": "JJ-OS count-in behavior is not accepted as reference evidence for this internal foundation slice."
+        },
+        {
+          "source_category": "internal_spec",
+          "source_id": "count-in-click-foundation-slice-plan",
+          "status": "mapped",
+          "ref": "docs/superpowers/plans/2026-06-13-mpc2000xl-count-in-click-foundation.md#source-and-evidence-status",
+          "note": "The current contract is deterministic count-in state and MachineOutput click intents only."
+        }
+      ],
+      "inputs": [
+        {
+          "channel": "setup",
+          "preference": "count_in_bars",
+          "policy": "0 disables pre-roll; 1..=4 sets count-in bars"
+        },
+        {
+          "channel": "setup",
+          "preference": "metronome_enabled",
+          "policy": "when false, count-in still gates transport but emits no MetronomeClick outputs"
+        },
+        {
+          "channel": "front_panel",
+          "event": "press",
+          "control": "rec then play | overdub",
+          "policy": "starts count-in when recording is armed and count_in_bars > 0"
+        },
+        {
+          "channel": "clock",
+          "event": "tick",
+          "policy": "uses existing tempo-to-96-PPQN tick math to consume pre-roll"
+        },
+        {
+          "channel": "pads|midi",
+          "event": "strike_pad|mapped_midi_note_on",
+          "policy": "playback intent can still emit, but sequence events do not record while count-in is active"
+        },
+        {
+          "channel": "front_panel",
+          "event": "press",
+          "control": "stop|locate_start",
+          "policy": "clears active count-in"
+        }
+      ],
+      "expected_outputs": {
+        "state": {
+          "total_ticks": "count_in_bars * 4 * 96",
+          "playhead": "does not advance during active count-in; normal advancement starts on the next tick batch after completion",
+          "recording": "pad/MIDI strikes are not stored as SequenceEvent while active count-in is true",
+          "snapshot": "active count-in fields are transient and not persisted in project snapshots"
+        },
+        "outputs": [
+          "CountInStarted when REC+PLAY or OVERDUB starts a nonzero count-in",
+          "MetronomeClick for each count-in beat when metronome_enabled is true",
+          "CountInCompleted when pre-roll ticks are exhausted",
+          "No MetronomeClick outputs when metronome_enabled is false"
+        ],
+        "click_intent": {
+          "fields": [
+            "count_in_tick",
+            "bar_index",
+            "beat_index",
+            "accent"
+          ],
+          "accent": "beat 1 accented; beats 2-4 unaccented"
+        },
+        "desktop": {
+          "status": "summarizes count-in started, completed, and click outputs"
+        },
+        "deferred": [
+          "real metronome audio",
+          "audio-device routing",
+          "hardware timing tolerance",
+          "MIDI clock",
+          "SMPTE/MTC",
+          "manual parity claims",
+          "JJ-OS parity claims"
+        ]
+      },
+      "tolerance": null,
+      "fixture_refs": [
+        "crates/mpc_core/tests/core_flow.rs",
+        "crates/mpc_conformance/tests/fixtures/count_in_click_transport.json"
+      ],
+      "conflict_notes": [
+        "This is an internal deterministic transport foundation and not full MPC2000XL or JJ-OS count-in behavior.",
+        "No real metronome audio, audio-device routing, external sync, hardware timing tolerance, native project format, or manual parity is claimed.",
         "No proprietary manuals, service scans, firmware bytes, JJ-OS assets, samples, media, binary fixtures, or copied third-party code are stored in the repo."
       ]
     },

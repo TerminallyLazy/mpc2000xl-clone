@@ -409,6 +409,31 @@ impl MpcDesktopApp {
     }
 
     fn status_from_outputs(outputs: &[MachineOutput], state: &MpcState) -> String {
+        if let Some(MachineOutput::CountInStarted { total_ticks, bars }) = outputs
+            .iter()
+            .find(|output| matches!(output, MachineOutput::CountInStarted { .. }))
+        {
+            return format!("Count-in started: {bars} bar(s), {total_ticks} ticks");
+        }
+
+        if let Some(MachineOutput::CountInCompleted { total_ticks }) = outputs
+            .iter()
+            .find(|output| matches!(output, MachineOutput::CountInCompleted { .. }))
+        {
+            return format!("Count-in completed: {total_ticks} ticks");
+        }
+
+        if let Some(MachineOutput::MetronomeClick { intent }) = outputs
+            .iter()
+            .find(|output| matches!(output, MachineOutput::MetronomeClick { .. }))
+        {
+            let accent = if intent.accent { "accent" } else { "click" };
+            return format!(
+                "Count-in {accent}: bar {} beat {} tick {}",
+                intent.bar_index, intent.beat_index, intent.count_in_tick
+            );
+        }
+
         if let Some(MachineOutput::MidiSettingsChanged {
             input_channel,
             base_note,

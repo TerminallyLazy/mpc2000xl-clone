@@ -240,6 +240,12 @@ pub struct ExpectedState {
     #[serde(default)]
     pub playhead_ticks: Option<u64>,
     #[serde(default)]
+    pub count_in_active: Option<bool>,
+    #[serde(default)]
+    pub count_in_ticks_remaining: Option<u64>,
+    #[serde(default)]
+    pub count_in_total_ticks: Option<u64>,
+    #[serde(default)]
     pub last_recorded_event: Option<SequenceEvent>,
     #[serde(default)]
     pub current_program_index: Option<u8>,
@@ -671,6 +677,33 @@ fn validate_expected_state(
             details.push(format!(
                 "{prefix}playhead_ticks mismatch: expected {}, got {}",
                 playhead_ticks, state.playhead_ticks
+            ));
+        }
+    }
+
+    if let Some(count_in_active) = expected.count_in_active {
+        if state.count_in_active != count_in_active {
+            details.push(format!(
+                "{prefix}count_in_active mismatch: expected {}, got {}",
+                count_in_active, state.count_in_active
+            ));
+        }
+    }
+
+    if let Some(count_in_ticks_remaining) = expected.count_in_ticks_remaining {
+        if state.count_in_ticks_remaining != count_in_ticks_remaining {
+            details.push(format!(
+                "{prefix}count_in_ticks_remaining mismatch: expected {}, got {}",
+                count_in_ticks_remaining, state.count_in_ticks_remaining
+            ));
+        }
+    }
+
+    if let Some(count_in_total_ticks) = expected.count_in_total_ticks {
+        if state.count_in_total_ticks != count_in_total_ticks {
+            details.push(format!(
+                "{prefix}count_in_total_ticks mismatch: expected {}, got {}",
+                count_in_total_ticks, state.count_in_total_ticks
             ));
         }
     }

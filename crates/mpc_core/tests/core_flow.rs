@@ -1,12 +1,12 @@
 use mpc_core::{
-    DiskOperation, HardwareEvent, IMPORTED_SAMPLE_LENGTH_FRAMES, INTERNAL_PPQN, MachineOutput,
-    MainScreenField, MidiSettingsField, Mode, MpcCore, PROJECT_SNAPSHOT_VERSION, PadAssignment,
-    PadAssignmentChange, PadBank, PanelControl, PlaybackMissReason, ProgramEditField, ProgramPad,
-    ProjectSetupSnapshot, ProjectSnapshot, ProjectSnapshotError, ProjectSongSnapshot,
-    RECORDED_SAMPLE_LENGTH_FRAMES, SamplePlaybackIntent, SamplePlaybackResolution,
-    SampleSourceKind, SampleTrim, SequenceEvent, SetupField, SetupPreferences, SongEditField,
-    SongStep, SyntheticSample, TimingCorrectDivision, TimingCorrectField, TimingCorrectSettings,
-    TrimEditField, sequence_length_ticks_for_bars,
+    CountInClickIntent, DiskOperation, HardwareEvent, IMPORTED_SAMPLE_LENGTH_FRAMES, INTERNAL_PPQN,
+    MachineOutput, MainScreenField, MidiSettingsField, Mode, MpcCore, PROJECT_SNAPSHOT_VERSION,
+    PadAssignment, PadAssignmentChange, PadBank, PanelControl, PlaybackMissReason,
+    ProgramEditField, ProgramPad, ProjectSetupSnapshot, ProjectSnapshot, ProjectSnapshotError,
+    ProjectSongSnapshot, RECORDED_SAMPLE_LENGTH_FRAMES, SamplePlaybackIntent,
+    SamplePlaybackResolution, SampleSourceKind, SampleTrim, SequenceEvent, SetupField,
+    SetupPreferences, SongEditField, SongStep, SyntheticSample, TimingCorrectDivision,
+    TimingCorrectField, TimingCorrectSettings, TrimEditField, sequence_length_ticks_for_bars,
 };
 
 #[test]
@@ -1555,6 +1555,447 @@ fn overdub_starts_playback_and_records_pad_strike() {
         MachineOutput::SequenceEventRecorded { event }
             if event.pad_bank == PadBank::C && event.pad_number == 4
     )));
+}
+
+#[test]
+fn count_in_rec_play_emits_clicks_and_delays_sequence_until_next_tick_batch() {
+    let mut core = core_with_count_in(true, 1);
+
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::Rec,
+    });
+    let start_outputs = core.dispatch(HardwareEvent::Press {
+        control: PanelControl::Play,
+    });
+
+    assert!(core.state().playing);
+    assert!(core.state().recording);
+    assert!(core.state().count_in_active);
+    assert_eq!(core.state().count_in_total_ticks, 384);
+    assert_eq!(
+        start_outputs,
+        vec![
+            MachineOutput::CountInStarted {
+                total_ticks: 384,
+                bars: 1,
+            },
+            MachineOutput::TransportChanged {
+                playing: true,
+                recording: true,
+            },
+            MachineOutput::LcdChanged,
+        ]
+    );
+
+    let first = core.dispatch(HardwareEvent::Tick { micros: 500_000 });
+    assert_eq!(
+        first,
+        vec![MachineOutput::MetronomeClick {
+            intent: count_in_click(0, 1, 1, true),
+        }]
+    );
+    assert_eq!(core.state().playhead_ticks, 0);
+    assert_eq!(core.state().count_in_ticks_remaining, 288);
+
+    let second = core.dispatch(HardwareEvent::Tick { micros: 500_000 });
+    assert_eq!(
+        second,
+        vec![MachineOutput::MetronomeClick {
+            intent: count_in_click(96, 1, 2, false),
+        }]
+    );
+
+    let third = core.dispatch(HardwareEvent::Tick { micros: 500_000 });
+    assert_eq!(
+        third,
+        vec![MachineOutput::MetronomeClick {
+            intent: count_in_click(192, 1, 3, false),
+        }]
+    );
+
+    let fourth = core.dispatch(HardwareEvent::Tick { micros: 500_000 });
+    assert_eq!(
+        fourth,
+        vec![
+            MachineOutput::MetronomeClick {
+                intent: count_in_click(288, 1, 4, false),
+            },
+            MachineOutput::CountInCompleted { total_ticks: 384 },
+        ]
+    );
+    assert!(!core.state().count_in_active);
+    assert_eq!(core.state().playhead_ticks, 0);
+
+    let after_count_in = core.dispatch(HardwareEvent::Tick { micros: 500_000 });
+    assert_eq!(core.state().playhead_ticks, u64::from(INTERNAL_PPQN));
+    assert_eq!(after_count_in, vec![MachineOutput::LcdChanged]);
+}
+
+#[test]
+fn count_in_overdub_uses_same_preroll_foundation() {
+    let mut core = core_with_count_in(true, 2);
+
+    let outputs = core.dispatch(HardwareEvent::Press {
+        control: PanelControl::Overdub,
+    });
+
+    assert!(core.state().playing);
+    assert!(core.state().recording);
+    assert!(core.state().count_in_active);
+    assert_eq!(core.state().count_in_total_ticks, 768);
+    assert_eq!(
+        outputs,
+        vec![
+            MachineOutput::CountInStarted {
+                total_ticks: 768,
+                bars: 2,
+            },
+            MachineOutput::TransportChanged {
+                playing: true,
+                recording: true,
+            },
+            MachineOutput::LcdChanged,
+        ]
+    );
+}
+
+#[test]
+fn count_in_does_not_restart_when_play_or_overdub_is_pressed_while_recording() {
+    let mut play_core = core_with_count_in(true, 1);
+    play_core.dispatch(HardwareEvent::Press {
+        control: PanelControl::Rec,
+    });
+    play_core.dispatch(HardwareEvent::Press {
+        control: PanelControl::Play,
+    });
+    play_core.dispatch(HardwareEvent::Tick { micros: 500_000 });
+    assert!(play_core.state().count_in_active);
+    assert_eq!(play_core.state().count_in_ticks_remaining, 288);
+
+    let play_during_count_in_outputs = play_core.dispatch(HardwareEvent::Press {
+        control: PanelControl::Play,
+    });
+    assert!(play_core.state().count_in_active);
+    assert_eq!(play_core.state().count_in_ticks_remaining, 288);
+    assert_eq!(
+        play_during_count_in_outputs,
+        vec![
+            MachineOutput::TransportChanged {
+                playing: true,
+                recording: true,
+            },
+            MachineOutput::LcdChanged,
+        ]
+    );
+    let pad_during_play_count_in = play_core.dispatch(HardwareEvent::StrikePad {
+        bank: PadBank::A,
+        pad: 1,
+        velocity: 92,
+    });
+    assert!(
+        !pad_during_play_count_in
+            .iter()
+            .any(|output| matches!(output, MachineOutput::SequenceEventRecorded { .. }))
+    );
+
+    for _ in 0..4 {
+        play_core.dispatch(HardwareEvent::Tick { micros: 500_000 });
+    }
+    assert!(play_core.state().playing);
+    assert!(play_core.state().recording);
+    assert!(!play_core.state().count_in_active);
+
+    let play_again_outputs = play_core.dispatch(HardwareEvent::Press {
+        control: PanelControl::Play,
+    });
+    assert!(!play_core.state().count_in_active);
+    assert_eq!(
+        play_again_outputs,
+        vec![
+            MachineOutput::TransportChanged {
+                playing: true,
+                recording: true,
+            },
+            MachineOutput::LcdChanged,
+        ]
+    );
+    let recorded_after_play_again = play_core.dispatch(HardwareEvent::StrikePad {
+        bank: PadBank::A,
+        pad: 1,
+        velocity: 92,
+    });
+    assert!(
+        recorded_after_play_again
+            .iter()
+            .any(|output| matches!(output, MachineOutput::SequenceEventRecorded { .. }))
+    );
+
+    let mut overdub_core = core_with_count_in(true, 1);
+    overdub_core.dispatch(HardwareEvent::Press {
+        control: PanelControl::Overdub,
+    });
+    overdub_core.dispatch(HardwareEvent::Tick { micros: 500_000 });
+    assert!(overdub_core.state().count_in_active);
+    assert_eq!(overdub_core.state().count_in_ticks_remaining, 288);
+
+    let overdub_during_count_in_outputs = overdub_core.dispatch(HardwareEvent::Press {
+        control: PanelControl::Overdub,
+    });
+    assert!(overdub_core.state().count_in_active);
+    assert_eq!(overdub_core.state().count_in_ticks_remaining, 288);
+    assert_eq!(
+        overdub_during_count_in_outputs,
+        vec![
+            MachineOutput::TransportChanged {
+                playing: true,
+                recording: true,
+            },
+            MachineOutput::LcdChanged,
+        ]
+    );
+    let pad_during_overdub_count_in = overdub_core.dispatch(HardwareEvent::StrikePad {
+        bank: PadBank::B,
+        pad: 1,
+        velocity: 87,
+    });
+    assert!(
+        !pad_during_overdub_count_in
+            .iter()
+            .any(|output| matches!(output, MachineOutput::SequenceEventRecorded { .. }))
+    );
+
+    for _ in 0..4 {
+        overdub_core.dispatch(HardwareEvent::Tick { micros: 500_000 });
+    }
+    assert!(overdub_core.state().playing);
+    assert!(overdub_core.state().recording);
+    assert!(!overdub_core.state().count_in_active);
+
+    let overdub_again_outputs = overdub_core.dispatch(HardwareEvent::Press {
+        control: PanelControl::Overdub,
+    });
+    assert!(!overdub_core.state().count_in_active);
+    assert_eq!(
+        overdub_again_outputs,
+        vec![
+            MachineOutput::TransportChanged {
+                playing: true,
+                recording: true,
+            },
+            MachineOutput::LcdChanged,
+        ]
+    );
+}
+
+#[test]
+fn count_in_metronome_disabled_silently_gates_until_completion() {
+    let mut core = core_with_count_in(false, 1);
+
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::Rec,
+    });
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::Play,
+    });
+
+    for _ in 0..3 {
+        let outputs = core.dispatch(HardwareEvent::Tick { micros: 500_000 });
+        assert!(outputs.is_empty());
+        assert_eq!(core.state().playhead_ticks, 0);
+        assert!(core.state().count_in_active);
+    }
+
+    let completion_outputs = core.dispatch(HardwareEvent::Tick { micros: 500_000 });
+    assert_eq!(
+        completion_outputs,
+        vec![MachineOutput::CountInCompleted { total_ticks: 384 }]
+    );
+    assert!(!core.state().count_in_active);
+    assert_eq!(core.state().playhead_ticks, 0);
+}
+
+#[test]
+fn count_in_stop_and_locate_start_clear_active_preroll() {
+    let mut stopped = core_with_count_in(true, 1);
+    stopped.dispatch(HardwareEvent::Press {
+        control: PanelControl::Rec,
+    });
+    stopped.dispatch(HardwareEvent::Press {
+        control: PanelControl::Play,
+    });
+    assert!(stopped.state().count_in_active);
+
+    let stop_outputs = stopped.dispatch(HardwareEvent::Press {
+        control: PanelControl::Stop,
+    });
+    assert!(!stopped.state().count_in_active);
+    assert_eq!(stopped.state().count_in_ticks_remaining, 0);
+    assert_eq!(
+        stop_outputs,
+        vec![
+            MachineOutput::TransportChanged {
+                playing: false,
+                recording: false,
+            },
+            MachineOutput::LcdChanged,
+        ]
+    );
+
+    let mut located = core_with_count_in(true, 1);
+    located.dispatch(HardwareEvent::Press {
+        control: PanelControl::Rec,
+    });
+    located.dispatch(HardwareEvent::Press {
+        control: PanelControl::Play,
+    });
+    located.dispatch(HardwareEvent::Tick { micros: 500_000 });
+    assert!(located.state().count_in_active);
+
+    let locate_outputs = located.dispatch(HardwareEvent::Press {
+        control: PanelControl::LocateStart,
+    });
+    assert!(!located.state().count_in_active);
+    assert_eq!(located.state().count_in_ticks_remaining, 0);
+    assert_eq!(located.state().playhead_ticks, 0);
+    assert_eq!(
+        locate_outputs,
+        vec![
+            MachineOutput::PlayheadLocated { tick: 0 },
+            MachineOutput::LcdChanged,
+        ]
+    );
+}
+
+#[test]
+fn count_in_blocks_pad_and_midi_recording_during_preroll() {
+    let mut core = core_with_count_in(true, 1);
+
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::Rec,
+    });
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::Play,
+    });
+
+    let pad_outputs = core.dispatch(HardwareEvent::StrikePad {
+        bank: PadBank::B,
+        pad: 2,
+        velocity: 90,
+    });
+    assert!(
+        pad_outputs
+            .iter()
+            .any(|output| matches!(output, MachineOutput::SamplePlaybackIntent { .. }))
+    );
+    assert!(
+        !pad_outputs
+            .iter()
+            .any(|output| matches!(output, MachineOutput::SequenceEventRecorded { .. }))
+    );
+
+    let midi_outputs = core.dispatch(HardwareEvent::MidiNoteOn {
+        channel: 1,
+        note: 36,
+        velocity: 91,
+    });
+    assert!(
+        midi_outputs
+            .iter()
+            .any(|output| matches!(output, MachineOutput::MidiNoteMapped { .. }))
+    );
+    assert!(
+        !midi_outputs
+            .iter()
+            .any(|output| matches!(output, MachineOutput::SequenceEventRecorded { .. }))
+    );
+    assert!(core.state().recorded_events.is_empty());
+
+    for _ in 0..4 {
+        core.dispatch(HardwareEvent::Tick { micros: 500_000 });
+    }
+    assert!(!core.state().count_in_active);
+
+    let post_count_in_outputs = core.dispatch(HardwareEvent::StrikePad {
+        bank: PadBank::B,
+        pad: 2,
+        velocity: 90,
+    });
+    assert!(
+        post_count_in_outputs
+            .iter()
+            .any(|output| matches!(output, MachineOutput::SequenceEventRecorded { .. }))
+    );
+    assert_eq!(core.state().recorded_events.len(), 1);
+}
+
+#[test]
+fn count_in_project_snapshot_does_not_persist_active_transport_state() {
+    let mut core = core_with_count_in(true, 1);
+
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::Rec,
+    });
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::Play,
+    });
+    core.dispatch(HardwareEvent::Tick { micros: 500_000 });
+    assert!(core.state().count_in_active);
+
+    let json = core.to_project_json().expect("snapshot should encode");
+    assert!(!json.contains("count_in_active"));
+    assert!(!json.contains("count_in_ticks_remaining"));
+    assert!(!json.contains("count_in_total_ticks"));
+
+    let mut restored = MpcCore::new();
+    restored
+        .restore_project_json(&json)
+        .expect("snapshot should restore");
+    assert!(!restored.state().playing);
+    assert!(!restored.state().recording);
+    assert!(!restored.state().count_in_active);
+    assert_eq!(restored.state().count_in_ticks_remaining, 0);
+    assert_eq!(restored.state().setup_preferences.count_in_bars, 1);
+}
+
+#[test]
+fn count_in_machine_output_variants_serialize_stably() {
+    assert_eq!(
+        serde_json::to_value(MachineOutput::CountInStarted {
+            total_ticks: 384,
+            bars: 1,
+        })
+        .expect("count-in started output should serialize"),
+        serde_json::json!({
+            "type": "count_in_started",
+            "total_ticks": 384,
+            "bars": 1
+        })
+    );
+
+    assert_eq!(
+        serde_json::to_value(MachineOutput::MetronomeClick {
+            intent: count_in_click(96, 1, 2, false),
+        })
+        .expect("metronome click output should serialize"),
+        serde_json::json!({
+            "type": "metronome_click",
+            "intent": {
+                "count_in_tick": 96,
+                "bar_index": 1,
+                "beat_index": 2,
+                "accent": false
+            }
+        })
+    );
+
+    assert_eq!(
+        serde_json::to_value(MachineOutput::CountInCompleted { total_ticks: 384 })
+            .expect("count-in completed output should serialize"),
+        serde_json::json!({
+            "type": "count_in_completed",
+            "total_ticks": 384
+        })
+    );
 }
 
 #[test]
@@ -6049,6 +6490,26 @@ fn restore_snapshot(snapshot: ProjectSnapshot) -> MpcCore {
     core.restore_project_snapshot(snapshot)
         .expect("snapshot should restore");
     core
+}
+
+fn core_with_count_in(metronome_enabled: bool, count_in_bars: u8) -> MpcCore {
+    let mut snapshot = MpcCore::new().export_project_snapshot();
+    snapshot.setup.preferences = setup_preferences(metronome_enabled, count_in_bars, 5);
+    restore_snapshot(snapshot)
+}
+
+fn count_in_click(
+    count_in_tick: u64,
+    bar_index: u8,
+    beat_index: u8,
+    accent: bool,
+) -> CountInClickIntent {
+    CountInClickIntent {
+        count_in_tick,
+        bar_index,
+        beat_index,
+        accent,
+    }
 }
 
 fn playback_intents(outputs: &[MachineOutput]) -> Vec<&SamplePlaybackIntent> {
