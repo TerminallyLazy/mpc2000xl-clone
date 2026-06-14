@@ -3726,7 +3726,7 @@
       "id": "audio.sample.runtime-wav-import-foundation",
       "name": "Runtime user WAV import loads pad payloads without persisting audio bytes",
       "area": "sample_audio_host",
-      "state": "unit-backed-internal-spec",
+      "state": "fixture-backed-internal-spec",
       "evidence": [
         {
           "source_id": "runtime-wav-import-foundation-slice-plan",
@@ -3815,6 +3815,7 @@
       },
       "tolerance": null,
       "fixture_refs": [
+        "crates/mpc_conformance/tests/fixtures/runtime_wav_import_foundation.json",
         "crates/mpc_audio/src/lib.rs",
         "crates/mpc_core/tests/core_flow.rs",
         "crates/mpc_storage/src/lib.rs",

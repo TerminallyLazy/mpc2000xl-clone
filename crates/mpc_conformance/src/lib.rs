@@ -1,5 +1,8 @@
 use anyhow::{Context, Result, bail};
-use mpc_audio::{AudioRenderSettings, AudioSourceKind, ChannelBalance, render_intent};
+use mpc_audio::{
+    AudioRenderSettings, AudioSourceKind, ChannelBalance, RuntimeSampleLibrary,
+    load_wav_sample_payload, render_intent_with_runtime_samples,
+};
 use mpc_core::{
     DiskOperation, HardwareEvent, MachineOutput, MainScreenField, MidiSettingsField, Mode, MpcCore,
     MpcState, PROJECT_SNAPSHOT_VERSION, PadBank, ProgramEditField, ProgramPad,
@@ -10,7 +13,8 @@ use serde::de::{self, Visitor};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::fmt;
 use std::fs;
-use std::path::Path;
+use std::io::Write;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Fixture {
@@ -18,6 +22,10 @@ pub struct Fixture {
     pub name: String,
     pub source_refs: Vec<String>,
     pub events: Vec<HardwareEvent>,
+    #[serde(default)]
+    pub runtime_wav_imports: Vec<RuntimeWavImport>,
+    #[serde(default)]
+    pub post_runtime_wav_import_events: Vec<HardwareEvent>,
     #[serde(default)]
     pub expect_output_sequence: Vec<MachineOutput>,
     #[serde(default)]
@@ -34,6 +42,14 @@ pub struct ExpectedSampleMetadataCreated {
     pub source_kind: SampleSourceKind,
     pub target_pad: ProgramPad,
     pub length_frames: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuntimeWavImport {
+    pub sample_name: String,
+    pub channels: u16,
+    pub sample_rate_hz: u32,
+    pub samples: Vec<i16>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -372,16 +388,35 @@ pub fn load_fixture(path: impl AsRef<Path>) -> Result<Fixture> {
 
 pub fn run_fixture(fixture: &Fixture) -> FixtureReport {
     let mut core = MpcCore::new();
+    let mut runtime_samples = RuntimeSampleLibrary::default();
     let mut output_sequence = Vec::new();
+    let mut details = Vec::new();
 
     for event in &fixture.events {
         output_sequence.extend(core.dispatch(event.clone()));
     }
 
-    let mut details = Vec::new();
+    process_runtime_wav_imports(
+        &mut details,
+        fixture,
+        &mut core,
+        &mut runtime_samples,
+        &mut output_sequence,
+    );
+
+    for event in &fixture.post_runtime_wav_import_events {
+        output_sequence.extend(core.dispatch(event.clone()));
+    }
+
     validate_expected_output_sequence(&mut details, &output_sequence, fixture);
     validate_expected_sample_metadata_created(&mut details, &output_sequence, fixture);
-    validate_expected_state(&mut details, "", core.state(), &fixture.expect);
+    validate_expected_state(
+        &mut details,
+        "",
+        core.state(),
+        &fixture.expect,
+        &runtime_samples,
+    );
     if let Some(project_round_trip) = &fixture.project_round_trip {
         validate_project_round_trip(&mut details, &core, project_round_trip);
     }
@@ -400,6 +435,146 @@ pub fn run_fixture_path(path: impl AsRef<Path>) -> Result<FixtureReport> {
         bail!("fixture {} has no source references", fixture.id);
     }
     Ok(run_fixture(&fixture))
+}
+
+fn process_runtime_wav_imports(
+    details: &mut Vec<String>,
+    fixture: &Fixture,
+    core: &mut MpcCore,
+    runtime_samples: &mut RuntimeSampleLibrary,
+    output_sequence: &mut Vec<MachineOutput>,
+) {
+    for (index, import) in fixture.runtime_wav_imports.iter().enumerate() {
+        let path = runtime_wav_fixture_path(&fixture.id, index);
+        let result = process_runtime_wav_import(&path, import, core, runtime_samples);
+
+        if path.exists() {
+            if let Err(error) = fs::remove_file(&path) {
+                details.push(format!(
+                    "runtime_wav_imports[{index}] cleanup error for {}: {error}",
+                    path.display()
+                ));
+            }
+        }
+
+        match result {
+            Ok(outputs) => output_sequence.extend(outputs),
+            Err(error) => details.push(format!("runtime_wav_imports[{index}] error: {error:#}")),
+        }
+    }
+}
+
+fn process_runtime_wav_import(
+    path: &Path,
+    import: &RuntimeWavImport,
+    core: &mut MpcCore,
+    runtime_samples: &mut RuntimeSampleLibrary,
+) -> Result<Vec<MachineOutput>> {
+    write_runtime_wav_fixture(path, import)?;
+    let payload = load_wav_sample_payload(path)
+        .with_context(|| format!("failed to load generated WAV fixture {}", path.display()))?;
+    let length_frames = payload.length_frames_u32();
+    let outputs =
+        core.import_sample_metadata_for_selected_pad(import.sample_name.clone(), length_frames);
+    let Some((sample_id, sample_name)) = outputs.iter().find_map(|output| {
+        if let MachineOutput::SampleMetadataCreated { sample, .. } = output {
+            Some((sample.id.clone(), sample.name.clone()))
+        } else {
+            None
+        }
+    }) else {
+        bail!("runtime WAV import did not create sample metadata");
+    };
+
+    runtime_samples.insert(sample_id, sample_name, payload);
+    Ok(outputs)
+}
+
+fn runtime_wav_fixture_path(fixture_id: &str, index: usize) -> PathBuf {
+    let safe_fixture_id = fixture_id
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() {
+                character
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default();
+
+    std::env::temp_dir().join(format!(
+        "mpc_conformance_{safe_fixture_id}_{}_{}_{}.wav",
+        std::process::id(),
+        index,
+        nanos
+    ))
+}
+
+fn write_runtime_wav_fixture(path: &Path, import: &RuntimeWavImport) -> Result<()> {
+    if import.channels != 1 && import.channels != 2 {
+        bail!(
+            "runtime WAV fixture supports mono or stereo PCM16 only, got {} channels",
+            import.channels
+        );
+    }
+    if import.sample_rate_hz == 0 {
+        bail!("runtime WAV fixture sample_rate_hz must be non-zero");
+    }
+    if import.samples.is_empty() {
+        bail!("runtime WAV fixture samples must not be empty");
+    }
+    if import.samples.len() % usize::from(import.channels) != 0 {
+        bail!(
+            "runtime WAV fixture sample count {} is not divisible by channel count {}",
+            import.samples.len(),
+            import.channels
+        );
+    }
+
+    let data_byte_count = import
+        .samples
+        .len()
+        .checked_mul(std::mem::size_of::<i16>())
+        .context("runtime WAV fixture data size overflow")?;
+    let data_byte_count =
+        u32::try_from(data_byte_count).context("runtime WAV fixture data exceeds u32 WAV size")?;
+    let riff_chunk_size = 36u32
+        .checked_add(data_byte_count)
+        .context("runtime WAV fixture RIFF size overflow")?;
+    let byte_rate = import
+        .sample_rate_hz
+        .checked_mul(u32::from(import.channels))
+        .and_then(|value| value.checked_mul(2))
+        .context("runtime WAV fixture byte rate overflow")?;
+    let block_align = import
+        .channels
+        .checked_mul(2)
+        .context("runtime WAV fixture block align overflow")?;
+
+    let mut file = fs::File::create(path)
+        .with_context(|| format!("failed to create runtime WAV fixture {}", path.display()))?;
+    file.write_all(b"RIFF")?;
+    file.write_all(&riff_chunk_size.to_le_bytes())?;
+    file.write_all(b"WAVE")?;
+    file.write_all(b"fmt ")?;
+    file.write_all(&16u32.to_le_bytes())?;
+    file.write_all(&1u16.to_le_bytes())?;
+    file.write_all(&import.channels.to_le_bytes())?;
+    file.write_all(&import.sample_rate_hz.to_le_bytes())?;
+    file.write_all(&byte_rate.to_le_bytes())?;
+    file.write_all(&block_align.to_le_bytes())?;
+    file.write_all(&16u16.to_le_bytes())?;
+    file.write_all(b"data")?;
+    file.write_all(&data_byte_count.to_le_bytes())?;
+    for sample in &import.samples {
+        file.write_all(&sample.to_le_bytes())?;
+    }
+
+    Ok(())
 }
 
 fn validate_expected_output_sequence(
@@ -529,6 +704,7 @@ fn validate_project_round_trip(
         "project_round_trip.",
         restored.state(),
         &expected.expect,
+        &RuntimeSampleLibrary::default(),
     );
 }
 
@@ -537,6 +713,7 @@ fn validate_expected_state(
     prefix: &str,
     state: &MpcState,
     expected: &ExpectedState,
+    runtime_samples: &RuntimeSampleLibrary,
 ) {
     if state.mode != expected.mode {
         details.push(format!(
@@ -1087,6 +1264,7 @@ fn validate_expected_state(
             details,
             state.last_playback.as_ref(),
             expected_audio_render,
+            runtime_samples,
         );
     }
 }
@@ -1095,6 +1273,7 @@ fn validate_expected_audio_render(
     details: &mut Vec<String>,
     last_playback: Option<&SamplePlaybackResolution>,
     expected: &ExpectedAudioRender,
+    runtime_samples: &RuntimeSampleLibrary,
 ) {
     let Some(SamplePlaybackResolution::Intent { intent }) = last_playback else {
         details.push(format!(
@@ -1103,13 +1282,14 @@ fn validate_expected_audio_render(
         return;
     };
 
-    let rendered = match render_intent(intent, expected.settings) {
-        Ok(rendered) => rendered,
-        Err(error) => {
-            details.push(format!("last_audio_render render error: {error}"));
-            return;
-        }
-    };
+    let rendered =
+        match render_intent_with_runtime_samples(intent, expected.settings, runtime_samples) {
+            Ok(rendered) => rendered,
+            Err(error) => {
+                details.push(format!("last_audio_render render error: {error}"));
+                return;
+            }
+        };
     let summary = rendered.summary;
 
     push_mismatch(
@@ -1312,7 +1492,12 @@ mod tests {
         };
         let mut details = Vec::new();
 
-        validate_expected_audio_render(&mut details, Some(&playback), &expected);
+        validate_expected_audio_render(
+            &mut details,
+            Some(&playback),
+            &expected,
+            &RuntimeSampleLibrary::default(),
+        );
 
         assert_eq!(
             details,

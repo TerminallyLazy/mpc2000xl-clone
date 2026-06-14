@@ -1,0 +1,116 @@
+{
+  "id": "audio.sample.runtime-wav-import-foundation",
+  "name": "Runtime WAV import creates sample metadata, assigns the selected pad, and renders the user payload",
+  "source_refs": [
+    "docs/superpowers/plans/2026-06-14-mpc2000xl-runtime-wav-import-foundation.md#source-and-evidence-status",
+    "docs/superpowers/specs/2026-06-13-mpc2000xl-full-app-product-design.md#rights-and-source-boundary"
+  ],
+  "events": [
+    {
+      "type": "press",
+      "control": "sample"
+    }
+  ],
+  "runtime_wav_imports": [
+    {
+      "sample_name": "USER-KICK",
+      "channels": 1,
+      "sample_rate_hz": 44100,
+      "samples": [
+        1270,
+        -2540,
+        3810,
+        -5080
+      ]
+    }
+  ],
+  "post_runtime_wav_import_events": [
+    {
+      "type": "strike_pad",
+      "bank": "a",
+      "pad": 1,
+      "velocity": 127
+    }
+  ],
+  "expect_sample_metadata_created": [
+    {
+      "sample_id": "imported_001",
+      "sample_name": "USER-KICK",
+      "source_kind": "imported",
+      "target_pad": {
+        "bank": "a",
+        "pad_number": 1
+      },
+      "length_frames": 4
+    }
+  ],
+  "expect": {
+    "mode": "sample",
+    "lcd_title": "SAMPLE",
+    "playing": false,
+    "recording": false,
+    "event_count": 2,
+    "selected_track": 1,
+    "current_program_index": 1,
+    "current_program_name": "Program01",
+    "pad_assignment_count": 64,
+    "selected_program_pad": {
+      "bank": "a",
+      "pad_number": 1
+    },
+    "sample_catalog_count": 64,
+    "selected_sample_index": 1,
+    "selected_sample_id": "imported_001",
+    "selected_sample_name": "USER-KICK",
+    "selected_sample_source_kind": "imported",
+    "selected_sample_length_frames": 4,
+    "selected_sample_start_frame": 0,
+    "selected_sample_end_frame": 3,
+    "selected_sample_window_length_frames": 4,
+    "last_playback": {
+      "type": "intent",
+      "intent": {
+        "selected_track": 1,
+        "program_index": 1,
+        "program_name": "Program01",
+        "bank": "a",
+        "pad_number": 1,
+        "sample_id": "imported_001",
+        "sample_name": "USER-KICK",
+        "velocity": 127,
+        "level": 100,
+        "pan": 0,
+        "tune_cents": 0,
+        "start_frame": 0,
+        "end_frame": 3,
+        "window_length_frames": 4
+      }
+    },
+    "last_audio_render": {
+      "settings": {
+        "sample_rate_hz": 44100,
+        "frame_count": 128
+      },
+      "sample_rate_hz": 44100,
+      "frame_count": 4,
+      "source_sample_id": "imported_001",
+      "source_sample_name": "USER-KICK",
+      "selected_track": 1,
+      "program_index": 1,
+      "program_name": "Program01",
+      "bank": "a",
+      "pad_number": 1,
+      "tune_cents": 0,
+      "mute_group": 0,
+      "start_frame": 0,
+      "end_frame": 3,
+      "window_length_frames": 4,
+      "peak_left": 4000,
+      "peak_right": 4000,
+      "peak_amplitude": 4000,
+      "channel_balance": "center",
+      "source_kind": "runtime_user_wav",
+      "loaded_audio_byte_count": 52
+    }
+  }
+}
