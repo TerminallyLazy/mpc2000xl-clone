@@ -1879,7 +1879,7 @@
       "id": "audio.host.device-output-foundation",
       "name": "Optional host audio default output device backend",
       "area": "audio_host",
-      "state": "unit-backed-internal-spec",
+      "state": "fixture-backed-internal-spec",
       "evidence": [
         {
           "source_id": "host-audio-device-output-foundation-slice-plan",
@@ -1973,6 +1973,7 @@
       },
       "tolerance": "No MPC2000XL latency or DAC tolerance is claimed; host callback timing remains platform-dependent.",
       "fixture_refs": [
+        "crates/mpc_conformance/tests/fixtures/host_audio_device_output_probe.json",
         "crates/mpc_audio/src/lib.rs",
         "apps/desktop/src/main.rs",
         "docs/superpowers/plans/2026-06-14-mpc2000xl-host-audio-device-output-foundation.md"

@@ -1,8 +1,10 @@
 use anyhow::{Context, Result, bail};
 use mpc_audio::{
-    AudioRenderKind, AudioRenderSettings, AudioSourceKind, CaptureAudioBackend, ChannelBalance,
-    HostAudioEngine, HostAudioEvent, HostAudioMode, HostAudioState, HostAudioVoiceSummary,
-    RuntimeSampleLibrary, load_wav_sample_payload, render_intent_with_runtime_samples,
+    AudioFrame, AudioRenderKind, AudioRenderSettings, AudioRenderSummary, AudioSourceKind,
+    CaptureAudioBackend, ChannelBalance, DeterministicDeviceAudioOutputProbe,
+    DeviceAudioOutputProbeStatus, HostAudioBackendReceipt, HostAudioEngine, HostAudioEvent,
+    HostAudioMode, HostAudioState, HostAudioVoiceSummary, RenderedAudio, RuntimeSampleLibrary,
+    load_wav_sample_payload, render_intent_with_runtime_samples,
 };
 use mpc_core::{
     DiskOperation, HardwareEvent, MachineOutput, MainScreenField, MidiSettingsField, Mode, MpcCore,
@@ -38,6 +40,8 @@ pub struct Fixture {
     pub post_runtime_wav_import_events: Vec<HardwareEvent>,
     #[serde(default)]
     pub host_audio: Option<HostAudioFixture>,
+    #[serde(default)]
+    pub device_audio_output_probe: Option<DeviceAudioOutputProbeFixture>,
     #[serde(default)]
     pub host_midi: Option<HostMidiFixture>,
     #[serde(default)]
@@ -154,6 +158,59 @@ pub enum ExpectedHostAudioEventType {
     Enqueued,
     Released,
     Failed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeviceAudioOutputProbeFixture {
+    #[serde(default)]
+    pub cases: Vec<DeviceAudioOutputProbeCase>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum DeviceAudioOutputProbeCase {
+    CapacityClamp {
+        sample_rate_hz: u32,
+        max_queued_frames: usize,
+        expect_status: DeviceAudioOutputProbeStatus,
+    },
+    EnqueueAndWrite {
+        sample_rate_hz: u32,
+        max_queued_frames: usize,
+        render: DeviceAudioOutputProbeRender,
+        expect_receipt: ExpectedDeviceAudioOutputProbeReceipt,
+        expect_status_after_enqueue: DeviceAudioOutputProbeStatus,
+        write_frame_count: usize,
+        write_channels: usize,
+        expect_output_f32_bits: Vec<u32>,
+        expect_status_after_write: DeviceAudioOutputProbeStatus,
+    },
+    EnqueueError {
+        sample_rate_hz: u32,
+        max_queued_frames: usize,
+        render: DeviceAudioOutputProbeRender,
+        expect_error_contains: String,
+        expect_status_after_error: DeviceAudioOutputProbeStatus,
+    },
+    RecordStreamErrors {
+        sample_rate_hz: u32,
+        max_queued_frames: usize,
+        stream_errors: Vec<String>,
+        expect_status: DeviceAudioOutputProbeStatus,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeviceAudioOutputProbeRender {
+    pub sample_rate_hz: u32,
+    pub frames: Vec<AudioFrame>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExpectedDeviceAudioOutputProbeReceipt {
+    pub frame_count: usize,
+    pub queued: bool,
+    pub played: bool,
 }
 
 struct HostAudioFixtureRunner {
@@ -632,6 +689,7 @@ pub fn run_fixture(fixture: &Fixture) -> FixtureReport {
         validate_project_round_trip(&mut details, &core, project_round_trip);
     }
     validate_host_audio(&mut details, fixture, host_audio.as_ref());
+    validate_device_audio_output_probe(&mut details, fixture);
     validate_host_midi(&mut details, fixture, host_midi.as_ref());
 
     FixtureReport {
@@ -1224,6 +1282,220 @@ fn validate_expected_host_audio_last_event(
                 choked_voice_count, actual
             ));
         }
+    }
+}
+
+fn validate_device_audio_output_probe(details: &mut Vec<String>, fixture: &Fixture) {
+    let Some(config) = &fixture.device_audio_output_probe else {
+        return;
+    };
+
+    for (index, case) in config.cases.iter().enumerate() {
+        let label = format!("device_audio_output_probe.cases[{index}]");
+        validate_device_audio_output_probe_case(details, &label, case);
+    }
+}
+
+fn validate_device_audio_output_probe_case(
+    details: &mut Vec<String>,
+    label: &str,
+    case: &DeviceAudioOutputProbeCase,
+) {
+    match case {
+        DeviceAudioOutputProbeCase::CapacityClamp {
+            sample_rate_hz,
+            max_queued_frames,
+            expect_status,
+        } => {
+            let probe =
+                DeterministicDeviceAudioOutputProbe::new(*sample_rate_hz, *max_queued_frames);
+            push_mismatch(
+                details,
+                &format!("{label}.status"),
+                expect_status,
+                &probe.status(),
+            );
+        }
+        DeviceAudioOutputProbeCase::EnqueueAndWrite {
+            sample_rate_hz,
+            max_queued_frames,
+            render,
+            expect_receipt,
+            expect_status_after_enqueue,
+            write_frame_count,
+            write_channels,
+            expect_output_f32_bits,
+            expect_status_after_write,
+        } => {
+            let mut probe =
+                DeterministicDeviceAudioOutputProbe::new(*sample_rate_hz, *max_queued_frames);
+            let rendered = device_audio_output_probe_rendered_audio(render);
+            let receipt = match probe.enqueue_render(&rendered) {
+                Ok(receipt) => receipt,
+                Err(error) => {
+                    details.push(format!("{label}.enqueue error: {error}"));
+                    return;
+                }
+            };
+            let actual_receipt = expected_device_audio_output_probe_receipt(receipt);
+            push_mismatch(
+                details,
+                &format!("{label}.receipt"),
+                expect_receipt,
+                &actual_receipt,
+            );
+            push_mismatch(
+                details,
+                &format!("{label}.status_after_enqueue"),
+                expect_status_after_enqueue,
+                &probe.status(),
+            );
+
+            let output = probe.write_f32_output(*write_frame_count, *write_channels);
+            let actual_output_f32_bits = output
+                .iter()
+                .map(|sample| sample.to_bits())
+                .collect::<Vec<_>>();
+            push_mismatch(
+                details,
+                &format!("{label}.output_f32_bits"),
+                expect_output_f32_bits,
+                &actual_output_f32_bits,
+            );
+            push_mismatch(
+                details,
+                &format!("{label}.status_after_write"),
+                expect_status_after_write,
+                &probe.status(),
+            );
+        }
+        DeviceAudioOutputProbeCase::EnqueueError {
+            sample_rate_hz,
+            max_queued_frames,
+            render,
+            expect_error_contains,
+            expect_status_after_error,
+        } => {
+            let mut probe =
+                DeterministicDeviceAudioOutputProbe::new(*sample_rate_hz, *max_queued_frames);
+            let rendered = device_audio_output_probe_rendered_audio(render);
+            match probe.enqueue_render(&rendered) {
+                Ok(receipt) => details.push(format!(
+                    "{label}.enqueue error mismatch: expected substring {:?}, got receipt {:?}",
+                    expect_error_contains,
+                    expected_device_audio_output_probe_receipt(receipt)
+                )),
+                Err(error) => {
+                    let message = error.to_string();
+                    if !message.contains(expect_error_contains) {
+                        details.push(format!(
+                            "{label}.enqueue error mismatch: expected substring {:?}, got {:?}",
+                            expect_error_contains, message
+                        ));
+                    }
+                }
+            }
+            push_mismatch(
+                details,
+                &format!("{label}.status_after_error"),
+                expect_status_after_error,
+                &probe.status(),
+            );
+        }
+        DeviceAudioOutputProbeCase::RecordStreamErrors {
+            sample_rate_hz,
+            max_queued_frames,
+            stream_errors,
+            expect_status,
+        } => {
+            let mut probe =
+                DeterministicDeviceAudioOutputProbe::new(*sample_rate_hz, *max_queued_frames);
+            for error in stream_errors {
+                probe.record_stream_error(error);
+            }
+            push_mismatch(
+                details,
+                &format!("{label}.status"),
+                expect_status,
+                &probe.status(),
+            );
+        }
+    }
+}
+
+fn device_audio_output_probe_rendered_audio(
+    render: &DeviceAudioOutputProbeRender,
+) -> RenderedAudio {
+    let frame_count = render.frames.len();
+    let peak_left = render
+        .frames
+        .iter()
+        .map(|frame| i16_peak_amplitude(frame.left))
+        .max()
+        .unwrap_or(0);
+    let peak_right = render
+        .frames
+        .iter()
+        .map(|frame| i16_peak_amplitude(frame.right))
+        .max()
+        .unwrap_or(0);
+    let end_frame = frame_count
+        .checked_sub(1)
+        .and_then(|frame| u32::try_from(frame).ok())
+        .unwrap_or(0);
+    let window_length_frames = u32::try_from(frame_count).unwrap_or(u32::MAX);
+
+    RenderedAudio {
+        settings: AudioRenderSettings {
+            sample_rate_hz: render.sample_rate_hz,
+            frame_count,
+        },
+        summary: AudioRenderSummary {
+            render_kind: AudioRenderKind::SamplePlayback,
+            sample_rate_hz: render.sample_rate_hz,
+            frame_count,
+            source_sample_id: "device_output_probe".to_string(),
+            source_sample_name: "DEVICE-PROBE".to_string(),
+            selected_track: 1,
+            program_index: 1,
+            program_name: "Program01".to_string(),
+            bank: PadBank::A,
+            pad_number: 1,
+            velocity: 100,
+            level: 100,
+            pan: 0,
+            tune_cents: 0,
+            mute_group: 0,
+            start_frame: 0,
+            end_frame,
+            window_length_frames,
+            peak_left,
+            peak_right,
+            peak_amplitude: peak_left.max(peak_right),
+            channel_balance: ChannelBalance::Center,
+            source_kind: AudioSourceKind::RightsSafeGenerated,
+            loaded_audio_byte_count: 0,
+            count_in_tick: None,
+            bar_index: None,
+            beat_index: None,
+            accent: None,
+        },
+        frames: render.frames.clone(),
+    }
+}
+
+fn i16_peak_amplitude(sample: i16) -> i16 {
+    let amplitude = i32::from(sample).abs().min(i32::from(i16::MAX));
+    i16::try_from(amplitude).unwrap_or(i16::MAX)
+}
+
+fn expected_device_audio_output_probe_receipt(
+    receipt: HostAudioBackendReceipt,
+) -> ExpectedDeviceAudioOutputProbeReceipt {
+    ExpectedDeviceAudioOutputProbeReceipt {
+        frame_count: receipt.frame_count(),
+        queued: receipt.is_queued(),
+        played: receipt.is_played(),
     }
 }
 
