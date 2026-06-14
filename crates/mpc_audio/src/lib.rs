@@ -17,6 +17,15 @@ pub const MAX_RENDER_FRAMES: usize = MAX_SAMPLE_RATE_HZ as usize;
 /// Deterministic capture backends store render summaries only, but construction
 /// still clamps requested history to avoid unchecked upfront allocation.
 pub const MAX_CAPTURE_AUDIO_BACKEND_CAPTURES: usize = 1_024;
+/// Internal foundation policy for deterministic host-audio voice accounting.
+///
+/// This is not accepted MPC2000XL hardware evidence and must not be presented as
+/// exact reference voice behavior.
+pub const DEFAULT_HOST_AUDIO_VOICE_LIMIT: usize = 32;
+/// Lower guardrail for configurable deterministic host-audio voice limits.
+pub const MIN_HOST_AUDIO_VOICE_LIMIT: usize = 1;
+/// Upper guardrail for configurable deterministic host-audio voice limits.
+pub const MAX_HOST_AUDIO_VOICE_LIMIT: usize = 128;
 const PCM_MAX: i32 = i16::MAX as i32;
 const MAX_VELOCITY: i32 = 127;
 const MAX_LEVEL: i32 = 127;
@@ -306,6 +315,26 @@ pub struct HostAudioRenderReceipt {
     pub frame_count: usize,
     pub queued: bool,
     pub played: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub voice_allocation: Option<HostAudioVoiceAllocationReceipt>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HostAudioVoiceAllocationReceipt {
+    pub voice_id: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stolen_voice_id: Option<u64>,
+    pub voice_limit: usize,
+    pub active_voice_count: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HostAudioVoiceSummary {
+    pub voice_id: u64,
+    pub render_kind: AudioRenderKind,
+    pub source_label: String,
+    pub total_frame_count: usize,
+    pub remaining_frame_count: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -339,6 +368,16 @@ pub struct HostAudioState {
     pub render_settings: AudioRenderSettings,
     pub queued_render_count: u64,
     pub played_render_count: u64,
+    #[serde(default = "default_host_audio_voice_limit")]
+    pub voice_limit: usize,
+    #[serde(default)]
+    pub active_voice_count: usize,
+    #[serde(default)]
+    pub completed_voice_count: u64,
+    #[serde(default)]
+    pub stolen_voice_count: u64,
+    #[serde(default)]
+    pub active_voices: Vec<HostAudioVoiceSummary>,
     pub last_event: Option<HostAudioEvent>,
 }
 
@@ -484,6 +523,14 @@ pub struct HostAudioBackendReceipt {
 }
 
 impl HostAudioBackendReceipt {
+    pub fn not_queued(frame_count: usize) -> Self {
+        Self {
+            frame_count,
+            queued: false,
+            played: false,
+        }
+    }
+
     pub fn queued(frame_count: usize) -> Self {
         Self {
             frame_count,
@@ -631,6 +678,11 @@ where
     render_settings: AudioRenderSettings,
     queued_render_count: u64,
     played_render_count: u64,
+    voice_limit: usize,
+    next_voice_id: u64,
+    active_voices: VecDeque<HostAudioVoiceSummary>,
+    completed_voice_count: u64,
+    stolen_voice_count: u64,
     last_event: Option<HostAudioEvent>,
 }
 
@@ -639,6 +691,18 @@ where
     B: HostAudioBackend,
 {
     pub fn new(backend: B, render_settings: AudioRenderSettings) -> Result<Self, HostAudioError> {
+        Self::new_with_voice_limit(backend, render_settings, DEFAULT_HOST_AUDIO_VOICE_LIMIT)
+    }
+
+    /// Builds a deterministic host-audio engine with a clamped internal voice limit.
+    ///
+    /// The limit is an internal foundation policy for repeatable host-side
+    /// accounting, not accepted MPC2000XL hardware evidence.
+    pub fn new_with_voice_limit(
+        backend: B,
+        render_settings: AudioRenderSettings,
+        voice_limit: usize,
+    ) -> Result<Self, HostAudioError> {
         render_settings.validate().map_err(HostAudioError::render)?;
         Ok(Self {
             backend,
@@ -646,6 +710,11 @@ where
             render_settings,
             queued_render_count: 0,
             played_render_count: 0,
+            voice_limit: clamp_host_audio_voice_limit(voice_limit),
+            next_voice_id: 1,
+            active_voices: VecDeque::new(),
+            completed_voice_count: 0,
+            stolen_voice_count: 0,
             last_event: None,
         })
     }
@@ -654,7 +723,20 @@ where
         backend: B,
         render_settings: AudioRenderSettings,
     ) -> Result<Self, HostAudioError> {
-        let mut engine = Self::new(backend, render_settings)?;
+        let mut engine =
+            Self::new_with_voice_limit(backend, render_settings, DEFAULT_HOST_AUDIO_VOICE_LIMIT)?;
+        engine.set_mode(HostAudioMode::Enabled);
+        Ok(engine)
+    }
+
+    /// Builds an enabled deterministic host-audio engine with a clamped internal
+    /// voice limit. The limit is foundation policy, not hardware evidence.
+    pub fn enabled_with_voice_limit(
+        backend: B,
+        render_settings: AudioRenderSettings,
+        voice_limit: usize,
+    ) -> Result<Self, HostAudioError> {
+        let mut engine = Self::new_with_voice_limit(backend, render_settings, voice_limit)?;
         engine.set_mode(HostAudioMode::Enabled);
         Ok(engine)
     }
@@ -683,6 +765,14 @@ where
         self.render_settings
     }
 
+    pub fn voice_limit(&self) -> usize {
+        self.voice_limit
+    }
+
+    pub fn active_voices(&self) -> &VecDeque<HostAudioVoiceSummary> {
+        &self.active_voices
+    }
+
     pub fn backend(&self) -> &B {
         &self.backend
     }
@@ -698,6 +788,11 @@ where
             render_settings: self.render_settings,
             queued_render_count: self.queued_render_count,
             played_render_count: self.played_render_count,
+            voice_limit: self.voice_limit,
+            active_voice_count: self.active_voices.len(),
+            completed_voice_count: self.completed_voice_count,
+            stolen_voice_count: self.stolen_voice_count,
+            active_voices: self.active_voices.iter().cloned().collect(),
             last_event: self.last_event.clone(),
         }
     }
@@ -779,14 +874,76 @@ where
                     self.played_render_count = self.played_render_count.saturating_add(1);
                 }
 
+                let voice_allocation =
+                    if backend_receipt.is_queued() && backend_receipt.frame_count() > 0 {
+                        Some(self.allocate_voice(&summary, backend_receipt.frame_count()))
+                    } else {
+                        None
+                    };
+
                 self.record_enqueued(HostAudioRenderReceipt {
                     summary,
                     frame_count: backend_receipt.frame_count(),
                     queued: backend_receipt.is_queued(),
                     played: backend_receipt.is_played(),
+                    voice_allocation,
                 })
             }
             Err(error) => self.record_failed(HostAudioError::backend(error), Some(summary)),
+        }
+    }
+
+    pub fn advance_voice_frames(&mut self, frame_count: usize) {
+        if frame_count == 0 {
+            return;
+        }
+
+        let mut completed = 0_u64;
+        let mut active_voices = VecDeque::with_capacity(self.active_voices.len());
+
+        while let Some(mut voice) = self.active_voices.pop_front() {
+            voice.remaining_frame_count = voice.remaining_frame_count.saturating_sub(frame_count);
+            if voice.remaining_frame_count == 0 {
+                completed = completed.saturating_add(1);
+            } else {
+                active_voices.push_back(voice);
+            }
+        }
+
+        self.active_voices = active_voices;
+        self.completed_voice_count = self.completed_voice_count.saturating_add(completed);
+    }
+
+    fn allocate_voice(
+        &mut self,
+        summary: &AudioRenderSummary,
+        frame_count: usize,
+    ) -> HostAudioVoiceAllocationReceipt {
+        let stolen_voice_id = if self.active_voices.len() >= self.voice_limit {
+            let stolen_voice_id = self.active_voices.pop_front().map(|voice| voice.voice_id);
+            if stolen_voice_id.is_some() {
+                self.stolen_voice_count = self.stolen_voice_count.saturating_add(1);
+            }
+            stolen_voice_id
+        } else {
+            None
+        };
+
+        let voice_id = self.next_voice_id;
+        self.next_voice_id = self.next_voice_id.saturating_add(1);
+        self.active_voices.push_back(HostAudioVoiceSummary {
+            voice_id,
+            render_kind: summary.render_kind,
+            source_label: voice_source_label(summary),
+            total_frame_count: frame_count,
+            remaining_frame_count: frame_count,
+        });
+
+        HostAudioVoiceAllocationReceipt {
+            voice_id,
+            stolen_voice_id,
+            voice_limit: self.voice_limit,
+            active_voice_count: self.active_voices.len(),
         }
     }
 
@@ -960,6 +1117,22 @@ pub fn render_count_in_click(
         summary,
         frames,
     })
+}
+
+fn default_host_audio_voice_limit() -> usize {
+    DEFAULT_HOST_AUDIO_VOICE_LIMIT
+}
+
+fn clamp_host_audio_voice_limit(voice_limit: usize) -> usize {
+    voice_limit.clamp(MIN_HOST_AUDIO_VOICE_LIMIT, MAX_HOST_AUDIO_VOICE_LIMIT)
+}
+
+fn voice_source_label(summary: &AudioRenderSummary) -> String {
+    match summary.render_kind {
+        AudioRenderKind::SamplePlayback | AudioRenderKind::CountInClick => {
+            summary.source_sample_name.clone()
+        }
+    }
 }
 
 fn validate_rendered_audio(rendered: &RenderedAudio) -> Result<(), HostAudioError> {
@@ -1578,6 +1751,10 @@ mod tests {
         let state = engine.state();
         assert_eq!(state.queued_render_count, 0);
         assert_eq!(state.played_render_count, 0);
+        assert_eq!(state.active_voice_count, 0);
+        assert_eq!(state.completed_voice_count, 0);
+        assert_eq!(state.stolen_voice_count, 0);
+        assert!(state.active_voices.is_empty());
         assert_eq!(engine.backend().captured_renders().len(), 0);
     }
 
@@ -1606,6 +1783,10 @@ mod tests {
         let state = engine.state();
         assert_eq!(state.queued_render_count, 0);
         assert_eq!(state.played_render_count, 0);
+        assert_eq!(state.active_voice_count, 0);
+        assert_eq!(state.completed_voice_count, 0);
+        assert_eq!(state.stolen_voice_count, 0);
+        assert!(state.active_voices.is_empty());
     }
 
     #[test]
@@ -1633,6 +1814,245 @@ mod tests {
         let state = engine.state();
         assert_eq!(state.queued_render_count, 0);
         assert_eq!(state.played_render_count, 0);
+        assert_eq!(state.active_voice_count, 0);
+        assert_eq!(state.completed_voice_count, 0);
+        assert_eq!(state.stolen_voice_count, 0);
+        assert!(state.active_voices.is_empty());
+    }
+
+    #[test]
+    fn enabled_sample_playback_allocates_default_voice() {
+        let mut engine =
+            HostAudioEngine::enabled(CaptureAudioBackend::new(4), settings(44_100, 64))
+                .expect("host audio settings should be valid");
+
+        let event = engine.play_intent(&test_intent(100, 100, 0));
+
+        let HostAudioEvent::Enqueued { receipt, .. } = &event else {
+            panic!("expected enqueued event, got {event:?}");
+        };
+        let allocation = receipt
+            .voice_allocation
+            .as_ref()
+            .expect("queued render should allocate a voice");
+        assert_eq!(allocation.voice_id, 1);
+        assert_eq!(allocation.stolen_voice_id, None);
+        assert_eq!(allocation.voice_limit, DEFAULT_HOST_AUDIO_VOICE_LIMIT);
+        assert_eq!(allocation.active_voice_count, 1);
+
+        let state = engine.state();
+        assert_eq!(state.voice_limit, DEFAULT_HOST_AUDIO_VOICE_LIMIT);
+        assert_eq!(state.active_voice_count, 1);
+        assert_eq!(state.completed_voice_count, 0);
+        assert_eq!(state.stolen_voice_count, 0);
+        assert_eq!(
+            state.active_voices,
+            vec![HostAudioVoiceSummary {
+                voice_id: 1,
+                render_kind: AudioRenderKind::SamplePlayback,
+                source_label: "SYN-A04".to_string(),
+                total_frame_count: 64,
+                remaining_frame_count: 64,
+            }]
+        );
+    }
+
+    #[test]
+    fn zero_frame_queued_render_does_not_allocate_voice() {
+        let mut engine = HostAudioEngine::enabled(CaptureAudioBackend::new(4), settings(44_100, 0))
+            .expect("host audio settings should be valid");
+
+        let event = engine.play_intent(&test_intent(100, 100, 0));
+
+        let HostAudioEvent::Enqueued { receipt, .. } = &event else {
+            panic!("expected enqueued event, got {event:?}");
+        };
+        assert!(receipt.queued);
+        assert!(receipt.played);
+        assert_eq!(receipt.frame_count, 0);
+        assert_eq!(receipt.voice_allocation, None);
+
+        let state = engine.state();
+        assert_eq!(state.queued_render_count, 1);
+        assert_eq!(state.played_render_count, 1);
+        assert_eq!(state.active_voice_count, 0);
+        assert_eq!(state.completed_voice_count, 0);
+        assert_eq!(state.stolen_voice_count, 0);
+        assert!(state.active_voices.is_empty());
+    }
+
+    #[test]
+    fn disabled_sample_playback_does_not_allocate_voice() {
+        let mut engine = HostAudioEngine::new(CaptureAudioBackend::new(4), settings(44_100, 64))
+            .expect("host audio settings should be valid");
+
+        let event = engine.play_intent(&test_intent(100, 100, 0));
+
+        assert!(matches!(event, HostAudioEvent::Ignored { .. }));
+        let state = engine.state();
+        assert_eq!(state.queued_render_count, 0);
+        assert_eq!(state.played_render_count, 0);
+        assert_eq!(state.active_voice_count, 0);
+        assert_eq!(state.completed_voice_count, 0);
+        assert_eq!(state.stolen_voice_count, 0);
+        assert!(state.active_voices.is_empty());
+    }
+
+    #[test]
+    fn backend_failure_does_not_allocate_voice() {
+        let mut engine = HostAudioEngine::enabled(FailingAudioBackend, settings(44_100, 64))
+            .expect("host audio settings should be valid");
+
+        let event = engine.play_intent(&test_intent(100, 100, 0));
+
+        assert!(matches!(event, HostAudioEvent::Failed { .. }));
+        let state = engine.state();
+        assert_eq!(state.queued_render_count, 0);
+        assert_eq!(state.played_render_count, 0);
+        assert_eq!(state.active_voice_count, 0);
+        assert_eq!(state.completed_voice_count, 0);
+        assert_eq!(state.stolen_voice_count, 0);
+        assert!(state.active_voices.is_empty());
+    }
+
+    #[test]
+    fn advance_voice_frames_completes_active_voice() {
+        let mut engine =
+            HostAudioEngine::enabled(CaptureAudioBackend::new(4), settings(44_100, 64))
+                .expect("host audio settings should be valid");
+        engine.play_intent(&test_intent(100, 100, 0));
+
+        engine.advance_voice_frames(0);
+        assert_eq!(engine.state().active_voices[0].remaining_frame_count, 64);
+
+        engine.advance_voice_frames(63);
+        let state = engine.state();
+        assert_eq!(state.active_voice_count, 1);
+        assert_eq!(state.completed_voice_count, 0);
+        assert_eq!(state.active_voices[0].remaining_frame_count, 1);
+
+        engine.advance_voice_frames(1);
+        let state = engine.state();
+        assert_eq!(state.active_voice_count, 0);
+        assert_eq!(state.completed_voice_count, 1);
+        assert!(state.active_voices.is_empty());
+    }
+
+    #[test]
+    fn voice_limit_steals_oldest_active_voice() {
+        let mut engine = HostAudioEngine::enabled_with_voice_limit(
+            CaptureAudioBackend::new(4),
+            settings(44_100, 32),
+            2,
+        )
+        .expect("host audio settings should be valid");
+
+        engine.play_intent(&test_intent_with_sample("sample-1", "SYN-01"));
+        engine.play_intent(&test_intent_with_sample("sample-2", "SYN-02"));
+        let event = engine.play_intent(&test_intent_with_sample("sample-3", "SYN-03"));
+
+        let HostAudioEvent::Enqueued { receipt, .. } = &event else {
+            panic!("expected enqueued event, got {event:?}");
+        };
+        let allocation = receipt
+            .voice_allocation
+            .as_ref()
+            .expect("queued render should allocate a voice");
+        assert_eq!(allocation.voice_id, 3);
+        assert_eq!(allocation.stolen_voice_id, Some(1));
+        assert_eq!(allocation.voice_limit, 2);
+        assert_eq!(allocation.active_voice_count, 2);
+
+        let state = engine.state();
+        assert_eq!(state.voice_limit, 2);
+        assert_eq!(state.active_voice_count, 2);
+        assert_eq!(state.completed_voice_count, 0);
+        assert_eq!(state.stolen_voice_count, 1);
+        assert_eq!(
+            state
+                .active_voices
+                .iter()
+                .map(|voice| (voice.voice_id, voice.source_label.as_str()))
+                .collect::<Vec<_>>(),
+            vec![(2, "SYN-02"), (3, "SYN-03")]
+        );
+    }
+
+    #[test]
+    fn count_in_click_allocates_voice_through_same_host_path() {
+        let mut engine =
+            HostAudioEngine::enabled(CaptureAudioBackend::new(4), settings(44_100, 64))
+                .expect("host audio settings should be valid");
+
+        let event = engine.play_count_in_click(&test_count_in_click_intent(96, 1, 2, false));
+
+        let HostAudioEvent::Enqueued { receipt, .. } = &event else {
+            panic!("expected enqueued event, got {event:?}");
+        };
+        let allocation = receipt
+            .voice_allocation
+            .as_ref()
+            .expect("queued count-in click should allocate a voice");
+        assert_eq!(allocation.voice_id, 1);
+        assert_eq!(allocation.stolen_voice_id, None);
+        assert_eq!(receipt.summary.render_kind, AudioRenderKind::CountInClick);
+
+        let state = engine.state();
+        assert_eq!(state.active_voice_count, 1);
+        assert_eq!(
+            state.active_voices,
+            vec![HostAudioVoiceSummary {
+                voice_id: 1,
+                render_kind: AudioRenderKind::CountInClick,
+                source_label: "COUNT-IN CLICK".to_string(),
+                total_frame_count: 64,
+                remaining_frame_count: 64,
+            }]
+        );
+    }
+
+    #[test]
+    fn non_queued_backend_receipt_does_not_allocate_voice() {
+        let mut engine = HostAudioEngine::enabled(
+            ReceiptAudioBackend::new(HostAudioBackendReceipt::not_queued(64)),
+            settings(44_100, 64),
+        )
+        .expect("host audio settings should be valid");
+
+        let event = engine.play_intent(&test_intent(100, 100, 0));
+
+        let HostAudioEvent::Enqueued { receipt, .. } = event else {
+            panic!("expected receipt event, got {event:?}");
+        };
+        assert!(!receipt.queued);
+        assert!(!receipt.played);
+        assert_eq!(receipt.voice_allocation, None);
+        let state = engine.state();
+        assert_eq!(state.queued_render_count, 0);
+        assert_eq!(state.played_render_count, 0);
+        assert_eq!(state.active_voice_count, 0);
+        assert_eq!(state.completed_voice_count, 0);
+        assert_eq!(state.stolen_voice_count, 0);
+        assert!(state.active_voices.is_empty());
+    }
+
+    #[test]
+    fn configurable_voice_limit_is_clamped_to_foundation_bounds() {
+        let low = HostAudioEngine::enabled_with_voice_limit(
+            NullAudioBackend::new(),
+            settings(44_100, 16),
+            0,
+        )
+        .expect("host audio settings should be valid");
+        let high = HostAudioEngine::enabled_with_voice_limit(
+            NullAudioBackend::new(),
+            settings(44_100, 16),
+            usize::MAX,
+        )
+        .expect("host audio settings should be valid");
+
+        assert_eq!(low.voice_limit(), MIN_HOST_AUDIO_VOICE_LIMIT);
+        assert_eq!(high.voice_limit(), MAX_HOST_AUDIO_VOICE_LIMIT);
     }
 
     fn settings(sample_rate_hz: u32, frame_count: usize) -> AudioRenderSettings {
@@ -1673,6 +2093,14 @@ mod tests {
             start_frame: 0,
             end_frame: 51_599,
             window_length_frames: 51_600,
+        }
+    }
+
+    fn test_intent_with_sample(sample_id: &str, sample_name: &str) -> SamplePlaybackIntent {
+        SamplePlaybackIntent {
+            sample_id: sample_id.to_string(),
+            sample_name: sample_name.to_string(),
+            ..test_intent(100, 100, 0)
         }
     }
 

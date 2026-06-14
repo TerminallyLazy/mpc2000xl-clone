@@ -33,6 +33,8 @@ This file tracks evidence sources without copying proprietary source pages, scan
 | jjos-unverified-boundary | jjos | investigation_boundary | JJ-OS support is not accepted as MPC2000XL evidence until a real MPC2000XL target is verified | `docs/superpowers/specs/2026-06-13-mpc2000xl-full-app-product-design.md#jj-os-evidence-boundary` |
 | full-app-product-spec | internal_spec | spec | Full app product design notes | `docs/superpowers/specs/2026-06-13-mpc2000xl-full-app-product-design.md` |
 | conformance-lab-spec | internal_spec | spec | Conformance lab design notes | `docs/superpowers/specs/2026-06-13-mpc2000xl-conformance-lab-design.md` |
+| synthetic-audio-render-slice-plan | internal_spec | plan | Deterministic rights-safe synthetic audio render foundation | `docs/superpowers/plans/2026-06-13-mpc2000xl-synthetic-audio-render.md` |
+| host-audio-plumbing-slice-plan | internal_spec | plan | Deterministic host-audio backend plumbing foundation | `docs/superpowers/plans/2026-06-13-mpc2000xl-host-audio-plumbing.md` |
 | sequence-playback-scheduling-slice-plan | internal_spec | plan | Deterministic recorded sequence playback scheduling foundation | `docs/superpowers/plans/2026-06-13-mpc2000xl-sequence-playback-scheduling.md` |
 | project-file-storage-slice-plan | internal_spec | plan | Rights-safe host-side JSON project file storage foundation | `docs/superpowers/plans/2026-06-13-mpc2000xl-project-file-storage.md` |
 | midi-note-input-slice-plan | internal_spec | plan | Deterministic MIDI note-on/note-off input mapping foundation | `docs/superpowers/plans/2026-06-13-mpc2000xl-midi-note-input.md` |
@@ -51,6 +53,7 @@ This file tracks evidence sources without copying proprietary source pages, scan
 | count-in-click-foundation-slice-plan | internal_spec | plan | Internal deterministic count-in click transport foundation | `docs/superpowers/plans/2026-06-13-mpc2000xl-count-in-click-foundation.md` |
 | timing-correct-foundation-slice-plan | internal_spec | plan | TIMING CORRECT deterministic quantize and swing recording foundation | `docs/superpowers/plans/2026-06-13-mpc2000xl-timing-correct-foundation.md` |
 | metronome-click-audio-foundation-slice-plan | internal_spec | plan | Deterministic count-in click audio rendering and host-audio routing foundation | `docs/superpowers/plans/2026-06-14-mpc2000xl-metronome-click-audio-foundation.md` |
+| host-audio-voice-lifecycle-foundation-slice-plan | internal_spec | plan | Deterministic host-audio voice lifecycle and polyphony accounting foundation | `docs/superpowers/plans/2026-06-14-mpc2000xl-host-audio-voice-lifecycle-foundation.md` |
 
 ## Legal Boundary
 

@@ -1621,8 +1621,15 @@ fn host_audio_error_message(event: &HostAudioEvent) -> Option<String> {
 
 fn host_audio_state_text(state: &HostAudioState) -> String {
     format!(
-        "Host audio: {:?} backend {} queued {} played {}",
-        state.mode, state.backend_name, state.queued_render_count, state.played_render_count
+        "Host audio: {:?} backend {} queued {} played {} voices {}/{} done {} stolen {}",
+        state.mode,
+        state.backend_name,
+        state.queued_render_count,
+        state.played_render_count,
+        state.active_voice_count,
+        state.voice_limit,
+        state.completed_voice_count,
+        state.stolen_voice_count
     )
 }
 

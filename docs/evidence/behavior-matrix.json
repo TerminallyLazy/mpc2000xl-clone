@@ -1655,6 +1655,143 @@
       ]
     },
     {
+      "id": "audio.host.voice-lifecycle-foundation",
+      "name": "Host audio tracks deterministic active voices and stealing",
+      "area": "audio_host",
+      "state": "unit-backed-internal-spec",
+      "evidence": [
+        {
+          "source_id": "host-audio-voice-lifecycle-foundation-slice-plan",
+          "source_category": "internal_spec",
+          "type": "plan",
+          "status": "mapped",
+          "ref": "docs/superpowers/plans/2026-06-14-mpc2000xl-host-audio-voice-lifecycle-foundation.md#behavior-slice"
+        },
+        {
+          "source_id": "host-audio-plumbing-slice-plan",
+          "source_category": "internal_spec",
+          "type": "plan",
+          "status": "mapped",
+          "ref": "docs/superpowers/plans/2026-06-13-mpc2000xl-host-audio-plumbing.md#device-abstraction"
+        },
+        {
+          "source_id": "metronome-click-audio-foundation-slice-plan",
+          "source_category": "internal_spec",
+          "type": "plan",
+          "status": "mapped",
+          "ref": "docs/superpowers/plans/2026-06-14-mpc2000xl-metronome-click-audio-foundation.md#behavior-slice"
+        }
+      ],
+      "source_coverage": [
+        {
+          "source_category": "manual",
+          "source_id": "owner-manual",
+          "status": "investigation",
+          "ref": null,
+          "note": "Exact MPC2000XL voice lifecycle, polyphony limit, stealing, envelopes, mute groups, and note-off behavior are not mapped yet."
+        },
+        {
+          "source_category": "firmware",
+          "source_id": "mpc2000xl-os-local-reference",
+          "status": "investigation",
+          "ref": null,
+          "note": "No firmware trace validates host voice ids, stealing order, completion timing, or scheduler tolerance yet."
+        },
+        {
+          "source_category": "schematic",
+          "source_id": "operation-schematic",
+          "status": "investigation",
+          "ref": null,
+          "note": "No hardware output path or DAC evidence is mapped to this deterministic host accounting slice."
+        },
+        {
+          "source_category": "jjos",
+          "source_id": "jjos-unverified-boundary",
+          "status": "conflict-note",
+          "ref": "docs/superpowers/specs/2026-06-13-mpc2000xl-full-app-product-design.md#jj-os-evidence-boundary",
+          "note": "JJ-OS voice behavior is not accepted as MPC2000XL evidence for this foundation slice."
+        },
+        {
+          "source_category": "internal_spec",
+          "source_id": "host-audio-voice-lifecycle-foundation-slice-plan",
+          "status": "mapped",
+          "ref": "docs/superpowers/plans/2026-06-14-mpc2000xl-host-audio-voice-lifecycle-foundation.md#deterministic-contract",
+          "note": "The 32-voice default, clamped configurable range, active-voice summaries, and oldest-voice stealing are internal foundation policy only."
+        }
+      ],
+      "inputs": [
+        {
+          "channel": "host_audio",
+          "event": "queued_sample_playback_or_count_in_click_render",
+          "policy": "allocates one deterministic active voice only after render validation, backend success, receipt validation, queued receipt, and positive frame count"
+        },
+        {
+          "channel": "host_audio",
+          "event": "advance_voice_frames",
+          "frame_count": "usize",
+          "policy": "zero is a no-op; positive values reduce all active remaining frame counts and remove completed voices"
+        },
+        {
+          "channel": "host_audio",
+          "event": "configured_voice_limit",
+          "policy": "default 32; configurable constructor clamps to 1..=128"
+        }
+      ],
+      "expected_outputs": {
+        "voice_allocation": {
+          "voice_id": "monotonic host-engine-local u64",
+          "stolen_voice_id": "reported when oldest active voice was stolen before allocation",
+          "voice_limit": "configured clamped voice limit",
+          "active_voice_count": "post-allocation active voice count"
+        },
+        "active_voice_summary": {
+          "voice_id": "monotonic host-engine-local u64",
+          "render_kind": "sample_playback or count_in_click",
+          "source_label": "render summary label only; no PCM exposure",
+          "total_frame_count": "queued render frame count",
+          "remaining_frame_count": "queued render frame count at allocation"
+        },
+        "voice_advance": {
+          "remaining_frame_count": "saturating subtraction by requested frame count",
+          "completed_voice_count": "increments for voices removed after remaining frames reach zero"
+        },
+        "voice_stealing": {
+          "policy": "oldest active voice is removed before allocating the new voice when active count reaches limit",
+          "stolen_voice_count": "increments only when an active voice is stolen",
+          "receipt": "voice allocation receipt reports allocated voice id and stolen voice id when present"
+        },
+        "no_allocation": [
+          "disabled host audio",
+          "render failures",
+          "invalid rendered audio",
+          "backend failures",
+          "invalid backend receipts",
+          "zero-frame queued backend receipts",
+          "backend receipts that are not queued"
+        ],
+        "host_audio_state": {
+          "voice_limit": "reported",
+          "active_voice_count": "reported",
+          "completed_voice_count": "reported",
+          "stolen_voice_count": "reported",
+          "active_voices": "summary list without PCM buffers"
+        },
+        "desktop": {
+          "host_audio_status": "compact mode/backend/render counter plus voice count summary",
+          "sample_event_text": "existing sample playback enqueue and failure wording is preserved"
+        }
+      },
+      "tolerance": null,
+      "fixture_refs": [
+        "crates/mpc_audio/src/lib.rs",
+        "apps/desktop/src/main.rs"
+      ],
+      "conflict_notes": [
+        "This is internal deterministic host accounting, not accepted evidence of exact MPC2000XL polyphony, stealing, envelopes, mute groups, note-off behavior, DAC output, or timing.",
+        "No real audio device backend, proprietary samples, recordings, firmware bytes, external media, copied manuals, service scans, or binary audio fixtures are stored in the repo."
+      ]
+    },
+    {
       "id": "core.project.snapshot-round-trip",
       "name": "Project snapshot round-trips sequence, program, and synthetic metadata",
       "area": "project_persistence",
