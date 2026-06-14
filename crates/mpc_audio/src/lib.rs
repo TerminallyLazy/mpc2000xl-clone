@@ -26,7 +26,7 @@ pub const MAX_RUNTIME_SAMPLE_FRAMES: usize = MAX_SAMPLE_RATE_HZ as usize * 60;
 pub const MAX_CAPTURE_AUDIO_BACKEND_CAPTURES: usize = 1_024;
 /// Default host-device queue capacity, in stereo frames, for the first real
 /// output-device foundation.
-pub const DEFAULT_DEVICE_AUDIO_QUEUE_FRAMES: usize = DEFAULT_SAMPLE_RATE_HZ as usize * 2;
+pub const DEFAULT_DEVICE_AUDIO_QUEUE_FRAMES: usize = DEFAULT_SAMPLE_RATE_HZ as usize * 10;
 /// Upper guardrail for the host-device queue so a stalled device cannot retain
 /// unbounded generated PCM in memory.
 pub const MAX_DEVICE_AUDIO_QUEUE_FRAMES: usize = MAX_SAMPLE_RATE_HZ as usize * 10;
@@ -1121,11 +1121,35 @@ impl From<DeviceAudioOutputQueueStatus> for DeviceAudioOutputProbeStatus {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct DeviceAudioOutputQueue {
     max_queued_frames: usize,
-    frames: VecDeque<AudioFrame>,
+    active_renders: VecDeque<DeviceQueuedRender>,
     total_enqueued_frame_count: u64,
     total_callback_frame_count: u64,
     underrun_frame_count: u64,
     recent_stream_errors: VecDeque<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DeviceQueuedRender {
+    frames: Vec<AudioFrame>,
+    cursor: usize,
+}
+
+impl DeviceQueuedRender {
+    fn remaining_frame_count(&self) -> usize {
+        self.frames.len().saturating_sub(self.cursor)
+    }
+
+    fn current_frame(&self) -> Option<AudioFrame> {
+        self.frames.get(self.cursor).copied()
+    }
+
+    fn advance(&mut self) {
+        self.cursor = self.cursor.saturating_add(1);
+    }
+
+    fn is_finished(&self) -> bool {
+        self.cursor >= self.frames.len()
+    }
 }
 
 impl DeviceAudioOutputQueue {
@@ -1133,7 +1157,7 @@ impl DeviceAudioOutputQueue {
         let max_queued_frames = max_queued_frames.max(1).min(MAX_DEVICE_AUDIO_QUEUE_FRAMES);
         Self {
             max_queued_frames,
-            frames: VecDeque::with_capacity(max_queued_frames.min(DEFAULT_FRAME_COUNT)),
+            active_renders: VecDeque::new(),
             total_enqueued_frame_count: 0,
             total_callback_frame_count: 0,
             underrun_frame_count: 0,
@@ -1143,16 +1167,27 @@ impl DeviceAudioOutputQueue {
 
     fn enqueue_render(&mut self, rendered: &RenderedAudio) -> Result<(), HostAudioBackendError> {
         let requested_frames = rendered.frames.len();
-        if self.frames.len().saturating_add(requested_frames) > self.max_queued_frames {
+        if requested_frames > self.max_queued_frames {
             return Err(device_audio_backend_error(format!(
-                "device output queue full: queued {} frame(s), requested {} frame(s), capacity {} frame(s)",
-                self.frames.len(),
-                requested_frames,
-                self.max_queued_frames
+                "device output queue full: render exceeds queue capacity: requested {} frame(s), capacity {} frame(s)",
+                requested_frames, self.max_queued_frames
             )));
         }
 
-        self.frames.extend(rendered.frames.iter().copied());
+        while self.queued_frame_count().saturating_add(requested_frames) > self.max_queued_frames {
+            let Some(dropped) = self.active_renders.pop_front() else {
+                break;
+            };
+            self.record_stream_error(format!(
+                "device output backlog: dropped {} remaining frame(s) from oldest render",
+                dropped.remaining_frame_count()
+            ));
+        }
+
+        self.active_renders.push_back(DeviceQueuedRender {
+            frames: rendered.frames.clone(),
+            cursor: 0,
+        });
         self.total_enqueued_frame_count = self
             .total_enqueued_frame_count
             .saturating_add(u64::try_from(requested_frames).unwrap_or(u64::MAX));
@@ -1165,14 +1200,7 @@ impl DeviceAudioOutputQueue {
     {
         let channels = channels.max(1);
         for output_frame in output.chunks_mut(channels) {
-            let (left, right) = self
-                .frames
-                .pop_front()
-                .map(audio_frame_to_f32_pair)
-                .unwrap_or_else(|| {
-                    self.underrun_frame_count = self.underrun_frame_count.saturating_add(1);
-                    (0.0, 0.0)
-                });
+            let (left, right) = self.mixed_next_frame();
             let mono = ((left + right) * 0.5).clamp(-1.0, 1.0);
             for (channel_index, sample) in output_frame.iter_mut().enumerate() {
                 let value = match (channels, channel_index) {
@@ -1187,6 +1215,27 @@ impl DeviceAudioOutputQueue {
         }
     }
 
+    fn mixed_next_frame(&mut self) -> (f32, f32) {
+        if self.active_renders.is_empty() {
+            self.underrun_frame_count = self.underrun_frame_count.saturating_add(1);
+            return (0.0, 0.0);
+        }
+
+        let mut mixed_left = 0.0_f32;
+        let mut mixed_right = 0.0_f32;
+        for render in &mut self.active_renders {
+            if let Some(frame) = render.current_frame() {
+                let (left, right) = audio_frame_to_f32_pair(frame);
+                mixed_left += left;
+                mixed_right += right;
+            }
+            render.advance();
+        }
+        self.active_renders.retain(|render| !render.is_finished());
+
+        (mixed_left.clamp(-1.0, 1.0), mixed_right.clamp(-1.0, 1.0))
+    }
+
     fn record_stream_error(&mut self, error: String) {
         if self.recent_stream_errors.len() == MAX_DEVICE_AUDIO_STREAM_ERRORS {
             self.recent_stream_errors.pop_front();
@@ -1196,13 +1245,20 @@ impl DeviceAudioOutputQueue {
 
     fn status(&self) -> DeviceAudioOutputQueueStatus {
         DeviceAudioOutputQueueStatus {
-            queued_frame_count: self.frames.len(),
+            queued_frame_count: self.queued_frame_count(),
             max_queued_frame_count: self.max_queued_frames,
             total_enqueued_frame_count: self.total_enqueued_frame_count,
             total_callback_frame_count: self.total_callback_frame_count,
             underrun_frame_count: self.underrun_frame_count,
             recent_stream_errors: self.recent_stream_errors.iter().cloned().collect(),
         }
+    }
+
+    fn queued_frame_count(&self) -> usize {
+        self.active_renders
+            .iter()
+            .map(DeviceQueuedRender::remaining_frame_count)
+            .sum()
     }
 }
 
@@ -2023,23 +2079,22 @@ fn render_runtime_sample_intent(
     sample: &RuntimeSample,
 ) -> Result<RenderedAudio, AudioRenderError> {
     settings.validate()?;
-    if sample.payload.sample_rate_hz != settings.sample_rate_hz {
-        return Err(AudioRenderError::RuntimeSampleRateMismatch {
-            sample_rate_hz: sample.payload.sample_rate_hz,
-            render_sample_rate_hz: settings.sample_rate_hz,
-        });
-    }
-
-    let requested_frame_count = settings
-        .frame_count
-        .min(usize::try_from(intent.window_length_frames).unwrap_or(usize::MAX));
+    let requested_source_frame_count =
+        usize::try_from(intent.window_length_frames).unwrap_or(usize::MAX);
+    let requested_output_frame_count = resampled_frame_count(
+        requested_source_frame_count,
+        sample.payload.sample_rate_hz,
+        settings.sample_rate_hz,
+    );
+    let requested_frame_count = settings.frame_count.min(requested_output_frame_count);
     let start_frame = usize::try_from(intent.start_frame).unwrap_or(usize::MAX);
-    let available_frame_count = sample
-        .payload
-        .frames
-        .len()
-        .saturating_sub(start_frame)
-        .min(requested_frame_count);
+    let available_source_frames = sample.payload.frames.len().saturating_sub(start_frame);
+    let available_output_frame_count = resampled_frame_count(
+        available_source_frames,
+        sample.payload.sample_rate_hz,
+        settings.sample_rate_hz,
+    );
+    let available_frame_count = available_output_frame_count.min(requested_frame_count);
     let render_settings = AudioRenderSettings {
         sample_rate_hz: settings.sample_rate_hz,
         frame_count: available_frame_count,
@@ -2050,13 +2105,14 @@ fn render_runtime_sample_intent(
     let mut peak_left = 0_i16;
     let mut peak_right = 0_i16;
 
-    for frame in sample
-        .payload
-        .frames
-        .iter()
-        .skip(start_frame)
-        .take(available_frame_count)
-    {
+    for output_frame_index in 0..available_frame_count {
+        let frame = interpolated_runtime_frame(
+            &sample.payload.frames,
+            start_frame,
+            output_frame_index,
+            sample.payload.sample_rate_hz,
+            settings.sample_rate_hz,
+        );
         let left = scale_runtime_sample(frame.left, intent.velocity, intent.level, left_pan_gain);
         let right =
             scale_runtime_sample(frame.right, intent.velocity, intent.level, right_pan_gain);
@@ -2071,7 +2127,7 @@ fn render_runtime_sample_intent(
         sample_rate_hz: render_settings.sample_rate_hz,
         frame_count: render_settings.frame_count,
         source_sample_id: intent.sample_id.clone(),
-        source_sample_name: intent.sample_name.clone(),
+        source_sample_name: sample.sample_name.clone(),
         selected_track: intent.selected_track,
         program_index: intent.program_index,
         program_name: intent.program_name.clone(),
@@ -2102,6 +2158,59 @@ fn render_runtime_sample_intent(
         summary,
         frames,
     })
+}
+
+fn resampled_frame_count(
+    source_frame_count: usize,
+    source_rate_hz: u32,
+    output_rate_hz: u32,
+) -> usize {
+    if source_frame_count == 0 || source_rate_hz == 0 {
+        return 0;
+    }
+    let scaled = (source_frame_count as u128).saturating_mul(u128::from(output_rate_hz));
+    scaled
+        .saturating_add(u128::from(source_rate_hz / 2))
+        .checked_div(u128::from(source_rate_hz))
+        .and_then(|value| usize::try_from(value).ok())
+        .unwrap_or(usize::MAX)
+}
+
+fn interpolated_runtime_frame(
+    frames: &[AudioFrame],
+    start_frame: usize,
+    output_frame_index: usize,
+    source_rate_hz: u32,
+    output_rate_hz: u32,
+) -> AudioFrame {
+    if frames.is_empty() || output_rate_hz == 0 {
+        return AudioFrame { left: 0, right: 0 };
+    }
+
+    let source_position = start_frame as f64
+        + output_frame_index as f64 * f64::from(source_rate_hz) / f64::from(output_rate_hz);
+    let source_index = source_position.floor() as usize;
+    let fraction = source_position - source_index as f64;
+    let current = frames
+        .get(source_index)
+        .copied()
+        .unwrap_or_else(|| *frames.last().expect("frames is not empty"));
+    let next = frames
+        .get(source_index.saturating_add(1))
+        .copied()
+        .unwrap_or(current);
+
+    AudioFrame {
+        left: interpolate_i16(current.left, next.left, fraction),
+        right: interpolate_i16(current.right, next.right, fraction),
+    }
+}
+
+fn interpolate_i16(current: i16, next: i16, fraction: f64) -> i16 {
+    let value = f64::from(current) + (f64::from(next) - f64::from(current)) * fraction;
+    value
+        .round()
+        .clamp(f64::from(i16::MIN), f64::from(i16::MAX)) as i16
 }
 
 fn next_wav_sample<R: std::io::Read>(
@@ -2523,7 +2632,7 @@ mod tests {
     }
 
     #[test]
-    fn runtime_renderer_rejects_sample_rate_mismatch() {
+    fn runtime_renderer_resamples_sample_rate_mismatch() {
         let path = unique_wav_path("rate");
         write_wav(
             &path,
@@ -2539,20 +2648,21 @@ mod tests {
         let mut library = RuntimeSampleLibrary::default();
         library.insert("imported_001", "RATE", payload);
 
-        let error = render_intent_with_runtime_samples(
+        let rendered = render_intent_with_runtime_samples(
             &test_intent_with_sample("imported_001", "RATE"),
             settings(44_100, 16),
             &library,
         )
-        .expect_err("mismatched rate should fail explicitly");
+        .expect("mismatched runtime payload rate should be resampled");
 
+        assert_eq!(rendered.settings.sample_rate_hz, 44_100);
         assert_eq!(
-            error,
-            AudioRenderError::RuntimeSampleRateMismatch {
-                sample_rate_hz: 48_000,
-                render_sample_rate_hz: 44_100
-            }
+            rendered.summary.source_kind,
+            AudioSourceKind::RuntimeUserWav
         );
+        assert_eq!(rendered.summary.source_sample_name, "RATE");
+        assert_eq!(rendered.frames.len(), rendered.summary.frame_count);
+        assert!(!rendered.frames.is_empty());
 
         let _ = std::fs::remove_file(path);
     }
@@ -2738,6 +2848,40 @@ mod tests {
     }
 
     #[test]
+    fn device_audio_queue_overlaps_multiple_renders_instead_of_serializing_them() {
+        let summary = render(&test_intent(100, 100, 0), settings(44_100, 1)).summary;
+        let mut queue = DeviceAudioOutputQueue::new(8);
+        queue
+            .enqueue_render(&RenderedAudio {
+                settings: settings(44_100, 1),
+                summary: summary.clone(),
+                frames: vec![AudioFrame {
+                    left: 4_000,
+                    right: 6_000,
+                }],
+            })
+            .expect("first render should fit");
+        queue
+            .enqueue_render(&RenderedAudio {
+                settings: settings(44_100, 1),
+                summary,
+                frames: vec![AudioFrame {
+                    left: 8_000,
+                    right: 10_000,
+                }],
+            })
+            .expect("second render should overlap the first");
+
+        let mut output = [0.0_f32; 2];
+        queue.write_output(&mut output, 2);
+
+        assert_eq!(queue.status().queued_frame_count, 0);
+        assert_eq!(queue.status().underrun_frame_count, 0);
+        assert_eq!(output[0], i16_sample_to_f32(12_000));
+        assert_eq!(output[1], i16_sample_to_f32(16_000));
+    }
+
+    #[test]
     fn device_audio_queue_rejects_overflow_without_retaining_partial_render() {
         let rendered = render(&test_intent(100, 100, 0), settings(44_100, 2));
         let mut queue = DeviceAudioOutputQueue::new(1);
@@ -2746,7 +2890,7 @@ mod tests {
             .enqueue_render(&rendered)
             .expect_err("oversized render should be rejected");
 
-        assert!(error.to_string().contains("device output queue full"));
+        assert!(error.to_string().contains("exceeds queue capacity"));
         assert_eq!(queue.status().queued_frame_count, 0);
         assert_eq!(queue.status().total_enqueued_frame_count, 0);
     }

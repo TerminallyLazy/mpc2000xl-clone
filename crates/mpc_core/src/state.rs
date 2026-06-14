@@ -571,6 +571,21 @@ impl MpcCore {
         self.restore_project_snapshot(snapshot)
     }
 
+    pub fn set_tempo_bpm_x100(
+        &mut self,
+        tempo_bpm_x100: u32,
+    ) -> Result<Vec<MachineOutput>, String> {
+        if !(MIN_TEMPO_BPM_X100..=MAX_TEMPO_BPM_X100).contains(&tempo_bpm_x100) {
+            return Err(format!(
+                "tempo_bpm_x100 must be in range {MIN_TEMPO_BPM_X100}..={MAX_TEMPO_BPM_X100}"
+            ));
+        }
+
+        self.state.tempo_bpm_x100 = tempo_bpm_x100;
+        self.refresh_lcd();
+        Ok(vec![MachineOutput::LcdChanged])
+    }
+
     pub fn import_sample_metadata_for_selected_pad(
         &mut self,
         sample_name: impl Into<String>,
@@ -1961,7 +1976,7 @@ impl MpcCore {
                 previous_playhead_ticks,
                 next_playhead_ticks,
                 sequence_length_ticks,
-                false,
+                previous_playhead_ticks == 0,
             );
 
             if target_playhead_ticks >= sequence_length_ticks {

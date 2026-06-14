@@ -2292,6 +2292,32 @@ fn sequence_loop_does_not_fire_tick_zero_event_on_ordinary_play_from_start() {
 }
 
 #[test]
+fn sequence_playback_fires_tick_zero_event_on_first_advance_from_start() {
+    let mut snapshot = snapshot_with_recorded_assigned_events(&[(0, 1, 81), (48, 3, 83)]);
+    snapshot.sequence.loop_enabled = false;
+    reset_snapshot_playhead(&mut snapshot, 0);
+    let mut core = restore_snapshot(snapshot);
+
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::Play,
+    });
+    let zero_outputs = core.dispatch(HardwareEvent::Tick { micros: 0 });
+    assert!(playback_intents(&zero_outputs).is_empty());
+
+    let outputs = core.dispatch(HardwareEvent::Tick { micros: 250_000 });
+    let played_pads = outputs
+        .iter()
+        .filter_map(|output| match output {
+            MachineOutput::SequenceEventPlayed { event } => Some(event.pad_number),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+
+    assert_eq!(core.state().playhead_ticks, 48);
+    assert_eq!(played_pads, vec![1, 3]);
+}
+
+#[test]
 fn sequence_loop_length_follows_bar_count_edits() {
     let mut core = MpcCore::new();
 
