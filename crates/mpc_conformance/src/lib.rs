@@ -10,12 +10,17 @@ use mpc_core::{
     SamplePlaybackResolution, SampleSourceKind, SequenceEvent, SetupField, SongEditField, SongStep,
     TimingCorrectDivision, TimingCorrectField, TrimEditField,
 };
+use mpc_storage::{PROJECT_FILE_SUFFIX, load_project_file_with_report, save_project_file};
 use serde::de::{self, Visitor};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::fmt;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static PROJECT_ROUND_TRIP_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+const PROJECT_FILE_RIGHTS_BOUNDARY: &str = "metadata_only_no_audio_bytes";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Fixture {
@@ -156,6 +161,10 @@ pub struct ProjectRoundTripExpectation {
     #[serde(default)]
     pub expect_post_restore_output_sequence: Vec<MachineOutput>,
     #[serde(default)]
+    pub project_file_round_trip: bool,
+    #[serde(default)]
+    pub invalid_project_json_cases: Vec<InvalidProjectJsonCase>,
+    #[serde(default)]
     pub restore_playhead_ticks: Option<u64>,
     #[serde(default)]
     pub restore_playhead_tick_remainder: Option<u64>,
@@ -164,6 +173,24 @@ pub struct ProjectRoundTripExpectation {
     pub expect: ExpectedState,
     #[serde(default)]
     pub expect_snapshot_version: Option<u16>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InvalidProjectJsonCase {
+    pub name: String,
+    pub mutation: ProjectJsonMutation,
+    pub expect_error_contains: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ProjectJsonMutation {
+    UnsupportedVersion { version: u16 },
+    InvalidRightsBoundary { rights_boundary: String },
+    DuplicateFirstPadAssignment,
+    UnknownRootField { field: String },
+    EventCountLessThanRecordedEvents,
+    LastPlaybackWithZeroEventCount,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1229,6 +1256,368 @@ fn validate_project_round_trip(
         &expected.expect,
         &RuntimeSampleLibrary::default(),
     );
+
+    if expected.project_file_round_trip {
+        validate_project_file_round_trip(details, core, expected);
+    }
+
+    validate_invalid_project_json_cases(details, core, &expected.invalid_project_json_cases);
+}
+
+fn validate_project_file_round_trip(
+    details: &mut Vec<String>,
+    core: &MpcCore,
+    expected: &ProjectRoundTripExpectation,
+) {
+    let temp_dir = project_round_trip_temp_dir("project_file");
+    let nested_parent = temp_dir.join("nested").join("projects");
+    let project_path = nested_parent.join(format!("fixture{PROJECT_FILE_SUFFIX}"));
+
+    let save_report = match save_project_file(core, &project_path) {
+        Ok(report) => report,
+        Err(error) => {
+            details.push(format!("project_round_trip.file.save error: {error}"));
+            cleanup_project_round_trip_temp_dir(details, &temp_dir);
+            return;
+        }
+    };
+
+    if !nested_parent.is_dir() {
+        details.push(format!(
+            "project_round_trip.file.parent_dir missing after save: {}",
+            nested_parent.display()
+        ));
+    }
+    if save_report.byte_count == 0 {
+        details.push("project_round_trip.file.save byte_count is zero".to_string());
+    }
+
+    let saved_json = match fs::read_to_string(&project_path) {
+        Ok(json) => json,
+        Err(error) => {
+            details.push(format!(
+                "project_round_trip.file.read saved JSON error: {error}"
+            ));
+            cleanup_project_round_trip_temp_dir(details, &temp_dir);
+            return;
+        }
+    };
+    validate_project_file_json_boundary(details, &saved_json);
+
+    let load = match load_project_file_with_report(&project_path) {
+        Ok(load) => load,
+        Err(error) => {
+            details.push(format!("project_round_trip.file.load error: {error}"));
+            cleanup_project_round_trip_temp_dir(details, &temp_dir);
+            return;
+        }
+    };
+    let expected_report_path = match fs::canonicalize(&project_path) {
+        Ok(path) => Some(path),
+        Err(error) => {
+            details.push(format!(
+                "project_round_trip.file.canonicalize path error: {error}"
+            ));
+            None
+        }
+    };
+
+    if load.report.byte_count == 0 {
+        details.push("project_round_trip.file.load byte_count is zero".to_string());
+    }
+    if save_report.byte_count != load.report.byte_count {
+        details.push(format!(
+            "project_round_trip.file.byte_count mismatch: save {}, load {}",
+            save_report.byte_count, load.report.byte_count
+        ));
+    }
+    if save_report.snapshot_version != load.report.snapshot_version {
+        details.push(format!(
+            "project_round_trip.file.snapshot_version mismatch: save {}, load {}",
+            save_report.snapshot_version, load.report.snapshot_version
+        ));
+    }
+    if save_report.path != load.report.path {
+        details.push(format!(
+            "project_round_trip.file.report_path mismatch: save {}, load {}",
+            save_report.path.display(),
+            load.report.path.display()
+        ));
+    }
+    if let Some(expected_report_path) = expected_report_path {
+        if save_report.path != expected_report_path {
+            details.push(format!(
+                "project_round_trip.file.report_path expectation mismatch: expected {}, got {}",
+                expected_report_path.display(),
+                save_report.path.display()
+            ));
+        }
+        if !expected_report_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.ends_with(PROJECT_FILE_SUFFIX))
+        {
+            details.push(format!(
+                "project_round_trip.file.report_path suffix mismatch: {}",
+                expected_report_path.display()
+            ));
+        }
+    }
+
+    let expected_version = expected
+        .expect_snapshot_version
+        .unwrap_or(PROJECT_SNAPSHOT_VERSION);
+    if save_report.snapshot_version != expected_version {
+        details.push(format!(
+            "project_round_trip.file.snapshot_version expectation mismatch: expected {}, got {}",
+            expected_version, save_report.snapshot_version
+        ));
+    }
+
+    let mut restored = MpcCore::new();
+    if let Err(error) = restored.restore_project_snapshot(load.snapshot) {
+        details.push(format!("project_round_trip.file.restore error: {error}"));
+        cleanup_project_round_trip_temp_dir(details, &temp_dir);
+        return;
+    }
+
+    let mut post_load_output_sequence = Vec::new();
+    for event in &expected.post_restore_events {
+        post_load_output_sequence.extend(restored.dispatch(event.clone()));
+    }
+    validate_output_sequence(
+        details,
+        "project_round_trip.file.post_load_output_sequence",
+        &post_load_output_sequence,
+        &expected.expect_post_restore_output_sequence,
+    );
+
+    validate_expected_state(
+        details,
+        "project_round_trip.file.",
+        restored.state(),
+        &expected.expect,
+        &RuntimeSampleLibrary::default(),
+    );
+
+    cleanup_project_round_trip_temp_dir(details, &temp_dir);
+}
+
+fn validate_project_file_json_boundary(details: &mut Vec<String>, saved_json: &str) {
+    match serde_json::from_str::<serde_json::Value>(saved_json) {
+        Ok(value) => {
+            let rights_boundary = value
+                .get("rights_boundary")
+                .and_then(serde_json::Value::as_str);
+            if rights_boundary != Some(PROJECT_FILE_RIGHTS_BOUNDARY) {
+                details.push(format!(
+                    "project_round_trip.file.saved_json rights_boundary mismatch: expected {:?}, got {:?}",
+                    PROJECT_FILE_RIGHTS_BOUNDARY, rights_boundary
+                ));
+            }
+            let mut forbidden_paths = Vec::new();
+            collect_forbidden_project_json_keys(&value, "", &mut forbidden_paths);
+            if !forbidden_paths.is_empty() {
+                details.push(format!(
+                    "project_round_trip.file.saved_json contains rights-unsafe fields: {:?}",
+                    forbidden_paths
+                ));
+            }
+        }
+        Err(error) => {
+            details.push(format!(
+                "project_round_trip.file.saved_json parse error: {error}"
+            ));
+        }
+    }
+}
+
+fn collect_forbidden_project_json_keys(
+    value: &serde_json::Value,
+    path: &str,
+    forbidden_paths: &mut Vec<String>,
+) {
+    match value {
+        serde_json::Value::Object(object) => {
+            for (key, child) in object {
+                let child_path = if path.is_empty() {
+                    key.to_string()
+                } else {
+                    format!("{path}.{key}")
+                };
+                if matches!(
+                    key.as_str(),
+                    "audio_bytes" | "sample_file_contents" | "file_path" | "sample_file_path"
+                ) {
+                    forbidden_paths.push(child_path.clone());
+                }
+                collect_forbidden_project_json_keys(child, &child_path, forbidden_paths);
+            }
+        }
+        serde_json::Value::Array(values) => {
+            for (index, child) in values.iter().enumerate() {
+                collect_forbidden_project_json_keys(
+                    child,
+                    &format!("{path}[{index}]"),
+                    forbidden_paths,
+                );
+            }
+        }
+        _ => {}
+    }
+}
+
+fn validate_invalid_project_json_cases(
+    details: &mut Vec<String>,
+    core: &MpcCore,
+    cases: &[InvalidProjectJsonCase],
+) {
+    for case in cases {
+        let mut value = match serde_json::to_value(core.export_project_snapshot()) {
+            Ok(value) => value,
+            Err(error) => {
+                details.push(format!(
+                    "project_round_trip.invalid_project_json.{} encode error: {error}",
+                    case.name
+                ));
+                continue;
+            }
+        };
+
+        if let Err(error) = apply_project_json_mutation(&mut value, &case.mutation) {
+            details.push(format!(
+                "project_round_trip.invalid_project_json.{} mutation error: {error}",
+                case.name
+            ));
+            continue;
+        }
+
+        let json = match serde_json::to_string_pretty(&value) {
+            Ok(json) => json,
+            Err(error) => {
+                details.push(format!(
+                    "project_round_trip.invalid_project_json.{} encode mutated JSON error: {error}",
+                    case.name
+                ));
+                continue;
+            }
+        };
+
+        match MpcCore::from_project_json(&json) {
+            Ok(_) => details.push(format!(
+                "project_round_trip.invalid_project_json.{} unexpectedly passed",
+                case.name
+            )),
+            Err(error) => {
+                let error = error.to_string();
+                if !error.contains(&case.expect_error_contains) {
+                    details.push(format!(
+                        "project_round_trip.invalid_project_json.{} error mismatch: expected substring {:?}, got {:?}",
+                        case.name, case.expect_error_contains, error
+                    ));
+                }
+            }
+        }
+    }
+}
+
+fn apply_project_json_mutation(
+    value: &mut serde_json::Value,
+    mutation: &ProjectJsonMutation,
+) -> Result<()> {
+    match mutation {
+        ProjectJsonMutation::UnsupportedVersion { version } => {
+            set_project_json_pointer(value, "/version", serde_json::json!(version))?;
+        }
+        ProjectJsonMutation::InvalidRightsBoundary { rights_boundary } => {
+            set_project_json_pointer(
+                value,
+                "/rights_boundary",
+                serde_json::json!(rights_boundary),
+            )?;
+        }
+        ProjectJsonMutation::DuplicateFirstPadAssignment => {
+            let assignments = value
+                .pointer_mut("/program/pad_assignments")
+                .and_then(serde_json::Value::as_array_mut)
+                .context("program.pad_assignments must be an array")?;
+            let first = assignments
+                .first()
+                .cloned()
+                .context("program.pad_assignments must not be empty")?;
+            assignments.push(first);
+        }
+        ProjectJsonMutation::UnknownRootField { field } => {
+            let object = value
+                .as_object_mut()
+                .context("project snapshot root must be an object")?;
+            object.insert(
+                field.clone(),
+                serde_json::json!("rights-unsafe fixture mutation payload"),
+            );
+        }
+        ProjectJsonMutation::EventCountLessThanRecordedEvents => {
+            let recorded_event_count = value
+                .pointer("/sequence/recorded_events")
+                .and_then(serde_json::Value::as_array)
+                .context("sequence.recorded_events must be an array")?
+                .len();
+            if recorded_event_count == 0 {
+                bail!("sequence.recorded_events must not be empty for this mutation");
+            }
+            set_project_json_pointer(
+                value,
+                "/machine/event_count",
+                serde_json::json!(recorded_event_count - 1),
+            )?;
+        }
+        ProjectJsonMutation::LastPlaybackWithZeroEventCount => {
+            if value
+                .pointer("/machine/last_playback")
+                .is_none_or(|value| value.is_null())
+            {
+                bail!("machine.last_playback must be present for this mutation");
+            }
+            set_project_json_pointer(value, "/machine/event_count", serde_json::json!(0))?;
+            set_project_json_pointer(value, "/sequence/recorded_events", serde_json::json!([]))?;
+        }
+    }
+
+    Ok(())
+}
+
+fn set_project_json_pointer(
+    value: &mut serde_json::Value,
+    pointer: &str,
+    replacement: serde_json::Value,
+) -> Result<()> {
+    let target = value
+        .pointer_mut(pointer)
+        .with_context(|| format!("project snapshot JSON pointer {pointer} must exist"))?;
+    *target = replacement;
+    Ok(())
+}
+
+fn project_round_trip_temp_dir(prefix: &str) -> PathBuf {
+    let counter = PROJECT_ROUND_TRIP_TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    std::env::temp_dir().join(format!(
+        "mpc_conformance_{prefix}_{}_{}",
+        std::process::id(),
+        counter
+    ))
+}
+
+fn cleanup_project_round_trip_temp_dir(details: &mut Vec<String>, temp_dir: &Path) {
+    if !temp_dir.exists() {
+        return;
+    }
+
+    if let Err(error) = fs::remove_dir_all(temp_dir) {
+        details.push(format!(
+            "project_round_trip.file.cleanup error for {}: {error}",
+            temp_dir.display()
+        ));
+    }
 }
 
 fn validate_expected_state(

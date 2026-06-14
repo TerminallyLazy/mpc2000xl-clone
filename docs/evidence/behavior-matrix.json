@@ -2314,7 +2314,7 @@
       "id": "storage.project.file-save-load",
       "name": "Project file save/load stores repo-owned metadata-only JSON snapshots",
       "area": "storage/project_persistence",
-      "state": "unit-backed-internal-spec",
+      "state": "fixture-backed-internal-spec",
       "evidence": [
         {
           "source_id": "project-file-storage-slice-plan",
@@ -2388,6 +2388,7 @@
       },
       "tolerance": null,
       "fixture_refs": [
+        "crates/mpc_conformance/tests/fixtures/project_file_storage_restore_validation.json",
         "crates/mpc_storage/src/lib.rs",
         "apps/desktop/src/main.rs"
       ],
@@ -2503,7 +2504,7 @@
       "id": "core.project.restore-validation",
       "name": "Project snapshot restore validates version, ranges, duplicate pads, and transport safety",
       "area": "project_persistence",
-      "state": "unit-backed-internal-spec",
+      "state": "fixture-backed-internal-spec",
       "evidence": [
         {
           "source_id": "project-persistence-slice-plan",
@@ -2560,6 +2561,7 @@
       },
       "tolerance": null,
       "fixture_refs": [
+        "crates/mpc_conformance/tests/fixtures/project_file_storage_restore_validation.json",
         "crates/mpc_core/tests/core_flow.rs"
       ],
       "conflict_notes": [

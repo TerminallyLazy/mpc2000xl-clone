@@ -11,5 +11,6 @@ anyhow.workspace = true
 clap.workspace = true
 mpc_audio = { path = "../mpc_audio" }
 mpc_core = { path = "../mpc_core" }
+mpc_storage = { path = "../mpc_storage" }
 serde.workspace = true
 serde_json.workspace = true

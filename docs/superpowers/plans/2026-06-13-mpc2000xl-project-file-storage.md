@@ -83,6 +83,7 @@ Required commands for this slice:
 Focused checks added:
 
 - Saving and loading a project file round-trips after main-screen edits and sequence recording.
+- Conformance fixture coverage saves to a nested temp `.mpc2000xl-project.json` path, loads through `mpc_storage`, restores into a fresh core, and verifies the metadata-only JSON boundary.
 - Wrong suffixes are rejected before parent directories are created.
 - Malformed JSON maps to a structured project JSON error.
 - Invalid project JSON maps to a structured project JSON validation error.
@@ -92,7 +93,7 @@ Focused checks added:
 
 ## Source And Evidence Status
 
-This slice is backed by repo-owned internal specs, tests, and implementation code. Exact owner-manual evidence for native project save/load naming, file format, disk structures, and invalid-file behavior is still pending.
+This slice is backed by repo-owned internal specs, tests, implementation code, and conformance fixture coverage. Exact owner-manual evidence for native project save/load naming, file format, disk structures, and invalid-file behavior is still pending.
 
 No proprietary samples, firmware, manuals, service scans, screenshots, binary project files, copied media, or audio fixtures are added.
 
