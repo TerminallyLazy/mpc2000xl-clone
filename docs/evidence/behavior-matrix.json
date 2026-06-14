@@ -1222,7 +1222,7 @@
           "source_id": "midi-note-input-slice-plan",
           "status": "mapped",
           "ref": "docs/superpowers/plans/2026-06-13-mpc2000xl-midi-note-input.md#source-and-evidence-status",
-          "note": "Current MIDI input is a typed internal event contract without host device I/O."
+          "note": "Core MIDI input remains a typed event contract; the native host device adapter maps note events into it in a separate foundation slice."
         }
       ],
       "inputs": [
@@ -1266,7 +1266,7 @@
         "crates/mpc_conformance/tests/fixtures/midi_note_on_a01_synthetic_audio_render.json"
       ],
       "conflict_notes": [
-        "This is an internal-spec/manual-investigation MIDI foundation and does not include host MIDI I/O, firmware behavior claims, JJ-OS behavior, hardware captures, or proprietary MIDI/audio assets."
+        "This is an internal-spec/manual-investigation MIDI mapping foundation; native host MIDI device I/O is covered by a separate optional adapter slice and exact firmware/JJ-OS/hardware behavior remains unmapped."
       ]
     },
     {
@@ -1317,7 +1317,7 @@
           "source_id": "midi-settings-mode-slice-plan",
           "status": "mapped",
           "ref": "docs/superpowers/plans/2026-06-13-mpc2000xl-midi-settings-mode.md#source-and-evidence-status",
-          "note": "Current MIDI settings affect simulated note input and internal MIDI output base-note policy; native host MIDI device I/O remains absent."
+          "note": "Current MIDI settings affect simulated and decoded host-device note input plus internal MIDI output base-note policy; exact hardware/JJ-OS policy remains unmapped."
         }
       ],
       "inputs": [
@@ -1429,7 +1429,7 @@
           "source_id": "midi-output-capture-foundation-slice-plan",
           "status": "mapped",
           "ref": "docs/superpowers/plans/2026-06-14-mpc2000xl-midi-output-capture-foundation.md#source-and-evidence-status",
-          "note": "Current behavior is typed output intent plus capture backend only; no OS MIDI ports are opened."
+          "note": "Capture behavior itself opens no OS MIDI ports; native host MIDI output device I/O is covered by a separate optional adapter slice."
         }
       ],
       "inputs": [
@@ -1479,8 +1479,8 @@
         "crates/mpc_conformance/tests/fixtures/midi_output_capture_foundation.json"
       ],
       "conflict_notes": [
-        "This is a deterministic internal output/capture contract, not native host MIDI device I/O.",
-        "MIDI clock, MIDI sync, MIDI thru, note-off output, raw MIDI event persistence, device discovery, exact MPC2000XL screen parity, and JJ-OS parity remain unmapped."
+        "This is a deterministic internal output/capture contract; optional native host MIDI device output is covered by a separate adapter slice.",
+        "MIDI clock, MIDI sync, MIDI thru, note-off output, raw MIDI event persistence, exact MPC2000XL screen parity, and JJ-OS parity remain unmapped."
       ]
     },
     {
@@ -1584,7 +1584,124 @@
       ],
       "conflict_notes": [
         "This is a deterministic internal release contract, not accepted evidence of exact MPC2000XL or JJ-OS note-off behavior.",
-        "Exact release envelopes, mute/choke groups, all-notes-off, outbound MIDI note-off, firmware timing, hardware traces, and native MIDI/audio device I/O remain unmapped."
+        "Exact release envelopes, all-notes-off, outbound MIDI note-off, firmware timing, hardware traces, and exact native MIDI/audio device behavior remain unmapped."
+      ]
+    },
+    {
+      "id": "host.midi.device-io-foundation",
+      "name": "Optional native MIDI device input/output adapter routes note events through host MIDI",
+      "area": "midi_host",
+      "state": "unit-backed-internal-spec",
+      "evidence": [
+        {
+          "source_id": "midi-device-io-foundation-slice-plan",
+          "source_category": "internal_spec",
+          "type": "plan",
+          "status": "mapped",
+          "ref": "docs/superpowers/plans/2026-06-14-mpc2000xl-midi-device-io-foundation.md#behavior-slice"
+        },
+        {
+          "source_id": "midi-output-capture-foundation-slice-plan",
+          "source_category": "internal_spec",
+          "type": "plan",
+          "status": "mapped",
+          "ref": "docs/superpowers/plans/2026-06-14-mpc2000xl-midi-output-capture-foundation.md#behavior-slice"
+        },
+        {
+          "source_id": "midi-note-input-slice-plan",
+          "source_category": "internal_spec",
+          "type": "plan",
+          "status": "mapped",
+          "ref": "docs/superpowers/plans/2026-06-13-mpc2000xl-midi-note-input.md#behavior-slice"
+        }
+      ],
+      "source_coverage": [
+        {
+          "source_category": "manual",
+          "source_id": "owner-manual",
+          "status": "investigation",
+          "ref": null,
+          "note": "Exact MPC2000XL MIDI port menus, device naming, channel policy, latency, sync, thru, and note-off output behavior are not mapped yet."
+        },
+        {
+          "source_category": "firmware",
+          "source_id": "mpc2000xl-os-local-reference",
+          "status": "investigation",
+          "ref": null,
+          "note": "No firmware or hardware MIDI trace validates host-device timing, filtering, running status, clock, SysEx, or JJ-OS behavior."
+        },
+        {
+          "source_category": "schematic",
+          "source_id": "operation-schematic",
+          "status": "investigation",
+          "ref": null,
+          "note": "MIDI connector electrical behavior and service-path evidence are not mapped to this host OS adapter."
+        },
+        {
+          "source_category": "jjos",
+          "source_id": "jjos-unverified-boundary",
+          "status": "conflict-note",
+          "ref": "docs/superpowers/specs/2026-06-13-mpc2000xl-full-app-product-design.md#jj-os-evidence-boundary",
+          "note": "JJ-OS native MIDI behavior is not accepted as MPC2000XL evidence for this foundation slice."
+        },
+        {
+          "source_category": "internal_spec",
+          "source_id": "midi-device-io-foundation-slice-plan",
+          "status": "mapped",
+          "ref": "docs/superpowers/plans/2026-06-14-mpc2000xl-midi-device-io-foundation.md#deterministic-contract",
+          "note": "The device adapter is optional host plumbing for note-on/note-off input and note-on output only."
+        }
+      ],
+      "inputs": [
+        {
+          "channel": "desktop_host_midi",
+          "event": "refresh_ports",
+          "policy": "uses midir to list host MIDI input and output ports without connecting by default"
+        },
+        {
+          "channel": "desktop_host_midi",
+          "event": "connect_input_port",
+          "policy": "opens the selected input port explicitly and queues decoded note-on/note-off events"
+        },
+        {
+          "channel": "desktop_host_midi",
+          "event": "connect_output_port",
+          "policy": "switches host MIDI output from deterministic capture to the selected native output port"
+        },
+        {
+          "channel": "host_midi_device_input",
+          "event": "raw_midi_message",
+          "policy": "decodes standard three-byte note-on and note-off messages; note-on velocity zero is treated as note-off"
+        }
+      ],
+      "expected_outputs": {
+        "input": {
+          "supported_messages": "note-on and note-off only",
+          "queue": "bounded queue of decoded MidiInputEvent values; overflow drops and counts events without growing unbounded memory",
+          "routing": "desktop polling dispatches HardwareEvent::MidiNoteOn or HardwareEvent::MidiNoteOff into the existing core mapping path",
+          "liveness": "desktop schedules periodic repaint while native MIDI input is connected so queued events drain while idle",
+          "ignored": "unsupported, empty, short, or otherwise unhandled messages are counted with recent reasons"
+        },
+        "output": {
+          "supported_messages": "existing MidiOutputIntent note-on messages only",
+          "encoding": "status 0x90 plus zero-based channel nibble, note byte, velocity byte",
+          "backend": "DeviceMidiOutputBackend implements HostMidiBackend and returns queued receipts after midir send succeeds",
+          "fallback": "CaptureMidiBackend remains the deterministic default and CI path"
+        },
+        "desktop": {
+          "controls": "refresh ports, select MIDI input/output ports, connect/disconnect input, switch capture/device output",
+          "status": "host MIDI mode, backend, output port, sent count, input queue depth, received/decoded/ignored/dropped counts"
+        }
+      },
+      "tolerance": "No native MIDI timing or latency tolerance is claimed; host OS device behavior is platform-dependent.",
+      "fixture_refs": [
+        "crates/mpc_midi/src/lib.rs",
+        "apps/desktop/src/main.rs",
+        "docs/superpowers/plans/2026-06-14-mpc2000xl-midi-device-io-foundation.md"
+      ],
+      "conflict_notes": [
+        "This is optional host-device plumbing toward a usable desktop instrument, not exact MPC2000XL MIDI hardware behavior.",
+        "MIDI clock, sync, thru, SysEx, CC, program change, pitch bend, running status, outbound note-off, SMF import/export, hotplug guarantees, timing parity, hardware traces, and JJ-OS-specific behavior remain unmapped."
       ]
     },
     {

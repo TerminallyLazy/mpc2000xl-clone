@@ -11,7 +11,10 @@ use mpc_core::{
     SamplePlaybackIntent, SamplePlaybackResolution, SetupPreferences, TimingCorrectSettings,
 };
 use mpc_midi::{
-    CaptureMidiBackend, HostMidiEngine, HostMidiEvent, HostMidiOutputReport, HostMidiState,
+    CaptureMidiBackend, DeviceMidiInputConfig, DeviceMidiInputConnection, DeviceMidiInputStatus,
+    DeviceMidiOutputBackend, DeviceMidiOutputStatus, HostMidiBackend, HostMidiEngine,
+    HostMidiEvent, HostMidiOutputReport, HostMidiState, MidiInputEvent, MidiPortDescriptor,
+    list_device_midi_input_ports, list_device_midi_output_ports,
 };
 use mpc_storage::{
     DEFAULT_PROJECT_FILE_PATH, load_project_file_with_report,
@@ -37,7 +40,12 @@ fn main() -> eframe::Result<()> {
 struct MpcDesktopApp {
     core: MpcCore,
     host_audio: HostAudioEngine<DesktopAudioBackend>,
-    host_midi: HostMidiEngine<CaptureMidiBackend>,
+    host_midi: HostMidiEngine<DesktopMidiBackend>,
+    host_midi_input: Option<DeviceMidiInputConnection>,
+    midi_input_ports: Vec<MidiPortDescriptor>,
+    midi_output_ports: Vec<MidiPortDescriptor>,
+    selected_midi_input_port: usize,
+    selected_midi_output_port: usize,
     last_status: String,
     last_synthetic_render: Option<AudioRenderSummary>,
     last_synthetic_render_error: Option<String>,
@@ -91,6 +99,50 @@ impl HostAudioBackend for DesktopAudioBackend {
     }
 }
 
+enum DesktopMidiBackend {
+    Capture(CaptureMidiBackend),
+    Device(DeviceMidiOutputBackend),
+}
+
+impl DesktopMidiBackend {
+    fn capture() -> Self {
+        Self::Capture(CaptureMidiBackend::new(16))
+    }
+
+    fn device_output_status(&self) -> Option<DeviceMidiOutputStatus> {
+        match self {
+            Self::Capture(_) => None,
+            Self::Device(backend) => Some(backend.status()),
+        }
+    }
+}
+
+impl HostMidiBackend for DesktopMidiBackend {
+    fn name(&self) -> &'static str {
+        match self {
+            Self::Capture(backend) => backend.name(),
+            Self::Device(backend) => backend.name(),
+        }
+    }
+
+    fn mode(&self) -> mpc_midi::HostMidiMode {
+        match self {
+            Self::Capture(backend) => backend.mode(),
+            Self::Device(backend) => backend.mode(),
+        }
+    }
+
+    fn send(
+        &mut self,
+        message: mpc_midi::MidiMessage,
+    ) -> Result<mpc_midi::HostMidiBackendReceipt, mpc_midi::HostMidiError> {
+        match self {
+            Self::Capture(backend) => backend.send(message),
+            Self::Device(backend) => backend.send(message),
+        }
+    }
+}
+
 impl Default for MpcDesktopApp {
     fn default() -> Self {
         Self {
@@ -100,7 +152,12 @@ impl Default for MpcDesktopApp {
                 AudioRenderSettings::preview(),
             )
             .expect("desktop host audio preview settings should satisfy guardrails"),
-            host_midi: HostMidiEngine::enabled(CaptureMidiBackend::new(16)),
+            host_midi: HostMidiEngine::enabled(DesktopMidiBackend::capture()),
+            host_midi_input: None,
+            midi_input_ports: Vec::new(),
+            midi_output_ports: Vec::new(),
+            selected_midi_input_port: 0,
+            selected_midi_output_port: 0,
             last_status: "Ready".to_string(),
             last_synthetic_render: None,
             last_synthetic_render_error: None,
@@ -121,6 +178,7 @@ impl Default for MpcDesktopApp {
 
 impl eframe::App for MpcDesktopApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        self.poll_host_midi_input();
         egui::Frame::central_panel(ui.style()).show(ui, |ui| {
             ui.heading("MPC2000XL Clone Foundation");
             ui.label("Rights-safe desktop shell wired to deterministic machine core.");
@@ -149,6 +207,10 @@ impl eframe::App for MpcDesktopApp {
             ui.add_space(16.0);
             ui.label(format!("Status: {}", self.last_status));
         });
+        if self.host_midi_input.is_some() {
+            ui.ctx()
+                .request_repaint_after(std::time::Duration::from_millis(10));
+        }
     }
 }
 
@@ -408,6 +470,160 @@ impl MpcDesktopApp {
             .or(midi_host_error)
             .or(render_or_host_error)
             .unwrap_or_else(|| Self::status_from_outputs(&outputs, self.core.state()));
+    }
+
+    fn poll_host_midi_input(&mut self) {
+        let Some(input) = self.host_midi_input.as_mut() else {
+            return;
+        };
+        let events = match input.drain_events() {
+            Ok(events) => events,
+            Err(error) => {
+                self.last_status = format!("Host MIDI input failed: {error}");
+                return;
+            }
+        };
+
+        for event in events {
+            match event {
+                MidiInputEvent::NoteOn {
+                    channel,
+                    note,
+                    velocity,
+                } => {
+                    self.dispatch_event(HardwareEvent::MidiNoteOn {
+                        channel,
+                        note,
+                        velocity,
+                    });
+                }
+                MidiInputEvent::NoteOff {
+                    channel,
+                    note,
+                    velocity,
+                } => {
+                    self.dispatch_event(HardwareEvent::MidiNoteOff {
+                        channel,
+                        note,
+                        velocity,
+                    });
+                }
+            }
+        }
+    }
+
+    fn refresh_midi_device_ports(&mut self) {
+        let input_result = list_device_midi_input_ports();
+        let output_result = list_device_midi_output_ports();
+
+        let mut status_parts = Vec::new();
+        match input_result {
+            Ok(ports) => {
+                self.midi_input_ports = ports;
+                self.selected_midi_input_port =
+                    clamp_port_index(self.selected_midi_input_port, self.midi_input_ports.len());
+                status_parts.push(format!("{} MIDI input(s)", self.midi_input_ports.len()));
+            }
+            Err(error) => {
+                self.midi_input_ports.clear();
+                self.selected_midi_input_port = 0;
+                status_parts.push(format!("MIDI input refresh failed: {error}"));
+            }
+        }
+
+        match output_result {
+            Ok(ports) => {
+                self.midi_output_ports = ports;
+                self.selected_midi_output_port =
+                    clamp_port_index(self.selected_midi_output_port, self.midi_output_ports.len());
+                status_parts.push(format!("{} MIDI output(s)", self.midi_output_ports.len()));
+            }
+            Err(error) => {
+                self.midi_output_ports.clear();
+                self.selected_midi_output_port = 0;
+                status_parts.push(format!("MIDI output refresh failed: {error}"));
+            }
+        }
+
+        self.last_status = format!("MIDI devices: {}", status_parts.join(", "));
+    }
+
+    fn switch_host_midi_to_capture(&mut self) {
+        if matches!(self.host_midi.backend(), DesktopMidiBackend::Capture(_)) {
+            return;
+        }
+        self.replace_host_midi_backend(
+            DesktopMidiBackend::capture(),
+            "Host MIDI output backend: capture".to_string(),
+        );
+    }
+
+    fn switch_host_midi_to_device_output(&mut self) {
+        let Some(port) = self
+            .midi_output_ports
+            .get(self.selected_midi_output_port)
+            .cloned()
+        else {
+            self.last_status = "No MIDI output port selected".to_string();
+            return;
+        };
+
+        match DeviceMidiOutputBackend::connect_output_port_id(&port.id) {
+            Ok(backend) => {
+                let status = backend.status();
+                self.replace_host_midi_backend(
+                    DesktopMidiBackend::Device(backend),
+                    format!(
+                        "Host MIDI output backend: device {}",
+                        midi_port_label(&status.output_port)
+                    ),
+                );
+            }
+            Err(error) => {
+                self.last_status = format!("Host MIDI output unavailable: {error}");
+            }
+        }
+    }
+
+    fn replace_host_midi_backend(&mut self, backend: DesktopMidiBackend, status: String) {
+        let enabled = self.host_midi.is_enabled();
+        let mut host_midi = HostMidiEngine::new(backend);
+        host_midi.set_enabled(enabled);
+        self.host_midi = host_midi;
+        self.last_status = status;
+    }
+
+    fn connect_host_midi_input(&mut self) {
+        let Some(port) = self
+            .midi_input_ports
+            .get(self.selected_midi_input_port)
+            .cloned()
+        else {
+            self.last_status = "No MIDI input port selected".to_string();
+            return;
+        };
+
+        match DeviceMidiInputConnection::connect_input_port_id(
+            &port.id,
+            DeviceMidiInputConfig::default(),
+        ) {
+            Ok(connection) => {
+                let status = connection.status();
+                self.host_midi_input = Some(connection);
+                self.last_status = format!(
+                    "Host MIDI input connected: {}",
+                    midi_port_label(&status.input_port)
+                );
+            }
+            Err(error) => {
+                self.last_status = format!("Host MIDI input unavailable: {error}");
+            }
+        }
+    }
+
+    fn disconnect_host_midi_input(&mut self) {
+        self.host_midi_input = None;
+        self.last_status = "Host MIDI input disconnected".to_string();
     }
 
     fn handle_disk_operation_request(&mut self, outputs: &[MachineOutput]) -> Option<String> {
@@ -1010,6 +1226,7 @@ impl MpcDesktopApp {
         let midi_input_channel = state.midi_input_channel;
         let midi_base_note = state.midi_base_note;
         let selected_midi_settings_field = state.selected_midi_settings_field;
+        let host_midi_backend_name = self.host_midi.state().backend_name;
         let top_note = midi_base_note.saturating_add(15);
         let fifth_note = midi_base_note.saturating_add(4);
         let ignored_note = if midi_base_note > 0 {
@@ -1056,11 +1273,12 @@ impl MpcDesktopApp {
 
         ui.horizontal_wrapped(|ui| {
             ui.label(format!(
-                "MIDI settings: input {} base {} range {} field {} host output capture",
+                "MIDI settings: input {} base {} range {} field {} host output {}",
                 midi_input_channel_text(midi_input_channel),
                 midi_base_note,
                 midi_note_range_text(midi_base_note),
-                selected_midi_settings_field.label()
+                selected_midi_settings_field.label(),
+                host_midi_backend_name
             ));
             ui.separator();
             if ui
@@ -1407,11 +1625,67 @@ impl MpcDesktopApp {
                 self.host_midi.set_enabled(enabled);
             }
 
+            ui.separator();
+            let capture_selected =
+                matches!(self.host_midi.backend(), DesktopMidiBackend::Capture(_));
+            if ui
+                .selectable_label(capture_selected, "Capture out")
+                .clicked()
+            {
+                self.switch_host_midi_to_capture();
+            }
+            let device_selected = matches!(self.host_midi.backend(), DesktopMidiBackend::Device(_));
+            ui.add_enabled_ui(!self.midi_output_ports.is_empty(), |ui| {
+                if ui.selectable_label(device_selected, "Device out").clicked() {
+                    self.switch_host_midi_to_device_output();
+                }
+            });
+            if ui.button("Refresh MIDI").clicked() {
+                self.refresh_midi_device_ports();
+            }
+
+            ui.separator();
+            midi_port_combo(
+                ui,
+                "MIDI in",
+                &self.midi_input_ports,
+                &mut self.selected_midi_input_port,
+            );
+            if ui
+                .add_enabled(
+                    !self.midi_input_ports.is_empty(),
+                    egui::Button::new("Connect in"),
+                )
+                .clicked()
+            {
+                self.connect_host_midi_input();
+            }
+            if ui
+                .add_enabled(
+                    self.host_midi_input.is_some(),
+                    egui::Button::new("Disconnect in"),
+                )
+                .clicked()
+            {
+                self.disconnect_host_midi_input();
+            }
+
+            midi_port_combo(
+                ui,
+                "MIDI out",
+                &self.midi_output_ports,
+                &mut self.selected_midi_output_port,
+            );
+
             let state = self.host_midi.state();
             ui.separator();
             ui.label(host_midi_state_text(&state));
             ui.separator();
             ui.label(last_host_midi_event_text(state.last_event.as_ref()));
+            ui.separator();
+            ui.label(host_midi_backend_detail_text(self.host_midi.backend()));
+            ui.separator();
+            ui.label(host_midi_input_status_text(self.host_midi_input.as_ref()));
         });
     }
 
@@ -1873,6 +2147,85 @@ fn device_audio_backend_status_text(status: &DeviceAudioBackendStatus) -> String
         status.total_callback_frame_count,
         status.underrun_frame_count,
         stream_errors
+    )
+}
+
+fn midi_port_combo(
+    ui: &mut egui::Ui,
+    label: &str,
+    ports: &[MidiPortDescriptor],
+    selected_index: &mut usize,
+) {
+    *selected_index = clamp_port_index(*selected_index, ports.len());
+    egui::ComboBox::from_label(label)
+        .selected_text(selected_midi_port_text(ports, *selected_index))
+        .show_ui(ui, |ui| {
+            for (index, port) in ports.iter().enumerate() {
+                ui.selectable_value(selected_index, index, midi_port_label(port));
+            }
+        });
+}
+
+fn selected_midi_port_text(ports: &[MidiPortDescriptor], selected_index: usize) -> String {
+    ports
+        .get(selected_index)
+        .map(midi_port_label)
+        .unwrap_or_else(|| "none".to_string())
+}
+
+fn midi_port_label(port: &MidiPortDescriptor) -> String {
+    format!("{}: {}", port.index + 1, port.name)
+}
+
+fn clamp_port_index(index: usize, port_count: usize) -> usize {
+    if port_count == 0 {
+        0
+    } else {
+        index.min(port_count - 1)
+    }
+}
+
+fn host_midi_backend_detail_text(backend: &DesktopMidiBackend) -> String {
+    match backend.device_output_status() {
+        Some(status) => device_midi_output_status_text(&status),
+        None => "Host MIDI output: capture retains note-on messages only".to_string(),
+    }
+}
+
+fn device_midi_output_status_text(status: &DeviceMidiOutputStatus) -> String {
+    match &status.last_sent_message {
+        Some(message) => format!(
+            "Host MIDI output device: {} sent {} last ch {} note {} vel {}",
+            midi_port_label(&status.output_port),
+            status.total_sent_message_count,
+            message.channel,
+            message.note,
+            message.velocity
+        ),
+        None => format!(
+            "Host MIDI output device: {} sent 0",
+            midi_port_label(&status.output_port)
+        ),
+    }
+}
+
+fn host_midi_input_status_text(input: Option<&DeviceMidiInputConnection>) -> String {
+    match input {
+        Some(input) => device_midi_input_status_text(&input.status()),
+        None => "Host MIDI input: disconnected".to_string(),
+    }
+}
+
+fn device_midi_input_status_text(status: &DeviceMidiInputStatus) -> String {
+    format!(
+        "Host MIDI input: {} queued {}/{} received {} decoded {} ignored {} dropped {}",
+        midi_port_label(&status.input_port),
+        status.queued_event_count,
+        status.max_queued_event_count,
+        status.total_received_message_count,
+        status.total_decoded_event_count,
+        status.total_ignored_message_count,
+        status.dropped_event_count
     )
 }
 
