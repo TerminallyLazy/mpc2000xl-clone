@@ -6,8 +6,9 @@ pub use events::{
     DiskOperation, HardwareEvent, MachineOutput, MidiSettingsField, Mode, PadAssignment,
     PadAssignmentChange, PadBank, PanelControl, PlaybackMissReason, Program, ProgramEditField,
     ProgramPad, SampleCatalogEntry, SamplePlaybackIntent, SamplePlaybackMiss,
-    SamplePlaybackResolution, SequenceEvent, SetupField, SetupPreferences, SongEditField, SongStep,
-    SyntheticSample,
+    SamplePlaybackResolution, SampleTrim, SequenceEvent, SetupField, SetupPreferences,
+    SongEditField, SongStep, SyntheticSample, TrimEditField, generated_sample_length_frames,
+    sample_window_length_frames,
 };
 pub use lcd::LcdFrame;
 pub use state::{

@@ -7,8 +7,9 @@ use crate::events::{
     DiskOperation, HardwareEvent, MachineOutput, MidiSettingsField, Mode, PadAssignment,
     PadAssignmentChange, PadBank, PanelControl, PlaybackMissReason, Program, ProgramEditField,
     ProgramPad, SampleCatalogEntry, SamplePlaybackIntent, SamplePlaybackMiss,
-    SamplePlaybackResolution, SequenceEvent, SetupField, SetupPreferences, SongEditField, SongStep,
-    SyntheticSample,
+    SamplePlaybackResolution, SampleTrim, SequenceEvent, SetupField, SetupPreferences,
+    SongEditField, SongStep, SyntheticSample, TrimEditField, generated_sample_length_frames,
+    sample_window_length_frames,
 };
 use crate::lcd::LcdFrame;
 
@@ -42,8 +43,6 @@ const DEFAULT_PROGRAM_NAME: &str = "Program01";
 const DEFAULT_PAD_LEVEL: u8 = 100;
 const DEFAULT_PAD_PAN: i8 = 0;
 const DEFAULT_PAD_TUNE_CENTS: i16 = 0;
-const SAMPLE_BASE_LENGTH_FRAMES: u32 = 48_000;
-const SAMPLE_LENGTH_STEP_FRAMES: u32 = 1_200;
 const MAX_PAD_LEVEL: u8 = 127;
 const MIN_PAD_PAN: i8 = -50;
 const MAX_PAD_PAN: i8 = 50;
@@ -135,6 +134,8 @@ pub struct ProjectMachineSnapshot {
     pub selected_program_edit_field: ProgramEditField,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub selected_sample_id: Option<String>,
+    #[serde(default)]
+    pub selected_trim_edit_field: TrimEditField,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub midi_input_channel: Option<u8>,
     #[serde(default = "default_midi_base_note")]
@@ -170,6 +171,8 @@ pub struct ProjectProgramSnapshot {
     pub index: u8,
     pub name: String,
     pub pad_assignments: Vec<PadAssignment>,
+    #[serde(default)]
+    pub sample_trims: Vec<SampleTrim>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -274,6 +277,8 @@ pub struct MpcState {
     pub selected_program_pad: ProgramPad,
     pub selected_program_edit_field: ProgramEditField,
     pub selected_sample_id: Option<String>,
+    pub selected_trim_edit_field: TrimEditField,
+    pub sample_trims: Vec<SampleTrim>,
     pub midi_input_channel: Option<u8>,
     pub midi_base_note: u8,
     pub selected_midi_settings_field: MidiSettingsField,
@@ -340,6 +345,8 @@ impl Default for MpcState {
             selected_program_pad,
             selected_program_edit_field: ProgramEditField::Pad,
             selected_sample_id,
+            selected_trim_edit_field: TrimEditField::Start,
+            sample_trims: Vec::new(),
             midi_input_channel: None,
             midi_base_note: DEFAULT_MIDI_BASE_NOTE,
             selected_midi_settings_field: MidiSettingsField::InputChannel,
@@ -364,7 +371,7 @@ impl MpcState {
     }
 
     pub fn sample_catalog(&self) -> Vec<SampleCatalogEntry> {
-        sample_catalog_for_program(&self.current_program)
+        sample_catalog_for_program(&self.current_program, &self.sample_trims)
     }
 
     pub fn selected_sample(&self) -> Option<SampleCatalogEntry> {
@@ -406,6 +413,7 @@ impl MpcCore {
                 selected_program_pad: self.state.selected_program_pad,
                 selected_program_edit_field: self.state.selected_program_edit_field,
                 selected_sample_id: self.state.selected_sample_id.clone(),
+                selected_trim_edit_field: self.state.selected_trim_edit_field,
                 midi_input_channel: self.state.midi_input_channel,
                 midi_base_note: self.state.midi_base_note,
                 selected_midi_settings_field: self.state.selected_midi_settings_field,
@@ -429,6 +437,10 @@ impl MpcCore {
                 index: self.state.current_program.index,
                 name: self.state.current_program.name.clone(),
                 pad_assignments,
+                sample_trims: normalized_sample_trims(
+                    &self.state.current_program,
+                    &self.state.sample_trims,
+                ),
             },
             song: ProjectSongSnapshot {
                 steps: self.state.song_steps.clone(),
@@ -474,6 +486,9 @@ impl MpcCore {
             &self.state.current_program,
             snapshot.machine.selected_sample_id.as_deref(),
         );
+        self.state.selected_trim_edit_field = snapshot.machine.selected_trim_edit_field;
+        self.state.sample_trims =
+            normalized_sample_trims(&self.state.current_program, &snapshot.program.sample_trims);
         self.state.midi_input_channel = snapshot.machine.midi_input_channel;
         self.state.midi_base_note = snapshot.machine.midi_base_note;
         self.state.selected_midi_settings_field = snapshot.machine.selected_midi_settings_field;
@@ -696,8 +711,12 @@ impl MpcCore {
             return self.adjust_song_field(delta);
         }
 
-        if matches!(self.state.mode, Mode::Sample | Mode::Trim) {
+        if self.state.mode == Mode::Sample {
             return self.adjust_selected_sample(delta);
+        }
+
+        if self.state.mode == Mode::Trim {
+            return self.adjust_selected_sample_trim(delta);
         }
 
         if self.state.mode != Mode::Main {
@@ -749,6 +768,12 @@ impl MpcCore {
             return vec![MachineOutput::LcdChanged];
         }
 
+        if self.state.mode == Mode::Trim {
+            self.state.selected_trim_edit_field = self.state.selected_trim_edit_field.previous();
+            self.refresh_lcd();
+            return vec![MachineOutput::LcdChanged];
+        }
+
         if self.state.mode == Mode::Setup {
             return self.select_setup_field(self.state.selected_setup_field.previous());
         }
@@ -792,6 +817,12 @@ impl MpcCore {
 
         if self.state.mode == Mode::Song {
             self.state.selected_song_edit_field = self.state.selected_song_edit_field.next();
+            self.refresh_lcd();
+            return vec![MachineOutput::LcdChanged];
+        }
+
+        if self.state.mode == Mode::Trim {
+            self.state.selected_trim_edit_field = self.state.selected_trim_edit_field.next();
             self.refresh_lcd();
             return vec![MachineOutput::LcdChanged];
         }
@@ -1294,7 +1325,10 @@ impl MpcCore {
             }
             Mode::Trim => {
                 let selected_sample = self.state.selected_sample();
-                LcdFrame::trim_screen(selected_sample.as_ref())
+                LcdFrame::trim_screen(
+                    selected_sample.as_ref(),
+                    self.state.selected_trim_edit_field,
+                )
             }
             Mode::Song => {
                 let step = self.state.song_steps[self.state.selected_song_step_index];
@@ -1349,6 +1383,96 @@ impl MpcCore {
             MachineOutput::SampleSelected { entry },
             MachineOutput::LcdChanged,
         ]
+    }
+
+    fn adjust_selected_sample_trim(&mut self, delta: i32) -> Vec<MachineOutput> {
+        if delta == 0 {
+            return Self::ignored(format!(
+                "trim.{}.zero_delta_ignored",
+                self.state.selected_trim_edit_field.label()
+            ));
+        }
+
+        let Some(entry) = self.state.selected_sample() else {
+            self.state.selected_sample_id = None;
+            return Self::ignored("sample_catalog.empty".to_string());
+        };
+
+        let mut start_frame = entry.start_frame;
+        let mut end_frame = entry.end_frame;
+        match self.state.selected_trim_edit_field {
+            TrimEditField::Start => {
+                start_frame = clamp_delta_u32(start_frame, delta, 0, end_frame);
+                if start_frame == entry.start_frame {
+                    return Self::ignored("trim.start.boundary".to_string());
+                }
+            }
+            TrimEditField::End => {
+                end_frame = clamp_delta_u32(
+                    end_frame,
+                    delta,
+                    start_frame,
+                    entry.length_frames.saturating_sub(1),
+                );
+                if end_frame == entry.end_frame {
+                    return Self::ignored("trim.end.boundary".to_string());
+                }
+            }
+        }
+
+        let window_length_frames = sample_window_length_frames(start_frame, end_frame);
+        self.set_sample_trim(
+            entry.sample.id.clone(),
+            start_frame,
+            end_frame,
+            entry.length_frames,
+        );
+        self.refresh_lcd();
+        vec![
+            MachineOutput::SampleTrimChanged {
+                sample_id: entry.sample.id,
+                start_frame,
+                end_frame,
+                window_length_frames,
+                selected_field: self.state.selected_trim_edit_field,
+            },
+            MachineOutput::LcdChanged,
+        ]
+    }
+
+    fn set_sample_trim(
+        &mut self,
+        sample_id: String,
+        start_frame: u32,
+        end_frame: u32,
+        length_frames: u32,
+    ) {
+        let default_end_frame = length_frames.saturating_sub(1);
+        if start_frame == 0 && end_frame == default_end_frame {
+            self.state
+                .sample_trims
+                .retain(|trim| trim.sample_id != sample_id);
+            return;
+        }
+
+        if let Some(trim) = self
+            .state
+            .sample_trims
+            .iter_mut()
+            .find(|trim| trim.sample_id == sample_id)
+        {
+            trim.start_frame = start_frame;
+            trim.end_frame = end_frame;
+        } else {
+            self.state.sample_trims.push(SampleTrim {
+                sample_id,
+                start_frame,
+                end_frame,
+            });
+        }
+        self.state
+            .sample_trims
+            .sort_by(|left, right| left.sample_id.cmp(&right.sample_id));
     }
 
     fn handle_pad_strike(&mut self, bank: PadBank, pad: u8, velocity: u8) -> Vec<MachineOutput> {
@@ -1678,6 +1802,7 @@ impl MpcCore {
             &self.state.current_program,
             self.state.selected_sample_id.as_deref(),
         );
+        self.prune_sample_trims_for_current_program();
         self.refresh_lcd();
         vec![
             MachineOutput::PadAssignmentChanged {
@@ -1709,6 +1834,7 @@ impl MpcCore {
             &self.state.current_program,
             self.state.selected_sample_id.as_deref(),
         );
+        self.prune_sample_trims_for_current_program();
         self.refresh_lcd();
         vec![
             MachineOutput::PadAssignmentChanged {
@@ -1729,6 +1855,8 @@ impl MpcCore {
         };
 
         if let Some(assignment) = self.assignment_for(program_pad) {
+            let (start_frame, end_frame, window_length_frames) =
+                self.sample_window_for_assignment(assignment);
             return SamplePlaybackResolution::Intent {
                 intent: SamplePlaybackIntent {
                     selected_track: self.state.selected_track,
@@ -1742,6 +1870,9 @@ impl MpcCore {
                     level: assignment.level,
                     pan: assignment.pan,
                     tune_cents: assignment.tune_cents,
+                    start_frame,
+                    end_frame,
+                    window_length_frames,
                 },
             };
         }
@@ -1757,6 +1888,27 @@ impl MpcCore {
                 reason: PlaybackMissReason::PadUnassigned,
             },
         }
+    }
+
+    fn sample_window_for_assignment(&self, assignment: &PadAssignment) -> (u32, u32, u32) {
+        let length_frames = generated_sample_length_frames(assignment.pad);
+        let (start_frame, end_frame) = self
+            .state
+            .sample_trims
+            .iter()
+            .find(|trim| trim.sample_id == assignment.sample.id)
+            .map(|trim| (trim.start_frame, trim.end_frame))
+            .unwrap_or((0, length_frames.saturating_sub(1)));
+        (
+            start_frame,
+            end_frame,
+            sample_window_length_frames(start_frame, end_frame),
+        )
+    }
+
+    fn prune_sample_trims_for_current_program(&mut self) {
+        self.state.sample_trims =
+            normalized_sample_trims(&self.state.current_program, &self.state.sample_trims);
     }
 }
 
@@ -1809,6 +1961,7 @@ fn validate_machine_json_fields(value: &Value) -> Result<(), ProjectSnapshotErro
             "selected_program_pad",
             "selected_program_edit_field",
             "selected_sample_id",
+            "selected_trim_edit_field",
             "midi_input_channel",
             "midi_base_note",
             "selected_midi_settings_field",
@@ -1865,8 +2018,11 @@ fn validate_sequence_json_fields(value: &Value) -> Result<(), ProjectSnapshotErr
 }
 
 fn validate_program_json_fields(value: &Value) -> Result<(), ProjectSnapshotError> {
-    let Some(program) =
-        reject_unknown_json_fields("program", value, &["index", "name", "pad_assignments"])?
+    let Some(program) = reject_unknown_json_fields(
+        "program",
+        value,
+        &["index", "name", "pad_assignments", "sample_trims"],
+    )?
     else {
         return Ok(());
     };
@@ -1879,7 +2035,23 @@ fn validate_program_json_fields(value: &Value) -> Result<(), ProjectSnapshotErro
             )?;
         }
     }
+    if let Some(sample_trims) = program.get("sample_trims").and_then(Value::as_array) {
+        for (index, sample_trim) in sample_trims.iter().enumerate() {
+            validate_sample_trim_json_fields(
+                &format!("program.sample_trims[{index}]"),
+                sample_trim,
+            )?;
+        }
+    }
 
+    Ok(())
+}
+
+fn validate_sample_trim_json_fields(
+    field: &str,
+    value: &Value,
+) -> Result<(), ProjectSnapshotError> {
+    reject_unknown_json_fields(field, value, &["sample_id", "start_frame", "end_frame"])?;
     Ok(())
 }
 
@@ -2050,6 +2222,9 @@ fn validate_playback_intent_json_fields(
             "level",
             "pan",
             "tune_cents",
+            "start_frame",
+            "end_frame",
+            "window_length_frames",
         ],
     )?;
     Ok(())
@@ -2246,6 +2421,22 @@ fn validate_project_snapshot(snapshot: &ProjectSnapshot) -> Result<(), ProjectSn
         }
     }
 
+    let validation_program = Program {
+        index: snapshot.program.index,
+        name: snapshot.program.name.clone(),
+        pad_assignments: snapshot.program.pad_assignments.clone(),
+    };
+    let default_catalog = sample_catalog_for_program(&validation_program, &[]);
+    if let Some(selected_sample_id) = &snapshot.machine.selected_sample_id {
+        if catalog_entry_for_sample_id(&default_catalog, selected_sample_id).is_none() {
+            return Err(invalid_value(
+                "machine.selected_sample_id",
+                format!("unknown sample id {selected_sample_id:?}"),
+            ));
+        }
+    }
+    validate_sample_trims(&snapshot.program.sample_trims, &default_catalog)?;
+
     for (index, event) in snapshot.sequence.recorded_events.iter().enumerate() {
         validate_sequence_event(&format!("sequence.recorded_events[{index}]"), event)?;
     }
@@ -2354,6 +2545,37 @@ fn validate_assignment(
     )
 }
 
+fn validate_sample_trims(
+    sample_trims: &[SampleTrim],
+    catalog: &[SampleCatalogEntry],
+) -> Result<(), ProjectSnapshotError> {
+    let mut seen_sample_ids = BTreeSet::new();
+    for (index, trim) in sample_trims.iter().enumerate() {
+        let field = format!("program.sample_trims[{index}]");
+        validate_non_empty(&format!("{field}.sample_id"), &trim.sample_id)?;
+        if !seen_sample_ids.insert(trim.sample_id.as_str()) {
+            return Err(invalid_value(
+                &format!("{field}.sample_id"),
+                "duplicate sample trim",
+            ));
+        }
+        let Some(entry) = catalog_entry_for_sample_id(catalog, &trim.sample_id) else {
+            return Err(invalid_value(
+                &format!("{field}.sample_id"),
+                format!("unknown sample id {:?}", trim.sample_id),
+            ));
+        };
+        validate_sample_window(
+            &field,
+            trim.start_frame,
+            trim.end_frame,
+            trim.window_length_frames(),
+            entry.length_frames,
+        )?;
+    }
+    Ok(())
+}
+
 fn validate_sequence_event(field: &str, event: &SequenceEvent) -> Result<(), ProjectSnapshotError> {
     validate_range_u8(
         &format!("{field}.selected_track"),
@@ -2443,6 +2665,17 @@ fn validate_playback_intent(
         intent.tune_cents,
         MIN_PAD_TUNE_CENTS,
         MAX_PAD_TUNE_CENTS,
+    )?;
+    let length_frames = generated_sample_length_frames(ProgramPad {
+        bank: intent.bank,
+        pad_number: intent.pad_number,
+    });
+    validate_sample_window(
+        field,
+        intent.start_frame,
+        intent.end_frame,
+        intent.window_length_frames,
+        length_frames,
     )
 }
 
@@ -2477,6 +2710,35 @@ fn validate_pad_number(field: &str, pad_number: u8) -> Result<(), ProjectSnapsho
 
 fn validate_velocity(field: &str, velocity: u8) -> Result<(), ProjectSnapshotError> {
     validate_range_u8(field, velocity, 1, 127)
+}
+
+fn validate_sample_window(
+    field: &str,
+    start_frame: u32,
+    end_frame: u32,
+    window_length_frames: u32,
+    length_frames: u32,
+) -> Result<(), ProjectSnapshotError> {
+    if start_frame > end_frame {
+        return Err(invalid_value(
+            &format!("{field}.start_frame"),
+            "must be <= end_frame",
+        ));
+    }
+    if end_frame >= length_frames {
+        return Err(invalid_value(
+            &format!("{field}.end_frame"),
+            format!("must be less than generated sample length {length_frames}"),
+        ));
+    }
+    let expected_window_length = sample_window_length_frames(start_frame, end_frame);
+    if window_length_frames != expected_window_length {
+        return Err(invalid_value(
+            &format!("{field}.window_length_frames"),
+            format!("must equal end_frame - start_frame + 1 ({expected_window_length})"),
+        ));
+    }
+    Ok(())
 }
 
 fn validate_midi_channel(channel: u8) -> Option<String> {
@@ -2657,7 +2919,10 @@ pub fn sequence_length_ticks_for_bars(bar_count: u16) -> u64 {
         .saturating_mul(u64::from(FOUNDATION_BEATS_PER_BAR))
 }
 
-fn sample_catalog_for_program(program: &Program) -> Vec<SampleCatalogEntry> {
+fn sample_catalog_for_program(
+    program: &Program,
+    sample_trims: &[SampleTrim],
+) -> Vec<SampleCatalogEntry> {
     let mut assignments = program.pad_assignments.clone();
     assignments.sort_by_key(|assignment| assignment.pad);
 
@@ -2668,14 +2933,20 @@ fn sample_catalog_for_program(program: &Program) -> Vec<SampleCatalogEntry> {
             continue;
         }
 
-        let length_frames = sample_length_frames(assignment.pad);
+        let length_frames = generated_sample_length_frames(assignment.pad);
+        let (start_frame, end_frame) = sample_trims
+            .iter()
+            .find(|trim| trim.sample_id == assignment.sample.id)
+            .map(|trim| (trim.start_frame, trim.end_frame))
+            .unwrap_or((0, length_frames.saturating_sub(1)));
         entries.push(SampleCatalogEntry {
             index: 0,
             count: 0,
             sample: assignment.sample,
             source_pad: assignment.pad,
-            start_frame: 0,
-            end_frame: length_frames.saturating_sub(1),
+            start_frame,
+            end_frame,
+            window_length_frames: sample_window_length_frames(start_frame, end_frame),
             length_frames,
         });
     }
@@ -2690,10 +2961,21 @@ fn sample_catalog_for_program(program: &Program) -> Vec<SampleCatalogEntry> {
 }
 
 fn normalized_sample_id(program: &Program, requested_id: Option<&str>) -> Option<String> {
-    let catalog = sample_catalog_for_program(program);
+    let catalog = sample_catalog_for_program(program, &[]);
     selected_sample_entry(&catalog, requested_id)
         .or_else(|| catalog.first())
         .map(|entry| entry.sample.id.clone())
+}
+
+fn normalized_sample_trims(program: &Program, sample_trims: &[SampleTrim]) -> Vec<SampleTrim> {
+    let catalog = sample_catalog_for_program(program, &[]);
+    let mut normalized = sample_trims
+        .iter()
+        .filter(|trim| catalog_entry_for_sample_id(&catalog, &trim.sample_id).is_some())
+        .cloned()
+        .collect::<Vec<_>>();
+    normalized.sort_by(|left, right| left.sample_id.cmp(&right.sample_id));
+    normalized
 }
 
 fn selected_sample_entry<'a>(
@@ -2720,19 +3002,13 @@ fn selected_sample_position(
     })
 }
 
-fn sample_length_frames(pad: ProgramPad) -> u32 {
-    SAMPLE_BASE_LENGTH_FRAMES
-        .saturating_add(pad_linear_index(pad).saturating_mul(SAMPLE_LENGTH_STEP_FRAMES))
-}
-
-fn pad_linear_index(pad: ProgramPad) -> u32 {
-    let bank_offset = match pad.bank {
-        PadBank::A => 0,
-        PadBank::B => 16,
-        PadBank::C => 32,
-        PadBank::D => 48,
-    };
-    bank_offset + u32::from(pad.pad_number.saturating_sub(1))
+fn catalog_entry_for_sample_id<'a>(
+    catalog: &'a [SampleCatalogEntry],
+    sample_id: &str,
+) -> Option<&'a SampleCatalogEntry> {
+    catalog
+        .iter()
+        .find(|entry| entry.sample.id.as_str() == sample_id)
 }
 
 fn default_program() -> Program {
@@ -2778,6 +3054,10 @@ fn clamp_delta_u8(current: u8, delta: i32, min: u8, max: u8) -> u8 {
 
 fn clamp_delta_u16(current: u16, delta: i32, min: u16, max: u16) -> u16 {
     (i64::from(current) + i64::from(delta)).clamp(i64::from(min), i64::from(max)) as u16
+}
+
+fn clamp_delta_u32(current: u32, delta: i32, min: u32, max: u32) -> u32 {
+    (i128::from(current) + i128::from(delta)).clamp(i128::from(min), i128::from(max)) as u32
 }
 
 fn clamp_delta_usize(current: usize, delta: i32, min: usize, max: usize) -> usize {

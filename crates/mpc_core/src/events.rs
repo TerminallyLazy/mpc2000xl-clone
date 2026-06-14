@@ -1,5 +1,8 @@
 use serde::{Deserialize, Serialize};
 
+const SAMPLE_BASE_LENGTH_FRAMES: u32 = 48_000;
+const SAMPLE_LENGTH_STEP_FRAMES: u32 = 1_200;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Mode {
@@ -53,7 +56,22 @@ pub struct SampleCatalogEntry {
     pub source_pad: ProgramPad,
     pub start_frame: u32,
     pub end_frame: u32,
+    pub window_length_frames: u32,
     pub length_frames: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SampleTrim {
+    pub sample_id: String,
+    pub start_frame: u32,
+    pub end_frame: u32,
+}
+
+impl SampleTrim {
+    pub fn window_length_frames(&self) -> u32 {
+        sample_window_length_frames(self.start_frame, self.end_frame)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -73,7 +91,7 @@ pub struct Program {
     pub pad_assignments: Vec<PadAssignment>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct SamplePlaybackIntent {
     pub selected_track: u8,
     pub program_index: u8,
@@ -85,8 +103,88 @@ pub struct SamplePlaybackIntent {
     pub velocity: u8,
     pub level: u8,
     pub pan: i8,
-    #[serde(default)]
     pub tune_cents: i16,
+    pub start_frame: u32,
+    pub end_frame: u32,
+    pub window_length_frames: u32,
+}
+
+impl<'de> Deserialize<'de> for SamplePlaybackIntent {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct RawSamplePlaybackIntent {
+            selected_track: u8,
+            program_index: u8,
+            program_name: String,
+            bank: PadBank,
+            pad_number: u8,
+            sample_id: String,
+            sample_name: String,
+            velocity: u8,
+            level: u8,
+            pan: i8,
+            #[serde(default)]
+            tune_cents: i16,
+            #[serde(default)]
+            start_frame: Option<u32>,
+            #[serde(default)]
+            end_frame: Option<u32>,
+            #[serde(default)]
+            window_length_frames: Option<u32>,
+        }
+
+        let raw = RawSamplePlaybackIntent::deserialize(deserializer)?;
+        let provided_window_fields = [
+            raw.start_frame.is_some(),
+            raw.end_frame.is_some(),
+            raw.window_length_frames.is_some(),
+        ]
+        .into_iter()
+        .filter(|provided| *provided)
+        .count();
+        let (start_frame, end_frame, window_length_frames) = match (
+            raw.start_frame,
+            raw.end_frame,
+            raw.window_length_frames,
+        ) {
+            (Some(start_frame), Some(end_frame), Some(window_length_frames)) => {
+                (start_frame, end_frame, window_length_frames)
+            }
+            (None, None, None) => {
+                let length_frames = generated_sample_length_frames(ProgramPad {
+                    bank: raw.bank,
+                    pad_number: raw.pad_number,
+                });
+                (0, length_frames.saturating_sub(1), length_frames)
+            }
+            _ => {
+                return Err(serde::de::Error::custom(format!(
+                    "start_frame, end_frame, and window_length_frames must be provided together; got {provided_window_fields} fields"
+                )));
+            }
+        };
+
+        Ok(Self {
+            selected_track: raw.selected_track,
+            program_index: raw.program_index,
+            program_name: raw.program_name,
+            bank: raw.bank,
+            pad_number: raw.pad_number,
+            sample_id: raw.sample_id,
+            sample_name: raw.sample_name,
+            velocity: raw.velocity,
+            level: raw.level,
+            pan: raw.pan,
+            tune_cents: raw.tune_cents,
+            start_frame,
+            end_frame,
+            window_length_frames,
+        })
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -160,6 +258,42 @@ impl ProgramEditField {
             Self::Level => Self::Pan,
             Self::Pan => Self::Tune,
             Self::Tune => Self::Pad,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TrimEditField {
+    Start,
+    End,
+}
+
+impl Default for TrimEditField {
+    fn default() -> Self {
+        Self::Start
+    }
+}
+
+impl TrimEditField {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Start => "start",
+            Self::End => "end",
+        }
+    }
+
+    pub fn previous(self) -> Self {
+        match self {
+            Self::Start => Self::Start,
+            Self::End => Self::Start,
+        }
+    }
+
+    pub fn next(self) -> Self {
+        match self {
+            Self::Start => Self::End,
+            Self::End => Self::End,
         }
     }
 }
@@ -457,6 +591,13 @@ pub enum MachineOutput {
     SampleSelected {
         entry: SampleCatalogEntry,
     },
+    SampleTrimChanged {
+        sample_id: String,
+        start_frame: u32,
+        end_frame: u32,
+        window_length_frames: u32,
+        selected_field: TrimEditField,
+    },
     MidiNoteMapped {
         channel: u8,
         note: u8,
@@ -526,4 +667,23 @@ pub enum MachineOutput {
     Ignored {
         reason: String,
     },
+}
+
+pub fn generated_sample_length_frames(pad: ProgramPad) -> u32 {
+    SAMPLE_BASE_LENGTH_FRAMES
+        .saturating_add(pad_linear_index(pad).saturating_mul(SAMPLE_LENGTH_STEP_FRAMES))
+}
+
+pub fn sample_window_length_frames(start_frame: u32, end_frame: u32) -> u32 {
+    end_frame.saturating_sub(start_frame).saturating_add(1)
+}
+
+fn pad_linear_index(pad: ProgramPad) -> u32 {
+    let bank_offset = match pad.bank {
+        PadBank::A => 0,
+        PadBank::B => 16,
+        PadBank::C => 32,
+        PadBank::D => 48,
+    };
+    bank_offset + u32::from(pad.pad_number.saturating_sub(1))
 }

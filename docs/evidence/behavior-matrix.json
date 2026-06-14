@@ -2190,8 +2190,15 @@
         {
           "channel": "front_panel",
           "event": "turn_data_wheel",
-          "mode": "sample_or_trim",
+          "mode": "sample",
           "policy": "delta clamps to catalog bounds"
+        },
+        {
+          "channel": "front_panel",
+          "event": "press",
+          "mode": "sample_or_trim",
+          "control": "soft_key_1_or_2",
+          "effect": "previous or next sample"
         },
         {
           "channel": "desktop",
@@ -2204,7 +2211,7 @@
           "catalog": "derived from current-program sample metadata, sorted by source pad and deduped by sample id",
           "default_selection": "Program01 selects synthetic_a_01 / SYN-A01",
           "selection": "SAMPLE and TRIM share machine.selected_sample_id",
-          "snapshot": "machine.selected_sample_id persists with serde-default current-reader backward compatibility; missing or stale ids normalize to first available sample; older-binary forward compatibility is deferred"
+          "snapshot": "machine.selected_sample_id persists with serde-default current-reader backward compatibility; missing ids normalize to first available sample, while present unknown ids are rejected so stale selections cannot silently point at the wrong sample; older-binary forward compatibility is deferred"
         },
         "outputs": [
           "SampleSelected with SampleCatalogEntry metadata",
@@ -2213,11 +2220,11 @@
         ],
         "lcd": {
           "sample": "index/count, id/name, source pad, deterministic length, metadata-only/no-audio-bytes notice",
-          "trim": "index/count, id/name, start/end/length placeholders, source pad, metadata-only/no-waveform notice"
+          "trim": "index/count, id/name, source pad, deterministic window metadata from the current trim model, metadata-only/no-waveform notice"
         },
         "desktop": {
           "status": "selected sample index/count/name/source pad/length",
-          "controls": "Prev sample and Next sample route through the data wheel"
+          "controls": "Prev sample and Next sample route through the SAMPLE/TRIM F1/F2 soft-key path; SAMPLE data wheel also navigates the catalog"
         }
       },
       "tolerance": null,
@@ -2226,7 +2233,122 @@
         "crates/mpc_conformance/tests/fixtures/sample_catalog_navigation_b_trim_round_trip.json"
       ],
       "conflict_notes": [
-        "This is not real MPC2000XL or JJ-OS sample recording/import/trim editing.",
+        "This is not real MPC2000XL or JJ-OS sample recording/import/waveform editing.",
+        "No WAV bytes, factory samples, manuals, service scans, firmware bytes, JJ-OS assets, or copied third-party code are stored in the repo."
+      ]
+    },
+    {
+      "id": "core.sample.trim-window-foundation",
+      "name": "TRIM edits a metadata-only generated sample playback window",
+      "area": "sample",
+      "state": "fixture-backed-internal-spec",
+      "evidence": [
+        {
+          "source_id": "sample-trim-window-slice-plan",
+          "source_category": "internal_spec",
+          "type": "plan",
+          "status": "mapped",
+          "ref": "docs/superpowers/plans/2026-06-13-mpc2000xl-sample-trim-window.md#behavior-slice"
+        }
+      ],
+      "source_coverage": [
+        {
+          "source_category": "manual",
+          "source_id": "owner-manual",
+          "status": "investigation",
+          "ref": null,
+          "note": "Exact MPC2000XL TRIM screen, waveform, and destructive/non-destructive sample edit behavior is not mapped yet."
+        },
+        {
+          "source_category": "firmware",
+          "source_id": "mpc2000xl-os-local-reference",
+          "status": "investigation",
+          "ref": null,
+          "note": "No firmware trace has been captured for TRIM window editing or playback/render side effects."
+        },
+        {
+          "source_category": "jjos",
+          "source_id": "jjos-unverified-boundary",
+          "status": "unverified",
+          "ref": null,
+          "note": "JJ-OS TRIM behavior is not accepted as reference evidence for this slice."
+        },
+        {
+          "source_category": "internal_spec",
+          "source_id": "sample-trim-window-slice-plan",
+          "status": "mapped",
+          "ref": "docs/superpowers/plans/2026-06-13-mpc2000xl-sample-trim-window.md#source-and-evidence-status",
+          "note": "The current contract is deterministic generated-sample trim metadata only."
+        }
+      ],
+      "inputs": [
+        {
+          "channel": "front_panel",
+          "event": "press",
+          "control": "trim"
+        },
+        {
+          "channel": "front_panel",
+          "event": "press",
+          "mode": "trim",
+          "control": "cursor_left_or_right",
+          "effect": "select start or end trim field"
+        },
+        {
+          "channel": "front_panel",
+          "event": "turn_data_wheel",
+          "mode": "trim",
+          "selected_fields": [
+            "start",
+            "end"
+          ],
+          "policy": "start clamps to 0..=end_frame; end clamps to start_frame..=length_frames-1"
+        },
+        {
+          "channel": "pads_or_midi_or_sequence",
+          "event": "sample_playback_intent",
+          "effect": "captures current or recorded trim window"
+        }
+      ],
+      "expected_outputs": {
+        "state": {
+          "sample_trim_model": "program.sample_trims contains SampleTrim entries keyed by sample_id",
+          "default_window": "missing trim entry resolves to 0..=length_frames-1",
+          "selected_trim_edit_field": "machine.selected_trim_edit_field persists with serde-default Start",
+          "validation": "selected sample id must resolve when present; trim sample ids must be unique, non-empty, known, in range, and non-inverted"
+        },
+        "outputs": [
+          "SampleTrimChanged with sample_id, start_frame, end_frame, window_length_frames, and selected_field",
+          "LcdChanged after successful trim edits",
+          "Ignored for zero delta or trim boundary no-ops"
+        ],
+        "lcd": {
+          "trim": "selected field, start frame, end frame, window length, source pad, and metadata-only/no-waveform notice"
+        },
+        "playback": {
+          "intent": "SamplePlaybackIntent includes start_frame, end_frame, and window_length_frames for pad strikes, MIDI note-on, and restored sequence playback",
+          "recording": "recorded SequenceEvent playback metadata preserves the trim window after later edits"
+        },
+        "render": {
+          "summary": "AudioRenderSummary includes start_frame, end_frame, and window_length_frames",
+          "loaded_audio_byte_count": 0
+        },
+        "desktop": {
+          "status": "SAMPLE/TRIM status exposes selected sample trim window; TRIM status exposes selected field"
+        }
+      },
+      "tolerance": null,
+      "fixture_refs": [
+        "crates/mpc_core/tests/core_flow.rs",
+        "crates/mpc_audio/src/lib.rs",
+        "crates/mpc_conformance/tests/fixtures/sample_trim_edit_round_trip.json"
+      ],
+      "conflict_notes": [
+        "No real audio import is implemented.",
+        "No waveform editing is implemented.",
+        "No destructive crop is implemented.",
+        "No MPC file-format claims are made.",
+        "No JJ-OS parity is claimed.",
         "No WAV bytes, factory samples, manuals, service scans, firmware bytes, JJ-OS assets, or copied third-party code are stored in the repo."
       ]
     },

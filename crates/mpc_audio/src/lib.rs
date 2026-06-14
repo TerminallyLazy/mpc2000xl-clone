@@ -1,5 +1,5 @@
 use mpc_core::{PadBank, SamplePlaybackIntent};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::VecDeque;
 
 pub const DEFAULT_SAMPLE_RATE_HZ: u32 = 44_100;
@@ -148,7 +148,7 @@ pub enum ChannelBalance {
     Right,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct AudioRenderSummary {
     pub sample_rate_hz: u32,
     pub frame_count: usize,
@@ -163,12 +163,86 @@ pub struct AudioRenderSummary {
     pub level: u8,
     pub pan: i8,
     pub tune_cents: i16,
+    pub start_frame: u32,
+    pub end_frame: u32,
+    pub window_length_frames: u32,
     pub peak_left: i16,
     pub peak_right: i16,
     pub peak_amplitude: i16,
     pub channel_balance: ChannelBalance,
     pub source_kind: AudioSourceKind,
     pub loaded_audio_byte_count: usize,
+}
+
+impl<'de> Deserialize<'de> for AudioRenderSummary {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct AudioRenderSummaryData {
+            sample_rate_hz: u32,
+            frame_count: usize,
+            source_sample_id: String,
+            source_sample_name: String,
+            selected_track: u8,
+            program_index: u8,
+            program_name: String,
+            bank: PadBank,
+            pad_number: u8,
+            velocity: u8,
+            level: u8,
+            pan: i8,
+            tune_cents: i16,
+            #[serde(default)]
+            start_frame: Option<u32>,
+            #[serde(default)]
+            end_frame: Option<u32>,
+            #[serde(default)]
+            window_length_frames: Option<u32>,
+            peak_left: i16,
+            peak_right: i16,
+            peak_amplitude: i16,
+            channel_balance: ChannelBalance,
+            source_kind: AudioSourceKind,
+            loaded_audio_byte_count: usize,
+        }
+
+        let data = AudioRenderSummaryData::deserialize(deserializer)?;
+        let default_window_length_frames = u32::try_from(data.frame_count).unwrap_or(u32::MAX);
+        let default_end_frame = data
+            .frame_count
+            .checked_sub(1)
+            .and_then(|frame| u32::try_from(frame).ok())
+            .unwrap_or(0);
+
+        Ok(Self {
+            sample_rate_hz: data.sample_rate_hz,
+            frame_count: data.frame_count,
+            source_sample_id: data.source_sample_id,
+            source_sample_name: data.source_sample_name,
+            selected_track: data.selected_track,
+            program_index: data.program_index,
+            program_name: data.program_name,
+            bank: data.bank,
+            pad_number: data.pad_number,
+            velocity: data.velocity,
+            level: data.level,
+            pan: data.pan,
+            tune_cents: data.tune_cents,
+            start_frame: data.start_frame.unwrap_or(0),
+            end_frame: data.end_frame.unwrap_or(default_end_frame),
+            window_length_frames: data
+                .window_length_frames
+                .unwrap_or(default_window_length_frames),
+            peak_left: data.peak_left,
+            peak_right: data.peak_right,
+            peak_amplitude: data.peak_amplitude,
+            channel_balance: data.channel_balance,
+            source_kind: data.source_kind,
+            loaded_audio_byte_count: data.loaded_audio_byte_count,
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -693,16 +767,24 @@ pub fn render_intent(
 ) -> Result<RenderedAudio, AudioRenderError> {
     settings.validate()?;
 
+    let render_frame_count = settings
+        .frame_count
+        .min(usize::try_from(intent.window_length_frames).unwrap_or(usize::MAX));
+    let render_settings = AudioRenderSettings {
+        sample_rate_hz: settings.sample_rate_hz,
+        frame_count: render_frame_count,
+    };
     let seed = stable_seed(intent);
     let mono_peak = scaled_mono_peak(intent.velocity, intent.level);
     let pan = intent.pan.clamp(-PAN_RANGE, PAN_RANGE);
     let (left_gain, right_gain) = stereo_gains(pan);
-    let mut frames = Vec::with_capacity(settings.frame_count);
+    let mut frames = Vec::with_capacity(render_frame_count);
     let mut peak_left = 0_i16;
     let mut peak_right = 0_i16;
 
-    for frame_index in 0..settings.frame_count {
-        let wave = seeded_square_wave(seed, frame_index, intent.tune_cents);
+    for frame_index in 0..render_frame_count {
+        let source_frame_index = frame_index.saturating_add(intent.start_frame as usize);
+        let wave = seeded_square_wave(seed, source_frame_index, intent.tune_cents);
         let mono = wave * mono_peak / 255;
         let left = clamp_i16(mono * left_gain / 100);
         let right = clamp_i16(mono * right_gain / 100);
@@ -715,8 +797,8 @@ pub fn render_intent(
     let peak_amplitude = peak_left.max(peak_right);
     let channel_balance = channel_balance(peak_left, peak_right);
     let summary = AudioRenderSummary {
-        sample_rate_hz: settings.sample_rate_hz,
-        frame_count: settings.frame_count,
+        sample_rate_hz: render_settings.sample_rate_hz,
+        frame_count: render_settings.frame_count,
         source_sample_id: intent.sample_id.clone(),
         source_sample_name: intent.sample_name.clone(),
         selected_track: intent.selected_track,
@@ -728,6 +810,9 @@ pub fn render_intent(
         level: intent.level,
         pan: intent.pan,
         tune_cents: intent.tune_cents,
+        start_frame: intent.start_frame,
+        end_frame: intent.end_frame,
+        window_length_frames: intent.window_length_frames,
         peak_left,
         peak_right,
         peak_amplitude,
@@ -737,7 +822,7 @@ pub fn render_intent(
     };
 
     Ok(RenderedAudio {
-        settings,
+        settings: render_settings,
         summary,
         frames,
     })
@@ -903,6 +988,55 @@ mod tests {
         assert_eq!(rendered.settings.sample_rate_hz, 32_000);
         assert_eq!(rendered.summary.sample_rate_hz, 32_000);
         assert_eq!(rendered.summary.frame_count, 17);
+    }
+
+    #[test]
+    fn render_is_clipped_to_trim_window() {
+        let mut intent = test_intent(100, 100, 0);
+        intent.start_frame = 10;
+        intent.end_frame = 12;
+        intent.window_length_frames = 3;
+
+        let rendered = render(&intent, settings(44_100, 16));
+
+        assert_eq!(rendered.frames.len(), 3);
+        assert_eq!(rendered.settings.frame_count, 3);
+        assert_eq!(rendered.summary.frame_count, 3);
+        assert_eq!(rendered.summary.start_frame, 10);
+        assert_eq!(rendered.summary.end_frame, 12);
+        assert_eq!(rendered.summary.window_length_frames, 3);
+    }
+
+    #[test]
+    fn audio_render_summary_deserializes_legacy_windowless_json() {
+        let json = r#"{
+            "sample_rate_hz": 44100,
+            "frame_count": 24,
+            "source_sample_id": "synthetic_a_04",
+            "source_sample_name": "SYN-A04",
+            "selected_track": 1,
+            "program_index": 1,
+            "program_name": "Program01",
+            "bank": "a",
+            "pad_number": 4,
+            "velocity": 100,
+            "level": 100,
+            "pan": 0,
+            "tune_cents": 0,
+            "peak_left": 1000,
+            "peak_right": 1000,
+            "peak_amplitude": 1000,
+            "channel_balance": "center",
+            "source_kind": "rights_safe_generated",
+            "loaded_audio_byte_count": 0
+        }"#;
+
+        let summary: AudioRenderSummary =
+            serde_json::from_str(json).expect("legacy summary should deserialize");
+
+        assert_eq!(summary.start_frame, 0);
+        assert_eq!(summary.end_frame, 23);
+        assert_eq!(summary.window_length_frames, 24);
     }
 
     #[test]
@@ -1249,6 +1383,9 @@ mod tests {
             level,
             pan,
             tune_cents,
+            start_frame: 0,
+            end_frame: 51_599,
+            window_length_frames: 51_600,
         }
     }
 

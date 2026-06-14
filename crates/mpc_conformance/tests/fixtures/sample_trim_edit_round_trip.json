@@ -1,0 +1,189 @@
+{
+  "id": "core.sample.trim-edit-round-trip",
+  "name": "TRIM edits a generated sample playback window, persists it, and replays the recorded window after restore",
+  "source_refs": [
+    "docs/superpowers/plans/2026-06-13-mpc2000xl-sample-trim-window.md#source-and-evidence-status",
+    "docs/superpowers/plans/2026-06-13-mpc2000xl-sample-catalog-navigation.md#source-and-evidence-status",
+    "docs/superpowers/specs/2026-06-13-mpc2000xl-full-app-product-design.md#rights-and-source-boundary"
+  ],
+  "events": [
+    {
+      "type": "press",
+      "control": "trim"
+    },
+    {
+      "type": "turn_data_wheel",
+      "delta": 123
+    },
+    {
+      "type": "press",
+      "control": "cursor_right"
+    },
+    {
+      "type": "turn_data_wheel",
+      "delta": -23
+    },
+    {
+      "type": "press",
+      "control": "rec"
+    },
+    {
+      "type": "press",
+      "control": "play"
+    },
+    {
+      "type": "tick",
+      "micros": 500000
+    },
+    {
+      "type": "strike_pad",
+      "bank": "a",
+      "pad": 1,
+      "velocity": 92
+    },
+    {
+      "type": "press",
+      "control": "stop"
+    }
+  ],
+  "expect": {
+    "mode": "trim",
+    "lcd_title": "TRIM",
+    "playing": false,
+    "recording": false,
+    "event_count": 9,
+    "playhead_ticks": 96,
+    "recorded_event_count": 1,
+    "selected_sample_index": 1,
+    "sample_catalog_count": 64,
+    "selected_sample_id": "synthetic_a_01",
+    "selected_sample_name": "SYN-A01",
+    "selected_trim_edit_field": "end",
+    "selected_sample_start_frame": 123,
+    "selected_sample_end_frame": 47976,
+    "selected_sample_window_length_frames": 47854,
+    "last_recorded_sample_id": "synthetic_a_01",
+    "last_recorded_sample_name": "SYN-A01",
+    "last_playback": {
+      "type": "intent",
+      "intent": {
+        "selected_track": 1,
+        "program_index": 1,
+        "program_name": "Program01",
+        "bank": "a",
+        "pad_number": 1,
+        "sample_id": "synthetic_a_01",
+        "sample_name": "SYN-A01",
+        "velocity": 92,
+        "level": 100,
+        "pan": 0,
+        "tune_cents": 0,
+        "start_frame": 123,
+        "end_frame": 47976,
+        "window_length_frames": 47854
+      }
+    },
+    "last_audio_render": {
+      "settings": {
+        "sample_rate_hz": 44100,
+        "frame_count": 64
+      },
+      "sample_rate_hz": 44100,
+      "frame_count": 64,
+      "source_sample_id": "synthetic_a_01",
+      "source_sample_name": "SYN-A01",
+      "selected_track": 1,
+      "program_index": 1,
+      "program_name": "Program01",
+      "bank": "a",
+      "pad_number": 1,
+      "tune_cents": 0,
+      "start_frame": 123,
+      "end_frame": 47976,
+      "window_length_frames": 47854,
+      "peak_left": 18690,
+      "peak_right": 18690,
+      "peak_amplitude": 18690,
+      "channel_balance": "center",
+      "source_kind": "rights_safe_generated",
+      "loaded_audio_byte_count": 0
+    }
+  },
+  "project_round_trip": {
+    "expect_snapshot_version": 1,
+    "restore_playhead_ticks": 0,
+    "restore_playhead_tick_remainder": 0,
+    "clear_last_playback_before_restore": true,
+    "post_restore_events": [
+      {
+        "type": "press",
+        "control": "play"
+      },
+      {
+        "type": "tick",
+        "micros": 500000
+      }
+    ],
+    "expect": {
+      "mode": "trim",
+      "lcd_title": "TRIM",
+      "playing": true,
+      "recording": false,
+      "event_count": 11,
+      "playhead_ticks": 96,
+      "recorded_event_count": 1,
+      "selected_sample_index": 1,
+      "sample_catalog_count": 64,
+      "selected_sample_id": "synthetic_a_01",
+      "selected_sample_name": "SYN-A01",
+      "selected_trim_edit_field": "end",
+      "selected_sample_start_frame": 123,
+      "selected_sample_end_frame": 47976,
+      "selected_sample_window_length_frames": 47854,
+      "last_playback": {
+        "type": "intent",
+        "intent": {
+          "selected_track": 1,
+          "program_index": 1,
+          "program_name": "Program01",
+          "bank": "a",
+          "pad_number": 1,
+          "sample_id": "synthetic_a_01",
+          "sample_name": "SYN-A01",
+          "velocity": 92,
+          "level": 100,
+          "pan": 0,
+          "tune_cents": 0,
+          "start_frame": 123,
+          "end_frame": 47976,
+          "window_length_frames": 47854
+        }
+      },
+      "last_audio_render": {
+        "settings": {
+          "sample_rate_hz": 44100,
+          "frame_count": 64
+        },
+        "sample_rate_hz": 44100,
+        "frame_count": 64,
+        "source_sample_id": "synthetic_a_01",
+        "source_sample_name": "SYN-A01",
+        "selected_track": 1,
+        "program_index": 1,
+        "program_name": "Program01",
+        "bank": "a",
+        "pad_number": 1,
+        "tune_cents": 0,
+        "start_frame": 123,
+        "end_frame": 47976,
+        "window_length_frames": 47854,
+        "peak_left": 18690,
+        "peak_right": 18690,
+        "peak_amplitude": 18690,
+        "channel_balance": "center",
+        "source_kind": "rights_safe_generated",
+        "loaded_audio_byte_count": 0
+      }
+    }
+  }
+}

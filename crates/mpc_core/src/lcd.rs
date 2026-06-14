@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::events::{
     DiskOperation, MidiSettingsField, PadAssignment, Program, ProgramEditField, ProgramPad,
-    SampleCatalogEntry, SetupField, SetupPreferences, SongEditField, SongStep,
+    SampleCatalogEntry, SetupField, SetupPreferences, SongEditField, SongStep, TrimEditField,
 };
 use crate::state::MainScreenField;
 
@@ -258,25 +258,34 @@ impl LcdFrame {
         }
     }
 
-    pub fn trim_screen(selected_sample: Option<&SampleCatalogEntry>) -> Self {
+    pub fn trim_screen(
+        selected_sample: Option<&SampleCatalogEntry>,
+        selected_field: TrimEditField,
+    ) -> Self {
+        let marker = |field| {
+            if selected_field == field { ">" } else { " " }
+        };
         match selected_sample {
             Some(entry) => Self {
                 title: "TRIM".to_string(),
                 lines: [
                     format!(
-                        "Trim {:02}/{:02} {}",
+                        "Trim {:02}/{:02} {} Edit {}",
                         entry.index.min(99),
                         entry.count.min(99),
-                        entry.sample.name
+                        entry.sample.name,
+                        selected_field.label()
                     ),
                     format!(
-                        "Start {:06} End {:06}",
+                        "{}Start {:06} {}End {:06}",
+                        marker(TrimEditField::Start),
                         entry.start_frame.min(999_999),
+                        marker(TrimEditField::End),
                         entry.end_frame.min(999_999)
                     ),
                     format!(
-                        "Len {:06} Src {}",
-                        entry.length_frames.min(999_999),
+                        "Window {:06} Src {}",
+                        entry.window_length_frames.min(999_999),
                         pad_label(entry.source_pad)
                     ),
                     "Metadata only - no waveform".to_string(),
@@ -286,9 +295,9 @@ impl LcdFrame {
             None => Self {
                 title: "TRIM".to_string(),
                 lines: [
-                    "Trim 00/00 empty catalog".to_string(),
-                    "Start ------ End ------".to_string(),
-                    "Len ------ Src --".to_string(),
+                    format!("Trim 00/00 empty catalog Edit {}", selected_field.label()),
+                    ">Start ------  End ------".to_string(),
+                    "Window ------ Src --".to_string(),
                     "Metadata only - no waveform".to_string(),
                 ],
                 soft_keys: trim_soft_keys(),

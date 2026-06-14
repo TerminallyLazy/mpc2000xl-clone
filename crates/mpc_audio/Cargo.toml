@@ -9,3 +9,6 @@ authors.workspace = true
 [dependencies]
 mpc_core = { path = "../mpc_core" }
 serde.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true

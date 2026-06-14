@@ -6,7 +6,7 @@ use mpc_audio::{
 use mpc_core::{
     DiskOperation, HardwareEvent, MachineOutput, MidiSettingsField, Mode, MpcCore, MpcState,
     PadAssignmentChange, PadBank, PanelControl, ProgramPad, SampleCatalogEntry,
-    SamplePlaybackResolution, SetupPreferences,
+    SamplePlaybackIntent, SamplePlaybackResolution, SetupPreferences,
 };
 use mpc_storage::{
     DEFAULT_PROJECT_FILE_PATH, load_project_file_with_report,
@@ -518,8 +518,31 @@ impl MpcDesktopApp {
             .iter()
             .find(|output| matches!(output, MachineOutput::MidiNoteMapped { .. }))
         {
+            let playback = playback_intent_from_outputs(outputs)
+                .map(|intent| format!(" {}", playback_intent_status_text(intent)))
+                .unwrap_or_default();
             return format!(
-                "MIDI ch {channel} note {note} -> {bank:?}{pad:02} velocity {velocity}"
+                "MIDI ch {channel} note {note} -> {bank:?}{pad:02} velocity {velocity}{playback}"
+            );
+        }
+
+        if let Some(MachineOutput::SampleTrimChanged {
+            sample_id,
+            start_frame,
+            end_frame,
+            window_length_frames,
+            selected_field,
+        }) = outputs
+            .iter()
+            .find(|output| matches!(output, MachineOutput::SampleTrimChanged { .. }))
+        {
+            return format!(
+                "TRIM {} {}={}..{} window {} frames",
+                sample_id,
+                selected_field.label(),
+                start_frame,
+                end_frame,
+                window_length_frames
             );
         }
 
@@ -591,7 +614,7 @@ impl MpcDesktopApp {
             let sample = event
                 .playback
                 .as_ref()
-                .map(|intent| format!(" sample {}", intent.sample_name))
+                .map(|intent| format!(" {}", playback_intent_status_text(intent)))
                 .unwrap_or_else(|| " unassigned".to_string());
             return format!(
                 "Recorded Trk {:02} {:?}{:02} velocity {} at tick {}{} ({} events)",
@@ -665,7 +688,7 @@ impl MpcDesktopApp {
             let sample = event
                 .playback
                 .as_ref()
-                .map(|intent| format!(" sample {}", intent.sample_name))
+                .map(|intent| format!(" {}", playback_intent_status_text(intent)))
                 .unwrap_or_else(|| " unassigned".to_string());
             return format!(
                 "Played Trk {:02} {:?}{:02} velocity {} at tick {}{}",
@@ -683,14 +706,10 @@ impl MpcDesktopApp {
             .find(|output| matches!(output, MachineOutput::SamplePlaybackIntent { .. }))
         {
             return format!(
-                "Playback intent Trk {:02} Pgm {:02} {:?}{:02} {} velocity {} tune {}",
+                "Playback intent Trk {:02} Pgm {:02} {}",
                 intent.selected_track,
                 intent.program_index,
-                intent.bank,
-                intent.pad_number,
-                intent.sample_name,
-                intent.velocity,
-                tune_text(intent.tune_cents)
+                playback_intent_status_text(intent)
             );
         }
 
@@ -1023,6 +1042,8 @@ impl MpcDesktopApp {
         let selected_sample = state.selected_sample();
         let sample_text = selected_sample_text(selected_sample.as_ref());
         let sample_mode = matches!(state.mode, Mode::Sample | Mode::Trim);
+        let trim_mode = state.mode == Mode::Trim;
+        let selected_trim_edit_field = state.selected_trim_edit_field;
 
         ui.horizontal_wrapped(|ui| {
             ui.label(sample_text);
@@ -1033,10 +1054,44 @@ impl MpcDesktopApp {
                 .add_enabled(sample_mode, egui::Button::new("Prev sample"))
                 .clicked()
             {
-                self.dispatch_event(HardwareEvent::TurnDataWheel { delta: -1 });
+                self.dispatch_event(HardwareEvent::Press {
+                    control: PanelControl::SoftKey(1),
+                });
             }
             if ui
                 .add_enabled(sample_mode, egui::Button::new("Next sample"))
+                .clicked()
+            {
+                self.dispatch_event(HardwareEvent::Press {
+                    control: PanelControl::SoftKey(2),
+                });
+            }
+            ui.separator();
+            ui.label(format!("TRIM field {}", selected_trim_edit_field.label()));
+            if ui
+                .add_enabled(trim_mode, egui::Button::new("Field <"))
+                .clicked()
+            {
+                self.dispatch_event(HardwareEvent::Press {
+                    control: PanelControl::CursorLeft,
+                });
+            }
+            if ui
+                .add_enabled(trim_mode, egui::Button::new("Field >"))
+                .clicked()
+            {
+                self.dispatch_event(HardwareEvent::Press {
+                    control: PanelControl::CursorRight,
+                });
+            }
+            if ui
+                .add_enabled(trim_mode, egui::Button::new("Trim -"))
+                .clicked()
+            {
+                self.dispatch_event(HardwareEvent::TurnDataWheel { delta: -1 });
+            }
+            if ui
+                .add_enabled(trim_mode, egui::Button::new("Trim +"))
                 .clicked()
             {
                 self.dispatch_event(HardwareEvent::TurnDataWheel { delta: 1 });
@@ -1148,11 +1203,19 @@ fn main_screen_status(state: &MpcState) -> String {
             state.selected_program_edit_field.label(),
             selected_assignment_text(state)
         ),
-        Mode::Sample | Mode::Trim => format!(
-            "LCD updated: {:?}, {}",
-            state.mode,
-            selected_sample_text(state.selected_sample().as_ref())
-        ),
+        Mode::Sample | Mode::Trim => {
+            let trim_field = if state.mode == Mode::Trim {
+                format!(" field {}", state.selected_trim_edit_field.label())
+            } else {
+                String::new()
+            };
+            format!(
+                "LCD updated: {:?}{}, {}",
+                state.mode,
+                trim_field,
+                selected_sample_text(state.selected_sample().as_ref())
+            )
+        }
         Mode::Song => {
             let step = state.song_steps[state.selected_song_step_index];
             format!(
@@ -1220,12 +1283,15 @@ fn selected_assignment_text(state: &MpcState) -> String {
 fn selected_sample_text(selected_sample: Option<&SampleCatalogEntry>) -> String {
     match selected_sample {
         Some(entry) => format!(
-            "Sample: {:02}/{:02} {} {} len {} frames",
+            "Sample: {:02}/{:02} {} {} len {} frames trim {}..{} window {}",
             entry.index.min(99),
             entry.count.min(99),
             entry.sample.name,
             program_pad_label(entry.source_pad),
-            entry.length_frames
+            entry.length_frames,
+            entry.start_frame,
+            entry.end_frame,
+            entry.window_length_frames
         ),
         None => "Sample: empty catalog".to_string(),
     }
@@ -1265,14 +1331,17 @@ fn last_playback_text(state: &MpcState) -> String {
 fn playback_resolution_text(resolution: &SamplePlaybackResolution) -> String {
     match resolution {
         SamplePlaybackResolution::Intent { intent } => format!(
-            "Last playback: {} {} vel {} tune {}",
+            "Last playback: {} {} vel {} tune {} trim {}..{} window {}",
             program_pad_label(ProgramPad {
                 bank: intent.bank,
                 pad_number: intent.pad_number,
             }),
             intent.sample_name,
             intent.velocity,
-            tune_text(intent.tune_cents)
+            tune_text(intent.tune_cents),
+            intent.start_frame,
+            intent.end_frame,
+            intent.window_length_frames
         ),
         SamplePlaybackResolution::Miss { miss } => format!(
             "Last playback: {} {:?}",
@@ -1285,14 +1354,38 @@ fn playback_resolution_text(resolution: &SamplePlaybackResolution) -> String {
     }
 }
 
+fn playback_intent_status_text(intent: &SamplePlaybackIntent) -> String {
+    format!(
+        "{:?}{:02} {} velocity {} tune {} trim {}..{} ({} frames)",
+        intent.bank,
+        intent.pad_number,
+        intent.sample_name,
+        intent.velocity,
+        tune_text(intent.tune_cents),
+        intent.start_frame,
+        intent.end_frame,
+        intent.window_length_frames
+    )
+}
+
+fn playback_intent_from_outputs(outputs: &[MachineOutput]) -> Option<&SamplePlaybackIntent> {
+    outputs.iter().find_map(|output| match output {
+        MachineOutput::SamplePlaybackIntent { intent } => Some(intent),
+        _ => None,
+    })
+}
+
 fn last_synthetic_render_text(summary: Option<&AudioRenderSummary>, error: Option<&str>) -> String {
     match (summary, error) {
         (_, Some(error)) => error.to_string(),
         (Some(summary), None) => format!(
-            "Synthetic render: {} {} frames @ {} Hz tune {} peak L{} R{} balance {:?}",
+            "Synthetic render: {} {} frames @ {} Hz trim {}..{} window {} tune {} peak L{} R{} balance {:?}",
             summary.source_sample_name,
             summary.frame_count,
             summary.sample_rate_hz,
+            summary.start_frame,
+            summary.end_frame,
+            summary.window_length_frames,
             tune_text(summary.tune_cents),
             summary.peak_left,
             summary.peak_right,

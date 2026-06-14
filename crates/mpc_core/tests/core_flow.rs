@@ -3,8 +3,8 @@ use mpc_core::{
     Mode, MpcCore, PROJECT_SNAPSHOT_VERSION, PadAssignment, PadAssignmentChange, PadBank,
     PanelControl, PlaybackMissReason, ProgramEditField, ProgramPad, ProjectSetupSnapshot,
     ProjectSnapshot, ProjectSnapshotError, ProjectSongSnapshot, SamplePlaybackIntent,
-    SamplePlaybackResolution, SequenceEvent, SetupField, SetupPreferences, SongEditField, SongStep,
-    SyntheticSample, sequence_length_ticks_for_bars,
+    SamplePlaybackResolution, SampleTrim, SequenceEvent, SetupField, SetupPreferences,
+    SongEditField, SongStep, SyntheticSample, TrimEditField, sequence_length_ticks_for_bars,
 };
 
 #[test]
@@ -492,9 +492,486 @@ fn sample_catalog_output_serializes_with_stable_shape() {
                 },
                 "start_frame": 0,
                 "end_frame": 67199,
+                "window_length_frames": 67200,
                 "length_frames": 67200
             }
         })
+    );
+}
+
+#[test]
+fn trim_default_window_is_visible_and_selected_field_defaults_to_start() {
+    let mut core = MpcCore::new();
+
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::Trim,
+    });
+
+    let selected = core
+        .state()
+        .selected_sample()
+        .expect("default selected sample should resolve");
+    assert_eq!(core.state().selected_trim_edit_field, TrimEditField::Start);
+    assert_eq!(selected.sample.id, "synthetic_a_01");
+    assert_eq!(selected.start_frame, 0);
+    assert_eq!(selected.end_frame, 47_999);
+    assert_eq!(selected.window_length_frames, 48_000);
+    assert_eq!(selected.length_frames, 48_000);
+    assert!(core.state().lcd.lines[0].contains("Edit start"));
+    assert!(core.state().lcd.lines[1].contains(">Start 000000"));
+    assert!(core.state().lcd.lines[1].contains(" End 047999"));
+    assert!(core.state().lcd.lines[2].contains("Window 048000"));
+}
+
+#[test]
+fn trim_cursor_left_right_selects_start_end_without_sample_mode_navigation() {
+    let mut core = MpcCore::new();
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::Sample,
+    });
+
+    let sample_outputs = core.dispatch(HardwareEvent::Press {
+        control: PanelControl::CursorRight,
+    });
+
+    assert_eq!(
+        core.state().selected_sample_id.as_deref(),
+        Some("synthetic_a_01")
+    );
+    assert_eq!(core.state().selected_trim_edit_field, TrimEditField::Start);
+    assert_eq!(
+        sample_outputs,
+        vec![MachineOutput::Ignored {
+            reason: "sample.cursor_right_unmapped".to_string()
+        }]
+    );
+
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::Trim,
+    });
+    let right_outputs = core.dispatch(HardwareEvent::Press {
+        control: PanelControl::CursorRight,
+    });
+    assert_eq!(core.state().selected_trim_edit_field, TrimEditField::End);
+    assert_eq!(
+        core.state().selected_sample_id.as_deref(),
+        Some("synthetic_a_01")
+    );
+    assert_eq!(right_outputs, vec![MachineOutput::LcdChanged]);
+    assert!(core.state().lcd.lines[0].contains("Edit end"));
+    assert!(core.state().lcd.lines[1].contains(">End 047999"));
+
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::CursorLeft,
+    });
+    assert_eq!(core.state().selected_trim_edit_field, TrimEditField::Start);
+}
+
+#[test]
+fn trim_data_wheel_edits_start_end_with_clamps_and_stable_output_shape() {
+    let mut core = MpcCore::new();
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::Trim,
+    });
+
+    let outputs = core.dispatch(HardwareEvent::TurnDataWheel { delta: 12 });
+
+    assert_eq!(
+        outputs,
+        vec![
+            MachineOutput::SampleTrimChanged {
+                sample_id: "synthetic_a_01".to_string(),
+                start_frame: 12,
+                end_frame: 47_999,
+                window_length_frames: 47_988,
+                selected_field: TrimEditField::Start,
+            },
+            MachineOutput::LcdChanged,
+        ]
+    );
+    let selected = core.state().selected_sample().unwrap();
+    assert_eq!(selected.start_frame, 12);
+    assert_eq!(selected.end_frame, 47_999);
+    assert_eq!(selected.window_length_frames, 47_988);
+    assert_eq!(
+        serde_json::to_value(&outputs[0]).expect("trim output should serialize"),
+        serde_json::json!({
+            "type": "sample_trim_changed",
+            "sample_id": "synthetic_a_01",
+            "start_frame": 12,
+            "end_frame": 47999,
+            "window_length_frames": 47988,
+            "selected_field": "start"
+        })
+    );
+
+    let outputs = core.dispatch(HardwareEvent::TurnDataWheel { delta: -99 });
+    assert_eq!(
+        outputs,
+        vec![
+            MachineOutput::SampleTrimChanged {
+                sample_id: "synthetic_a_01".to_string(),
+                start_frame: 0,
+                end_frame: 47_999,
+                window_length_frames: 48_000,
+                selected_field: TrimEditField::Start,
+            },
+            MachineOutput::LcdChanged,
+        ]
+    );
+    assert!(core.state().current_program.pad_assignments.len() == 64);
+    assert!(core.state().selected_sample().unwrap().start_frame == 0);
+
+    assert_eq!(
+        core.dispatch(HardwareEvent::TurnDataWheel { delta: -1 }),
+        vec![MachineOutput::Ignored {
+            reason: "trim.start.boundary".to_string()
+        }]
+    );
+    assert_eq!(
+        core.dispatch(HardwareEvent::TurnDataWheel { delta: 0 }),
+        vec![MachineOutput::Ignored {
+            reason: "trim.start.zero_delta_ignored".to_string()
+        }]
+    );
+
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::CursorRight,
+    });
+    let outputs = core.dispatch(HardwareEvent::TurnDataWheel { delta: -10 });
+    assert_eq!(
+        outputs,
+        vec![
+            MachineOutput::SampleTrimChanged {
+                sample_id: "synthetic_a_01".to_string(),
+                start_frame: 0,
+                end_frame: 47_989,
+                window_length_frames: 47_990,
+                selected_field: TrimEditField::End,
+            },
+            MachineOutput::LcdChanged,
+        ]
+    );
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::CursorLeft,
+    });
+    core.dispatch(HardwareEvent::TurnDataWheel { delta: 100_000 });
+    let selected = core.state().selected_sample().unwrap();
+    assert_eq!(selected.start_frame, 47_989);
+    assert_eq!(selected.end_frame, 47_989);
+    assert_eq!(selected.window_length_frames, 1);
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::CursorRight,
+    });
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::CursorRight,
+    });
+    assert_eq!(
+        core.dispatch(HardwareEvent::TurnDataWheel { delta: -1 }),
+        vec![MachineOutput::Ignored {
+            reason: "trim.end.boundary".to_string()
+        }]
+    );
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::CursorLeft,
+    });
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::CursorLeft,
+    });
+    assert_eq!(
+        core.dispatch(HardwareEvent::TurnDataWheel { delta: -1 }),
+        vec![
+            MachineOutput::SampleTrimChanged {
+                sample_id: "synthetic_a_01".to_string(),
+                start_frame: 47_988,
+                end_frame: 47_989,
+                window_length_frames: 2,
+                selected_field: TrimEditField::Start,
+            },
+            MachineOutput::LcdChanged,
+        ]
+    );
+}
+
+#[test]
+fn sample_mode_wheel_navigates_and_trim_soft_keys_navigate_without_trim_mutation() {
+    let mut core = MpcCore::new();
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::Sample,
+    });
+    core.dispatch(HardwareEvent::TurnDataWheel { delta: 1 });
+
+    assert_eq!(
+        core.state().selected_sample_id.as_deref(),
+        Some("synthetic_a_02")
+    );
+    assert_eq!(core.state().selected_sample().unwrap().start_frame, 0);
+
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::Trim,
+    });
+    core.dispatch(HardwareEvent::TurnDataWheel { delta: 5 });
+    assert_eq!(core.state().selected_sample().unwrap().start_frame, 5);
+
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::SoftKey(2),
+    });
+    assert_eq!(
+        core.state().selected_sample_id.as_deref(),
+        Some("synthetic_a_03")
+    );
+    assert_eq!(core.state().selected_sample().unwrap().start_frame, 0);
+
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::SoftKey(1),
+    });
+    assert_eq!(
+        core.state().selected_sample_id.as_deref(),
+        Some("synthetic_a_02")
+    );
+    assert_eq!(core.state().selected_sample().unwrap().start_frame, 5);
+}
+
+#[test]
+fn trim_window_is_carried_by_pad_strike_and_midi_note_on_playback_intents() {
+    let mut core = MpcCore::new();
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::Trim,
+    });
+    core.dispatch(HardwareEvent::TurnDataWheel { delta: 11 });
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::CursorRight,
+    });
+    core.dispatch(HardwareEvent::TurnDataWheel { delta: -7 });
+
+    let pad_outputs = core.dispatch(HardwareEvent::StrikePad {
+        bank: PadBank::A,
+        pad: 1,
+        velocity: 90,
+    });
+    let pad_intent = playback_intents(&pad_outputs)
+        .into_iter()
+        .next()
+        .expect("pad strike should emit playback intent");
+    assert_eq!(pad_intent.start_frame, 11);
+    assert_eq!(pad_intent.end_frame, 47_992);
+    assert_eq!(pad_intent.window_length_frames, 47_982);
+
+    let midi_outputs = core.dispatch(HardwareEvent::MidiNoteOn {
+        channel: 1,
+        note: 36,
+        velocity: 91,
+    });
+    let midi_intent = playback_intents(&midi_outputs)
+        .into_iter()
+        .next()
+        .expect("midi note-on should emit playback intent");
+    assert_eq!(midi_intent.sample_id, "synthetic_a_01");
+    assert_eq!(midi_intent.start_frame, 11);
+    assert_eq!(midi_intent.end_frame, 47_992);
+    assert_eq!(midi_intent.window_length_frames, 47_982);
+}
+
+#[test]
+fn trim_recording_snapshots_window_and_restored_playback_uses_recorded_window() {
+    let mut core = MpcCore::new();
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::Trim,
+    });
+    core.dispatch(HardwareEvent::TurnDataWheel { delta: 10 });
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::Rec,
+    });
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::Play,
+    });
+    core.dispatch(HardwareEvent::Tick { micros: 500_000 });
+    core.dispatch(HardwareEvent::StrikePad {
+        bank: PadBank::A,
+        pad: 1,
+        velocity: 84,
+    });
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::Stop,
+    });
+
+    let recorded_playback = core.state().recorded_events[0]
+        .playback
+        .as_ref()
+        .expect("recorded event should snapshot playback");
+    assert_eq!(recorded_playback.start_frame, 10);
+    assert_eq!(recorded_playback.end_frame, 47_999);
+    assert_eq!(recorded_playback.window_length_frames, 47_990);
+
+    core.dispatch(HardwareEvent::TurnDataWheel { delta: 20 });
+    assert_eq!(core.state().selected_sample().unwrap().start_frame, 30);
+    assert_eq!(
+        core.state().recorded_events[0]
+            .playback
+            .as_ref()
+            .map(|intent| intent.start_frame),
+        Some(10)
+    );
+
+    let mut snapshot = core.export_project_snapshot();
+    reset_snapshot_playhead(&mut snapshot, 0);
+    let mut restored = restore_snapshot(snapshot);
+    restored.dispatch(HardwareEvent::Press {
+        control: PanelControl::Play,
+    });
+    let outputs = restored.dispatch(HardwareEvent::Tick { micros: 500_000 });
+    let intents = playback_intents(&outputs);
+
+    assert_eq!(intents.len(), 1);
+    assert_eq!(intents[0].start_frame, 10);
+    assert_eq!(intents[0].end_frame, 47_999);
+    assert_eq!(intents[0].window_length_frames, 47_990);
+    assert_eq!(
+        restored.state().selected_sample().unwrap().start_frame,
+        30,
+        "restored current trim should not rewrite recorded playback"
+    );
+}
+
+#[test]
+fn trim_project_snapshot_defaults_round_trips_and_validates_entries() {
+    let mut core = MpcCore::new();
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::Trim,
+    });
+    core.dispatch(HardwareEvent::TurnDataWheel { delta: 4 });
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::CursorRight,
+    });
+    core.dispatch(HardwareEvent::TurnDataWheel { delta: -6 });
+
+    let json = core.to_project_json().expect("trim snapshot should encode");
+    assert!(json.contains(r#""selected_trim_edit_field": "end""#));
+    assert!(json.contains(r#""sample_trims""#));
+    assert!(json.contains(r#""start_frame": 4"#));
+    assert!(json.contains(r#""end_frame": 47993"#));
+
+    let mut restored = MpcCore::new();
+    restored
+        .restore_project_json(&json)
+        .expect("trim snapshot should restore");
+    assert_eq!(restored.state().mode, Mode::Trim);
+    assert_eq!(
+        restored.state().selected_trim_edit_field,
+        TrimEditField::End
+    );
+    let selected = restored.state().selected_sample().unwrap();
+    assert_eq!(selected.start_frame, 4);
+    assert_eq!(selected.end_frame, 47_993);
+    assert_eq!(selected.window_length_frames, 47_990);
+
+    let mut older_value =
+        serde_json::to_value(MpcCore::new().export_project_snapshot()).expect("snapshot value");
+    older_value
+        .pointer_mut("/machine")
+        .unwrap()
+        .as_object_mut()
+        .unwrap()
+        .remove("selected_trim_edit_field");
+    older_value
+        .pointer_mut("/program")
+        .unwrap()
+        .as_object_mut()
+        .unwrap()
+        .remove("sample_trims");
+    let older_json = serde_json::to_string(&older_value).expect("older snapshot should encode");
+    let mut older = MpcCore::new();
+    older
+        .restore_project_json(&older_json)
+        .expect("older snapshot without trim fields should restore defaults");
+    assert_eq!(older.state().selected_trim_edit_field, TrimEditField::Start);
+    assert!(older.state().sample_trims.is_empty());
+    assert_eq!(older.state().selected_sample().unwrap().start_frame, 0);
+    assert_eq!(older.state().selected_sample().unwrap().end_frame, 47_999);
+
+    let invalid_cases = [
+        (
+            vec![SampleTrim {
+                sample_id: "".to_string(),
+                start_frame: 0,
+                end_frame: 1,
+            }],
+            "program.sample_trims[0].sample_id",
+            "must not be empty",
+        ),
+        (
+            vec![
+                SampleTrim {
+                    sample_id: "synthetic_a_01".to_string(),
+                    start_frame: 0,
+                    end_frame: 1,
+                },
+                SampleTrim {
+                    sample_id: "synthetic_a_01".to_string(),
+                    start_frame: 2,
+                    end_frame: 3,
+                },
+            ],
+            "program.sample_trims[1].sample_id",
+            "duplicate",
+        ),
+        (
+            vec![SampleTrim {
+                sample_id: "missing".to_string(),
+                start_frame: 0,
+                end_frame: 1,
+            }],
+            "program.sample_trims[0].sample_id",
+            "unknown sample id",
+        ),
+        (
+            vec![SampleTrim {
+                sample_id: "synthetic_a_01".to_string(),
+                start_frame: 0,
+                end_frame: 48_000,
+            }],
+            "program.sample_trims[0].end_frame",
+            "generated sample length",
+        ),
+        (
+            vec![SampleTrim {
+                sample_id: "synthetic_a_01".to_string(),
+                start_frame: 5,
+                end_frame: 4,
+            }],
+            "program.sample_trims[0].start_frame",
+            "<= end_frame",
+        ),
+    ];
+
+    for (sample_trims, expected_field, expected_message) in invalid_cases {
+        let mut snapshot = MpcCore::new().export_project_snapshot();
+        snapshot.program.sample_trims = sample_trims;
+        let mut invalid_core = MpcCore::new();
+        let error = invalid_core
+            .restore_project_snapshot(snapshot)
+            .expect_err("invalid sample trims should be rejected");
+        assert_invalid_project_field(error, expected_field, expected_message);
+    }
+
+    let mut invalid_selected = MpcCore::new().export_project_snapshot();
+    invalid_selected.machine.selected_sample_id = Some("missing".to_string());
+    let mut invalid_core = MpcCore::new();
+    let error = invalid_core
+        .restore_project_snapshot(invalid_selected)
+        .expect_err("unknown selected sample id should be rejected");
+    assert_invalid_project_field(error, "machine.selected_sample_id", "unknown sample id");
+
+    let mut value = serde_json::to_value(restored.export_project_snapshot())
+        .expect("trim snapshot should encode as value");
+    insert_extra_json_field(&mut value, "/program/sample_trims/0", "audio_bytes");
+    let json = serde_json::to_string(&value).expect("mutated trim JSON should encode");
+    let error = MpcCore::from_project_json(&json)
+        .expect_err("unknown nested trim JSON field should be rejected");
+    assert_invalid_project_field(
+        error,
+        "program.sample_trims[0].audio_bytes",
+        "unknown field",
     );
 }
 
@@ -4727,6 +5204,10 @@ fn sample_playback_intent_for_track_bank_pad(
     velocity: u8,
 ) -> SamplePlaybackIntent {
     let bank_label = bank.label();
+    let length_frames = mpc_core::generated_sample_length_frames(ProgramPad {
+        bank,
+        pad_number: pad,
+    });
     SamplePlaybackIntent {
         selected_track,
         program_index: 1,
@@ -4739,6 +5220,9 @@ fn sample_playback_intent_for_track_bank_pad(
         level: 100,
         pan: 0,
         tune_cents: 0,
+        start_frame: 0,
+        end_frame: length_frames.saturating_sub(1),
+        window_length_frames: length_frames,
     }
 }
 

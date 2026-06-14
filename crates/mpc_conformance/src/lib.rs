@@ -3,7 +3,7 @@ use mpc_audio::{AudioRenderSettings, AudioSourceKind, ChannelBalance, render_int
 use mpc_core::{
     DiskOperation, HardwareEvent, MachineOutput, MainScreenField, MidiSettingsField, Mode, MpcCore,
     MpcState, PROJECT_SNAPSHOT_VERSION, PadBank, ProgramEditField, ProgramPad,
-    SamplePlaybackResolution, SequenceEvent, SetupField, SongEditField, SongStep,
+    SamplePlaybackResolution, SequenceEvent, SetupField, SongEditField, SongStep, TrimEditField,
 };
 use serde::de::{self, Visitor};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -279,6 +279,14 @@ pub struct ExpectedState {
     #[serde(default)]
     pub selected_sample_name: Option<String>,
     #[serde(default)]
+    pub selected_trim_edit_field: Option<TrimEditField>,
+    #[serde(default)]
+    pub selected_sample_start_frame: Option<u32>,
+    #[serde(default)]
+    pub selected_sample_end_frame: Option<u32>,
+    #[serde(default)]
+    pub selected_sample_window_length_frames: Option<u32>,
+    #[serde(default)]
     pub last_playback: Option<SamplePlaybackResolution>,
     #[serde(default)]
     pub last_recorded_sample_id: Option<String>,
@@ -302,6 +310,12 @@ pub struct ExpectedAudioRender {
     pub pad_number: u8,
     #[serde(default)]
     pub tune_cents: i16,
+    #[serde(default)]
+    pub start_frame: Option<u32>,
+    #[serde(default)]
+    pub end_frame: Option<u32>,
+    #[serde(default)]
+    pub window_length_frames: Option<u32>,
     pub peak_left: i16,
     pub peak_right: i16,
     pub peak_amplitude: i16,
@@ -846,6 +860,49 @@ fn validate_expected_state(
         }
     }
 
+    if let Some(selected_trim_edit_field) = expected.selected_trim_edit_field {
+        if state.selected_trim_edit_field != selected_trim_edit_field {
+            details.push(format!(
+                "{prefix}selected_trim_edit_field mismatch: expected {:?}, got {:?}",
+                selected_trim_edit_field, state.selected_trim_edit_field
+            ));
+        }
+    }
+
+    if let Some(selected_sample_start_frame) = expected.selected_sample_start_frame {
+        let actual = selected_sample.as_ref().map(|entry| entry.start_frame);
+        if actual != Some(selected_sample_start_frame) {
+            details.push(format!(
+                "{prefix}selected_sample_start_frame mismatch: expected {}, got {:?}",
+                selected_sample_start_frame, actual
+            ));
+        }
+    }
+
+    if let Some(selected_sample_end_frame) = expected.selected_sample_end_frame {
+        let actual = selected_sample.as_ref().map(|entry| entry.end_frame);
+        if actual != Some(selected_sample_end_frame) {
+            details.push(format!(
+                "{prefix}selected_sample_end_frame mismatch: expected {}, got {:?}",
+                selected_sample_end_frame, actual
+            ));
+        }
+    }
+
+    if let Some(selected_sample_window_length_frames) =
+        expected.selected_sample_window_length_frames
+    {
+        let actual = selected_sample
+            .as_ref()
+            .map(|entry| entry.window_length_frames);
+        if actual != Some(selected_sample_window_length_frames) {
+            details.push(format!(
+                "{prefix}selected_sample_window_length_frames mismatch: expected {}, got {:?}",
+                selected_sample_window_length_frames, actual
+            ));
+        }
+    }
+
     if let Some(last_playback) = &expected.last_playback {
         if state.last_playback.as_ref() != Some(last_playback) {
             details.push(format!(
@@ -979,6 +1036,30 @@ fn validate_expected_audio_render(
         &expected.tune_cents,
         &summary.tune_cents,
     );
+    if let Some(start_frame) = expected.start_frame {
+        push_mismatch(
+            details,
+            "last_audio_render.start_frame",
+            &start_frame,
+            &summary.start_frame,
+        );
+    }
+    if let Some(end_frame) = expected.end_frame {
+        push_mismatch(
+            details,
+            "last_audio_render.end_frame",
+            &end_frame,
+            &summary.end_frame,
+        );
+    }
+    if let Some(window_length_frames) = expected.window_length_frames {
+        push_mismatch(
+            details,
+            "last_audio_render.window_length_frames",
+            &window_length_frames,
+            &summary.window_length_frames,
+        );
+    }
     push_mismatch(
         details,
         "last_audio_render.peak_left",
@@ -1049,6 +1130,9 @@ mod tests {
                 level: 100,
                 pan: 0,
                 tune_cents: 0,
+                start_frame: 0,
+                end_frame: 47_999,
+                window_length_frames: 48_000,
             },
         };
         let expected = ExpectedAudioRender {
@@ -1066,6 +1150,9 @@ mod tests {
             bank: PadBank::A,
             pad_number: 1,
             tune_cents: 0,
+            start_frame: Some(0),
+            end_frame: Some(47_999),
+            window_length_frames: Some(48_000),
             peak_left: 0,
             peak_right: 0,
             peak_amplitude: 0,
