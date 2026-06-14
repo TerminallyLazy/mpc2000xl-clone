@@ -152,6 +152,20 @@ pub struct SamplePlaybackIntent {
     pub window_length_frames: u32,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MidiOutputIntent {
+    pub selected_track: u8,
+    pub program_index: u8,
+    pub program_name: String,
+    pub bank: PadBank,
+    pub pad_number: u8,
+    pub source_sample_id: String,
+    pub source_sample_name: String,
+    pub channel: u8,
+    pub note: u8,
+    pub velocity: u8,
+}
+
 impl<'de> Deserialize<'de> for SamplePlaybackIntent {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
@@ -768,6 +782,9 @@ pub enum MachineOutput {
     },
     SamplePlaybackIntent {
         intent: SamplePlaybackIntent,
+    },
+    MidiOutputIntent {
+        intent: MidiOutputIntent,
     },
     SamplePlaybackMiss {
         miss: SamplePlaybackMiss,

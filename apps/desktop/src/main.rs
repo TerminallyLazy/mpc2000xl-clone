@@ -8,6 +8,9 @@ use mpc_core::{
     PadAssignmentChange, PadBank, PanelControl, ProgramPad, SampleCatalogEntry,
     SamplePlaybackIntent, SamplePlaybackResolution, SetupPreferences, TimingCorrectSettings,
 };
+use mpc_midi::{
+    CaptureMidiBackend, HostMidiEngine, HostMidiEvent, HostMidiOutputReport, HostMidiState,
+};
 use mpc_storage::{
     DEFAULT_PROJECT_FILE_PATH, load_project_file_with_report,
     save_project_file as save_project_file_to_path,
@@ -32,6 +35,7 @@ fn main() -> eframe::Result<()> {
 struct MpcDesktopApp {
     core: MpcCore,
     host_audio: HostAudioEngine<CaptureAudioBackend>,
+    host_midi: HostMidiEngine<CaptureMidiBackend>,
     last_status: String,
     last_synthetic_render: Option<AudioRenderSummary>,
     last_synthetic_render_error: Option<String>,
@@ -57,6 +61,7 @@ impl Default for MpcDesktopApp {
                 AudioRenderSettings::preview(),
             )
             .expect("desktop host audio preview settings should satisfy guardrails"),
+            host_midi: HostMidiEngine::enabled(CaptureMidiBackend::new(16)),
             last_status: "Ready".to_string(),
             last_synthetic_render: None,
             last_synthetic_render_error: None,
@@ -99,6 +104,7 @@ impl eframe::App for MpcDesktopApp {
             self.draw_sample_status(ui);
             self.draw_audio_render_status(ui);
             self.draw_host_audio_status(ui);
+            self.draw_host_midi_status(ui);
             ui.add_space(16.0);
             self.draw_pads(ui);
             ui.add_space(16.0);
@@ -357,8 +363,10 @@ impl MpcDesktopApp {
     fn dispatch_event(&mut self, event: HardwareEvent) {
         let outputs = self.core.dispatch(event);
         let render_or_host_error = self.handle_audio_outputs(&outputs);
+        let midi_host_error = self.handle_midi_outputs(&outputs);
         let disk_operation_status = self.handle_disk_operation_request(&outputs);
         self.last_status = disk_operation_status
+            .or(midi_host_error)
             .or(render_or_host_error)
             .unwrap_or_else(|| Self::status_from_outputs(&outputs, self.core.state()));
     }
@@ -429,6 +437,25 @@ impl MpcDesktopApp {
         host_audio_error_message(&report.event)
     }
 
+    fn handle_midi_outputs(&mut self, outputs: &[MachineOutput]) -> Option<String> {
+        let mut midi_error = None;
+
+        for output in outputs {
+            if let MachineOutput::MidiOutputIntent { intent } = output {
+                let report = self.host_midi.send_intent(intent);
+                if let Some(message) = self.record_midi_report(report) {
+                    midi_error = Some(message);
+                }
+            }
+        }
+
+        midi_error
+    }
+
+    fn record_midi_report(&mut self, report: HostMidiOutputReport) -> Option<String> {
+        host_midi_error_message(&report.event)
+    }
+
     fn status_from_outputs(outputs: &[MachineOutput], state: &MpcState) -> String {
         if let Some(MachineOutput::CountInStarted { total_ticks, bars }) = outputs
             .iter()
@@ -481,6 +508,21 @@ impl MpcDesktopApp {
             .find(|output| matches!(output, MachineOutput::MidiInputIgnored { .. }))
         {
             return format!("MIDI ignored: {reason}");
+        }
+
+        if let Some(MachineOutput::MidiOutputIntent { intent }) = outputs
+            .iter()
+            .find(|output| matches!(output, MachineOutput::MidiOutputIntent { .. }))
+        {
+            return format!(
+                "MIDI out ch {} note {} vel {} from {:?}{:02} {}",
+                intent.channel,
+                intent.note,
+                intent.velocity,
+                intent.bank,
+                intent.pad_number,
+                intent.source_sample_name
+            );
         }
 
         if let Some(MachineOutput::TimingCorrectChanged {
@@ -955,7 +997,7 @@ impl MpcDesktopApp {
 
         ui.horizontal_wrapped(|ui| {
             ui.label(format!(
-                "MIDI settings: input {} base {} range {} field {} host I/O off",
+                "MIDI settings: input {} base {} range {} field {} host output capture",
                 midi_input_channel_text(midi_input_channel),
                 midi_base_note,
                 midi_note_range_text(midi_base_note),
@@ -1279,6 +1321,21 @@ impl MpcDesktopApp {
             ui.label(host_audio_state_text(&state));
             ui.separator();
             ui.label(last_host_audio_event_text(state.last_event.as_ref()));
+        });
+    }
+
+    fn draw_host_midi_status(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal_wrapped(|ui| {
+            let mut enabled = self.host_midi.is_enabled();
+            if ui.checkbox(&mut enabled, "Host MIDI").changed() {
+                self.host_midi.set_enabled(enabled);
+            }
+
+            let state = self.host_midi.state();
+            ui.separator();
+            ui.label(host_midi_state_text(&state));
+            ui.separator();
+            ui.label(last_host_midi_event_text(state.last_event.as_ref()));
         });
     }
 
@@ -1619,6 +1676,13 @@ fn host_audio_error_message(event: &HostAudioEvent) -> Option<String> {
     }
 }
 
+fn host_midi_error_message(event: &HostMidiEvent) -> Option<String> {
+    match event {
+        HostMidiEvent::Failed { error, .. } => Some(format!("Host MIDI failed: {error}")),
+        HostMidiEvent::Ignored { .. } | HostMidiEvent::Queued { .. } => None,
+    }
+}
+
 fn host_audio_state_text(state: &HostAudioState) -> String {
     format!(
         "Host audio: {:?} backend {} queued {} played {} voices {}/{} done {} stolen {}",
@@ -1630,6 +1694,17 @@ fn host_audio_state_text(state: &HostAudioState) -> String {
         state.voice_limit,
         state.completed_voice_count,
         state.stolen_voice_count
+    )
+}
+
+fn host_midi_state_text(state: &HostMidiState) -> String {
+    format!(
+        "Host MIDI: {:?} backend {} queued {} ignored {} failed {}",
+        state.mode,
+        state.backend_name,
+        state.queued_message_count,
+        state.ignored_message_count,
+        state.failed_message_count
     )
 }
 
@@ -1671,6 +1746,30 @@ fn last_host_audio_event_text(event: Option<&HostAudioEvent>) -> String {
             None => format!("Host audio event: failed no render: {error}"),
         },
         None => "Host audio event: none".to_string(),
+    }
+}
+
+fn last_host_midi_event_text(event: Option<&HostMidiEvent>) -> String {
+    match event {
+        Some(HostMidiEvent::Queued { receipt }) => format!(
+            "Host MIDI event: ch {} note {} vel {} from {:?}{:02}",
+            receipt.message.channel,
+            receipt.message.note,
+            receipt.message.velocity,
+            receipt.intent.bank,
+            receipt.intent.pad_number
+        ),
+        Some(HostMidiEvent::Ignored { reason, intent }) => format!(
+            "Host MIDI event: ignored {reason:?} ch {} note {}",
+            intent.channel, intent.note
+        ),
+        Some(HostMidiEvent::Failed { error, intent }) => {
+            format!(
+                "Host MIDI event: failed ch {} note {}: {}",
+                intent.channel, intent.note, error
+            )
+        }
+        None => "Host MIDI event: none".to_string(),
     }
 }
 

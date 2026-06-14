@@ -2,7 +2,7 @@
 
 ## Behavior Slice
 
-This slice turns MIDI mode from a placeholder into a deterministic settings screen for the existing simulated MIDI note input path. It does not add host MIDI device discovery, realtime MIDI ports, MIDI files, MIDI clock, MIDI sync, MIDI thru, MIDI output, proprietary firmware behavior, JJ-OS parity, or hardware I/O.
+This slice turns MIDI mode from a placeholder into a deterministic settings screen for the existing simulated MIDI note input path. It does not add host MIDI device discovery, realtime MIDI ports, MIDI files, MIDI clock, MIDI sync, MIDI thru, proprietary firmware behavior, JJ-OS parity, or hardware I/O.
 
 Implemented behavior:
 
@@ -10,7 +10,7 @@ Implemented behavior:
 - Input channel defaults to Omni (`None`), preserving previous all-channel note-on behavior.
 - Base note defaults to `36`, preserving previous note `36..=51` to `A01..=A16` behavior.
 - Base note is clamped to `0..=112`, so `base_note..=base_note+15` always stays inside valid MIDI note numbers.
-- MIDI mode LCD shows input channel, base note, mapped note range, selected settings field, and `Host MIDI I/O: off`.
+- MIDI mode LCD shows input channel, base note, mapped note range, selected settings field, and the current deterministic host-MIDI output boundary.
 - In MIDI mode, cursor left/right toggles between input channel and base note.
 - In MIDI mode, the data wheel edits the selected setting:
   - input channel clamps through Omni, Ch 01, ..., Ch 16;
@@ -27,7 +27,7 @@ Implemented behavior:
 
 - Status: fixture-backed internal spec.
 - Rights boundary: no manuals, service scans, firmware bytes, JJ-OS assets, hardware captures, MIDI files, copied third-party code, audio bytes, or factory samples are stored in the repo.
-- Reference gap: exact MPC2000XL/JJ-OS MIDI settings screens, channel policy, note mapping policy, MIDI clock/sync behavior, and host MIDI I/O behavior remain unmapped.
+- Reference gap: exact MPC2000XL/JJ-OS MIDI settings screens, channel policy, note mapping policy, MIDI clock/sync behavior, and native host MIDI I/O behavior remain unmapped.
 - The channel/base-note policy exists to make the current simulated note input configurable and testable, not to claim final sampler parity.
 
 ## Verification Targets

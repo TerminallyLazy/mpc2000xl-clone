@@ -47,7 +47,7 @@
       40,
       55
     ],
-    "midi_host_io_enabled": false,
+    "midi_host_io_enabled": true,
     "last_playback": {
       "type": "intent",
       "intent": {
@@ -90,7 +90,7 @@
         40,
         55
       ],
-      "midi_host_io_enabled": false,
+      "midi_host_io_enabled": true,
       "last_playback": {
         "type": "intent",
         "intent": {

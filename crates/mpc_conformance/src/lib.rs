@@ -918,18 +918,15 @@ fn validate_expected_state(
     }
 
     if let Some(midi_host_io_enabled) = expected.midi_host_io_enabled {
-        if midi_host_io_enabled {
+        let expected_line = if midi_host_io_enabled {
+            "Host MIDI Out: capture"
+        } else {
+            "Host MIDI I/O: off"
+        };
+
+        if !state.lcd.lines.iter().any(|line| line == expected_line) {
             details.push(format!(
-                "{prefix}midi_host_io_enabled mismatch: expected false foundation host MIDI I/O, got true expectation"
-            ));
-        } else if !state
-            .lcd
-            .lines
-            .iter()
-            .any(|line| line == "Host MIDI I/O: off")
-        {
-            details.push(format!(
-                "{prefix}midi_host_io_enabled mismatch: expected LCD line \"Host MIDI I/O: off\", got {:?}",
+                "{prefix}midi_host_io_enabled mismatch: expected LCD line {expected_line:?}, got {:?}",
                 state.lcd.lines
             ));
         }

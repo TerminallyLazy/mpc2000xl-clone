@@ -155,6 +155,21 @@
       }
     },
     {
+      "type": "midi_output_intent",
+      "intent": {
+        "selected_track": 1,
+        "program_index": 1,
+        "program_name": "Program01",
+        "bank": "b",
+        "pad_number": 12,
+        "source_sample_id": "synthetic_b_12",
+        "source_sample_name": "SYN-B12",
+        "channel": 1,
+        "note": 63,
+        "velocity": 96
+      }
+    },
+    {
       "type": "metronome_click",
       "intent": {
         "count_in_tick": 96,
@@ -208,6 +223,21 @@
         "level": 100,
         "pan": 0,
         "tune_cents": 0
+      }
+    },
+    {
+      "type": "midi_output_intent",
+      "intent": {
+        "selected_track": 1,
+        "program_index": 1,
+        "program_name": "Program01",
+        "bank": "b",
+        "pad_number": 12,
+        "source_sample_id": "synthetic_b_12",
+        "source_sample_name": "SYN-B12",
+        "channel": 1,
+        "note": 63,
+        "velocity": 96
       }
     },
     {

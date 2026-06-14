@@ -331,7 +331,7 @@ impl LcdFrame {
                     base_note,
                     range_end
                 ),
-                "Host MIDI I/O: off".to_string(),
+                "Host MIDI Out: capture".to_string(),
                 format!("Sim note-on only  Edit {}", selected_field.label()),
             ],
             soft_keys: [

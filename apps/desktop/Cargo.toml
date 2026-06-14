@@ -10,4 +10,5 @@ authors.workspace = true
 eframe.workspace = true
 mpc_audio = { path = "../../crates/mpc_audio" }
 mpc_core = { path = "../../crates/mpc_core" }
+mpc_midi = { path = "../../crates/mpc_midi" }
 mpc_storage = { path = "../../crates/mpc_storage" }

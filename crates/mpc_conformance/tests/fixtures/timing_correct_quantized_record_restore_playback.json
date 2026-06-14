@@ -139,6 +139,21 @@
       }
     },
     {
+      "type": "midi_output_intent",
+      "intent": {
+        "selected_track": 1,
+        "program_index": 1,
+        "program_name": "Program01",
+        "bank": "a",
+        "pad_number": 1,
+        "source_sample_id": "synthetic_a_01",
+        "source_sample_name": "SYN-A01",
+        "channel": 1,
+        "note": 36,
+        "velocity": 90
+      }
+    },
+    {
       "type": "timing_correct_applied",
       "original_tick": 31,
       "quantized_tick": 29,
@@ -265,6 +280,21 @@
           "level": 100,
           "pan": 0,
           "tune_cents": 0
+        }
+      },
+      {
+        "type": "midi_output_intent",
+        "intent": {
+          "selected_track": 1,
+          "program_index": 1,
+          "program_name": "Program01",
+          "bank": "a",
+          "pad_number": 1,
+          "source_sample_id": "synthetic_a_01",
+          "source_sample_name": "SYN-A01",
+          "channel": 1,
+          "note": 36,
+          "velocity": 90
         }
       }
     ],

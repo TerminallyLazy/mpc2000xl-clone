@@ -3397,6 +3397,7 @@ fn timing_correct_quantizes_pad_recording_to_nearest_grid_and_ties_upward() {
         [
             MachineOutput::PadTriggered { .. },
             MachineOutput::SamplePlaybackIntent { .. },
+            MachineOutput::MidiOutputIntent { intent },
             MachineOutput::TimingCorrectApplied {
                 original_tick: 36,
                 quantized_tick: 48,
@@ -3405,7 +3406,12 @@ fn timing_correct_quantizes_pad_recording_to_nearest_grid_and_ties_upward() {
             },
             MachineOutput::SequenceEventRecorded { event },
             MachineOutput::LcdChanged,
-        ] if event.tick == 48 && event.pad_bank == PadBank::B && event.pad_number == 2
+        ] if event.tick == 48
+            && event.pad_bank == PadBank::B
+            && event.pad_number == 2
+            && intent.channel == 1
+            && intent.note == 53
+            && intent.velocity == 91
     ));
 }
 
@@ -5032,6 +5038,154 @@ fn midi_note_36_maps_to_pad_a01_and_reuses_playback_intent() {
 }
 
 #[test]
+fn physical_pad_strike_emits_midi_output_intent_from_playback_metadata() {
+    let mut core = MpcCore::new();
+
+    let outputs = core.dispatch(HardwareEvent::StrikePad {
+        bank: PadBank::B,
+        pad: 4,
+        velocity: 84,
+    });
+
+    assert!(outputs.iter().any(|output| matches!(
+        output,
+        MachineOutput::SamplePlaybackIntent { intent }
+            if intent.bank == PadBank::B
+                && intent.pad_number == 4
+                && intent.sample_id == "synthetic_b_04"
+    )));
+    assert!(outputs.iter().any(|output| matches!(
+        output,
+        MachineOutput::MidiOutputIntent { intent }
+            if intent.selected_track == 1
+                && intent.program_index == 1
+                && intent.program_name == "Program01"
+                && intent.bank == PadBank::B
+                && intent.pad_number == 4
+                && intent.source_sample_id == "synthetic_b_04"
+                && intent.source_sample_name == "SYN-B04"
+                && intent.channel == 1
+                && intent.note == 55
+                && intent.velocity == 84
+    )));
+}
+
+#[test]
+fn incoming_midi_note_on_does_not_echo_midi_output_intent() {
+    let mut core = MpcCore::new();
+
+    let outputs = core.dispatch(HardwareEvent::MidiNoteOn {
+        channel: 1,
+        note: 36,
+        velocity: 100,
+    });
+
+    assert!(outputs.iter().any(|output| matches!(
+        output,
+        MachineOutput::MidiNoteMapped {
+            note: 36,
+            pad: 1,
+            ..
+        }
+    )));
+    assert!(outputs.iter().any(|output| matches!(
+        output,
+        MachineOutput::SamplePlaybackIntent { intent }
+            if intent.bank == PadBank::A && intent.pad_number == 1
+    )));
+    assert!(midi_output_intents(&outputs).is_empty());
+}
+
+#[test]
+fn sequence_playback_emits_midi_output_intent_for_scheduled_event() {
+    let mut core = MpcCore::new();
+
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::CursorLeft,
+    });
+    core.dispatch(HardwareEvent::TurnDataWheel { delta: 1 });
+    assert_eq!(core.state().selected_track, 2);
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::Overdub,
+    });
+    core.dispatch(HardwareEvent::Tick { micros: 500_000 });
+    core.dispatch(HardwareEvent::StrikePad {
+        bank: PadBank::C,
+        pad: 4,
+        velocity: 77,
+    });
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::Stop,
+    });
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::LocateStart,
+    });
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::Play,
+    });
+
+    let outputs = core.dispatch(HardwareEvent::Tick { micros: 500_000 });
+
+    assert!(outputs.iter().any(|output| matches!(
+        output,
+        MachineOutput::SequenceEventPlayed { event }
+            if event.selected_track == 2
+                && event.pad_bank == PadBank::C
+                && event.pad_number == 4
+                && event.tick == 96
+    )));
+    assert!(outputs.iter().any(|output| matches!(
+        output,
+        MachineOutput::MidiOutputIntent { intent }
+            if intent.selected_track == 2
+                && intent.channel == 2
+                && intent.bank == PadBank::C
+                && intent.pad_number == 4
+                && intent.note == 71
+                && intent.velocity == 77
+    )));
+}
+
+#[test]
+fn midi_output_intent_serializes_stably() {
+    let output = MachineOutput::MidiOutputIntent {
+        intent: mpc_core::MidiOutputIntent {
+            selected_track: 2,
+            program_index: 1,
+            program_name: "Program01".to_string(),
+            bank: PadBank::B,
+            pad_number: 4,
+            source_sample_id: "synthetic_b_04".to_string(),
+            source_sample_name: "SYN-B04".to_string(),
+            channel: 2,
+            note: 55,
+            velocity: 84,
+        },
+    };
+
+    let json = serde_json::to_value(output).expect("MIDI output should serialize");
+
+    assert_eq!(
+        json,
+        serde_json::json!({
+            "type": "midi_output_intent",
+            "intent": {
+                "selected_track": 2,
+                "program_index": 1,
+                "program_name": "Program01",
+                "bank": "b",
+                "pad_number": 4,
+                "source_sample_id": "synthetic_b_04",
+                "source_sample_name": "SYN-B04",
+                "channel": 2,
+                "note": 55,
+                "velocity": 84
+            }
+        })
+    );
+}
+
+#[test]
 fn midi_note_on_uses_bank_a_even_when_another_bank_is_active() {
     let mut core = MpcCore::new();
 
@@ -5318,7 +5472,7 @@ fn midi_settings_mode_edits_base_note_and_mapping_follows_base() {
     assert_eq!(core.state().lcd.title, "MIDI");
     assert!(core.state().lcd.lines[0].contains("Input Omni"));
     assert!(core.state().lcd.lines[1].contains("Base 036 Range 036-051"));
-    assert!(core.state().lcd.lines[2].contains("Host MIDI I/O: off"));
+    assert!(core.state().lcd.lines[2].contains("Host MIDI Out: capture"));
 
     let cursor_outputs = core.dispatch(HardwareEvent::Press {
         control: PanelControl::CursorRight,
@@ -6517,6 +6671,16 @@ fn playback_intents(outputs: &[MachineOutput]) -> Vec<&SamplePlaybackIntent> {
         .iter()
         .filter_map(|output| match output {
             MachineOutput::SamplePlaybackIntent { intent } => Some(intent),
+            _ => None,
+        })
+        .collect()
+}
+
+fn midi_output_intents(outputs: &[MachineOutput]) -> Vec<&mpc_core::MidiOutputIntent> {
+    outputs
+        .iter()
+        .filter_map(|output| match output {
+            MachineOutput::MidiOutputIntent { intent } => Some(intent),
             _ => None,
         })
         .collect()

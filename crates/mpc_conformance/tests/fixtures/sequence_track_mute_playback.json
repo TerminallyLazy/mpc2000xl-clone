@@ -151,6 +151,21 @@
         }
       },
       {
+        "type": "midi_output_intent",
+        "intent": {
+          "selected_track": 1,
+          "program_index": 1,
+          "program_name": "Program01",
+          "bank": "a",
+          "pad_number": 1,
+          "source_sample_id": "synthetic_a_01",
+          "source_sample_name": "SYN-A01",
+          "channel": 1,
+          "note": 36,
+          "velocity": 81
+        }
+      },
+      {
         "type": "lcd_changed"
       }
     ],

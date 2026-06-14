@@ -5,12 +5,13 @@ use std::fmt;
 
 use crate::events::{
     CountInClickIntent, DiskOperation, HardwareEvent, IMPORTED_SAMPLE_LENGTH_FRAMES, MachineOutput,
-    MidiSettingsField, Mode, PadAssignment, PadAssignmentChange, PadBank, PanelControl,
-    PlaybackMissReason, Program, ProgramEditField, ProgramPad, RECORDED_SAMPLE_LENGTH_FRAMES,
-    SampleCatalogEntry, SamplePlaybackIntent, SamplePlaybackMiss, SamplePlaybackResolution,
-    SampleSourceKind, SampleTrim, SequenceEvent, SetupField, SetupPreferences, SongEditField,
-    SongStep, SyntheticSample, TimingCorrectField, TimingCorrectSettings, TrimEditField,
-    generated_sample_length_frames, sample_window_length_frames,
+    MidiOutputIntent, MidiSettingsField, Mode, PadAssignment, PadAssignmentChange, PadBank,
+    PanelControl, PlaybackMissReason, Program, ProgramEditField, ProgramPad,
+    RECORDED_SAMPLE_LENGTH_FRAMES, SampleCatalogEntry, SamplePlaybackIntent, SamplePlaybackMiss,
+    SamplePlaybackResolution, SampleSourceKind, SampleTrim, SequenceEvent, SetupField,
+    SetupPreferences, SongEditField, SongStep, SyntheticSample, TimingCorrectField,
+    TimingCorrectSettings, TrimEditField, generated_sample_length_frames,
+    sample_window_length_frames,
 };
 use crate::lcd::LcdFrame;
 
@@ -1687,6 +1688,16 @@ impl MpcCore {
     }
 
     fn handle_pad_strike(&mut self, bank: PadBank, pad: u8, velocity: u8) -> Vec<MachineOutput> {
+        self.handle_pad_strike_with_midi_output(bank, pad, velocity, true)
+    }
+
+    fn handle_pad_strike_with_midi_output(
+        &mut self,
+        bank: PadBank,
+        pad: u8,
+        velocity: u8,
+        emit_midi_output: bool,
+    ) -> Vec<MachineOutput> {
         let previous_lcd = self.state.lcd.clone();
         self.state.pad_bank = bank;
         if self.state.mode == Mode::Program {
@@ -1707,6 +1718,11 @@ impl MpcCore {
                 outputs.push(MachineOutput::SamplePlaybackIntent {
                     intent: intent.clone(),
                 });
+                if emit_midi_output {
+                    if let Some(intent) = self.midi_output_intent_for_playback(intent) {
+                        outputs.push(MachineOutput::MidiOutputIntent { intent });
+                    }
+                }
             }
             SamplePlaybackResolution::Miss { miss } => {
                 outputs.push(MachineOutput::SamplePlaybackMiss { miss: miss.clone() });
@@ -1780,7 +1796,7 @@ impl MpcCore {
             pad,
             velocity,
         }];
-        outputs.extend(self.handle_pad_strike(PadBank::A, pad, velocity));
+        outputs.extend(self.handle_pad_strike_with_midi_output(PadBank::A, pad, velocity, false));
         outputs
     }
 
@@ -1869,6 +1885,9 @@ impl MpcCore {
             outputs.push(MachineOutput::SamplePlaybackIntent {
                 intent: intent.clone(),
             });
+            if let Some(intent) = self.midi_output_intent_for_playback(&intent) {
+                outputs.push(MachineOutput::MidiOutputIntent { intent });
+            }
             self.state.last_playback = Some(SamplePlaybackResolution::Intent { intent });
         }
         if transport_stopped {
@@ -2194,6 +2213,27 @@ impl MpcCore {
     fn prune_sample_trims_for_current_program(&mut self) {
         self.state.sample_trims =
             normalized_sample_trims(&self.state.current_program, &self.state.sample_trims);
+    }
+
+    fn midi_output_intent_for_playback(
+        &self,
+        intent: &SamplePlaybackIntent,
+    ) -> Option<MidiOutputIntent> {
+        let note =
+            midi_output_note_for_pad(self.state.midi_base_note, intent.bank, intent.pad_number)?;
+
+        Some(MidiOutputIntent {
+            selected_track: intent.selected_track,
+            program_index: intent.program_index,
+            program_name: intent.program_name.clone(),
+            bank: intent.bank,
+            pad_number: intent.pad_number,
+            source_sample_id: intent.sample_id.clone(),
+            source_sample_name: intent.sample_name.clone(),
+            channel: midi_output_channel_for_track(intent.selected_track),
+            note,
+            velocity: intent.velocity,
+        })
     }
 }
 
@@ -3201,6 +3241,28 @@ fn midi_note_to_bank_a_pad(note: u8, base_note: u8) -> Option<u8> {
 
 fn midi_mapped_range_end(base_note: u8) -> u8 {
     base_note.saturating_add(MIDI_MAPPED_PAD_COUNT.saturating_sub(1))
+}
+
+fn midi_output_channel_for_track(track: u8) -> u8 {
+    track
+        .saturating_sub(1)
+        .wrapping_rem(MIDI_MAX_CHANNEL)
+        .saturating_add(1)
+}
+
+fn midi_output_note_for_pad(base_note: u8, bank: PadBank, pad: u8) -> Option<u8> {
+    if pad == 0 || pad > 16 {
+        return None;
+    }
+
+    let bank_offset = match bank {
+        PadBank::A => 0,
+        PadBank::B => 16,
+        PadBank::C => 32,
+        PadBank::D => 48,
+    };
+    let pad_offset = bank_offset + pad.saturating_sub(1);
+    base_note.checked_add(pad_offset)
 }
 
 fn clamp_delta_midi_input_channel(current: Option<u8>, delta: i32) -> Option<u8> {

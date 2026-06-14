@@ -39,6 +39,7 @@ This file tracks evidence sources without copying proprietary source pages, scan
 | project-file-storage-slice-plan | internal_spec | plan | Rights-safe host-side JSON project file storage foundation | `docs/superpowers/plans/2026-06-13-mpc2000xl-project-file-storage.md` |
 | midi-note-input-slice-plan | internal_spec | plan | Deterministic MIDI note-on/note-off input mapping foundation | `docs/superpowers/plans/2026-06-13-mpc2000xl-midi-note-input.md` |
 | midi-settings-mode-slice-plan | internal_spec | plan | Deterministic MIDI settings screen for simulated note input foundation | `docs/superpowers/plans/2026-06-13-mpc2000xl-midi-settings-mode.md` |
+| midi-output-capture-foundation-slice-plan | internal_spec | plan | Deterministic MIDI output intent and host capture backend foundation | `docs/superpowers/plans/2026-06-14-mpc2000xl-midi-output-capture-foundation.md` |
 | program-pad-parameter-editing-slice-plan | internal_spec | plan | PROGRAM pad Level/Pan/Tune editing and render propagation foundation | `docs/superpowers/plans/2026-06-13-mpc2000xl-program-pad-parameter-editing.md` |
 | sequence-loop-locate-slice-plan | internal_spec | plan | Deterministic locate-to-start and bounded sequence loop foundation | `docs/superpowers/plans/2026-06-13-mpc2000xl-sequence-loop-locate.md` |
 | track-mute-playback-slice-plan | internal_spec | plan | Deterministic MAIN track mute state and playback scheduling filter foundation | `docs/superpowers/plans/2026-06-13-mpc2000xl-track-mute-playback.md` |

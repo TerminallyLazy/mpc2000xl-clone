@@ -1,0 +1,88 @@
+{
+  "id": "core.midi-output.capture-foundation",
+  "name": "Physical pad playback emits deterministic MIDI output intent for host capture",
+  "source_refs": [
+    "docs/superpowers/plans/2026-06-14-mpc2000xl-midi-output-capture-foundation.md#behavior-slice",
+    "docs/evidence/behavior-matrix.json#core.midi-output.capture-foundation"
+  ],
+  "events": [
+    {
+      "type": "strike_pad",
+      "bank": "b",
+      "pad": 4,
+      "velocity": 84
+    }
+  ],
+  "expect_output_sequence": [
+    {
+      "type": "pad_triggered",
+      "bank": "b",
+      "pad": 4,
+      "velocity": 84
+    },
+    {
+      "type": "sample_playback_intent",
+      "intent": {
+        "selected_track": 1,
+        "program_index": 1,
+        "program_name": "Program01",
+        "bank": "b",
+        "pad_number": 4,
+        "sample_id": "synthetic_b_04",
+        "sample_name": "SYN-B04",
+        "velocity": 84,
+        "level": 100,
+        "pan": 0,
+        "tune_cents": 0
+      }
+    },
+    {
+      "type": "midi_output_intent",
+      "intent": {
+        "selected_track": 1,
+        "program_index": 1,
+        "program_name": "Program01",
+        "bank": "b",
+        "pad_number": 4,
+        "source_sample_id": "synthetic_b_04",
+        "source_sample_name": "SYN-B04",
+        "channel": 1,
+        "note": 55,
+        "velocity": 84
+      }
+    }
+  ],
+  "expect": {
+    "mode": "main",
+    "lcd_title": "MAIN",
+    "playing": false,
+    "recording": false,
+    "event_count": 1,
+    "selected_track": 1,
+    "pad_bank": "b",
+    "current_program_index": 1,
+    "current_program_name": "Program01",
+    "pad_assignment_count": 64,
+    "midi_base_note": 36,
+    "midi_mapped_note_range": [
+      36,
+      51
+    ],
+    "last_playback": {
+      "type": "intent",
+      "intent": {
+        "selected_track": 1,
+        "program_index": 1,
+        "program_name": "Program01",
+        "bank": "b",
+        "pad_number": 4,
+        "sample_id": "synthetic_b_04",
+        "sample_name": "SYN-B04",
+        "velocity": 84,
+        "level": 100,
+        "pan": 0,
+        "tune_cents": 0
+      }
+    }
+  }
+}
