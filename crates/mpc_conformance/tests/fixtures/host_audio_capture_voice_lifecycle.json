@@ -1,0 +1,112 @@
+{
+  "id": "audio.host.capture-voice-lifecycle",
+  "name": "Enabled capture host audio enqueues rendered pad audio, allocates voices, and steals the oldest voice at limit",
+  "source_refs": [
+    "docs/superpowers/plans/2026-06-13-mpc2000xl-host-audio-plumbing.md#source-and-evidence-status",
+    "docs/superpowers/plans/2026-06-14-mpc2000xl-host-audio-voice-lifecycle-foundation.md#source-and-evidence-status",
+    "docs/evidence/behavior-matrix.json#audio.host.capture-backend-enqueue",
+    "docs/evidence/behavior-matrix.json#audio.host.voice-lifecycle-foundation"
+  ],
+  "events": [
+    {
+      "type": "strike_pad",
+      "bank": "a",
+      "pad": 1,
+      "velocity": 100
+    },
+    {
+      "type": "strike_pad",
+      "bank": "a",
+      "pad": 2,
+      "velocity": 100
+    },
+    {
+      "type": "strike_pad",
+      "bank": "a",
+      "pad": 3,
+      "velocity": 100
+    }
+  ],
+  "host_audio": {
+    "enabled": true,
+    "settings": {
+      "sample_rate_hz": 44100,
+      "frame_count": 64
+    },
+    "capture_history": 4,
+    "voice_limit": 2,
+    "advance_voice_frames": [
+      64
+    ],
+    "expect": {
+      "mode": "enabled",
+      "backend_name": "capture",
+      "render_settings": {
+        "sample_rate_hz": 44100,
+        "frame_count": 64
+      },
+      "queued_render_count": 3,
+      "played_render_count": 3,
+      "voice_limit": 2,
+      "active_voice_count": 0,
+      "completed_voice_count": 2,
+      "stolen_voice_count": 1,
+      "released_voice_count": 0,
+      "choked_voice_count": 0,
+      "capture_count": 3,
+      "capture_frame_counts": [
+        64,
+        64,
+        64
+      ],
+      "capture_render_kinds": [
+        "sample_playback",
+        "sample_playback",
+        "sample_playback"
+      ],
+      "capture_source_kinds": [
+        "rights_safe_generated",
+        "rights_safe_generated",
+        "rights_safe_generated"
+      ],
+      "capture_source_sample_names": [
+        "SYN-A01",
+        "SYN-A02",
+        "SYN-A03"
+      ],
+      "last_event_type": "enqueued",
+      "last_event_backend_name": "capture",
+      "last_event_render_kind": "sample_playback",
+      "last_event_source_kind": "rights_safe_generated",
+      "last_event_frame_count": 64,
+      "last_event_voice_id": 3,
+      "last_event_stolen_voice_id": 1,
+      "last_event_choked_voice_count": 0,
+      "active_voices": []
+    }
+  },
+  "expect": {
+    "mode": "main",
+    "lcd_title": "MAIN",
+    "playing": false,
+    "recording": false,
+    "event_count": 3,
+    "selected_track": 1,
+    "last_playback": {
+      "type": "intent",
+      "intent": {
+        "selected_track": 1,
+        "program_index": 1,
+        "program_name": "Program01",
+        "bank": "a",
+        "pad_number": 3,
+        "sample_id": "synthetic_a_03",
+        "sample_name": "SYN-A03",
+        "velocity": 100,
+        "level": 100,
+        "pan": 0,
+        "tune_cents": 0
+      }
+    }
+  }
+}

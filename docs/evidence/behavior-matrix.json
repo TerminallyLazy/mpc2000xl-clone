@@ -1708,7 +1708,7 @@
       "id": "audio.host.disabled-ignore",
       "name": "Disabled host audio ignores playback without backend enqueue",
       "area": "audio_host",
-      "state": "unit-backed-internal-spec",
+      "state": "fixture-backed-internal-spec",
       "evidence": [
         {
           "source_id": "host-audio-plumbing-slice-plan",
@@ -1769,6 +1769,7 @@
       },
       "tolerance": null,
       "fixture_refs": [
+        "crates/mpc_conformance/tests/fixtures/host_audio_disabled_ignore.json",
         "crates/mpc_audio/src/lib.rs",
         "apps/desktop/src/main.rs"
       ],
@@ -1780,7 +1781,7 @@
       "id": "audio.host.capture-backend-enqueue",
       "name": "Enabled host audio enqueues deterministic rendered audio through capture backend",
       "area": "audio_host",
-      "state": "unit-backed-internal-spec",
+      "state": "fixture-backed-internal-spec",
       "evidence": [
         {
           "source_id": "host-audio-plumbing-slice-plan",
@@ -1864,6 +1865,8 @@
       },
       "tolerance": null,
       "fixture_refs": [
+        "crates/mpc_conformance/tests/fixtures/host_audio_capture_voice_lifecycle.json",
+        "crates/mpc_conformance/tests/fixtures/count_in_click_transport.json",
         "crates/mpc_audio/src/lib.rs",
         "apps/desktop/src/main.rs"
       ],
@@ -1982,7 +1985,7 @@
       "id": "audio.metronome.count-in-click-render-routing",
       "name": "Count-in metronome click intents render deterministic PCM and route through host audio",
       "area": "audio_host",
-      "state": "unit-backed-internal-spec",
+      "state": "fixture-backed-internal-spec",
       "evidence": [
         {
           "source_id": "metronome-click-audio-foundation-slice-plan",
@@ -2084,6 +2087,7 @@
       },
       "tolerance": null,
       "fixture_refs": [
+        "crates/mpc_conformance/tests/fixtures/count_in_click_transport.json",
         "crates/mpc_audio/src/lib.rs",
         "apps/desktop/src/main.rs"
       ],
@@ -2096,7 +2100,7 @@
       "id": "audio.host.voice-lifecycle-foundation",
       "name": "Host audio tracks deterministic active voices and stealing",
       "area": "audio_host",
-      "state": "unit-backed-internal-spec",
+      "state": "fixture-backed-internal-spec",
       "evidence": [
         {
           "source_id": "host-audio-voice-lifecycle-foundation-slice-plan",
@@ -2221,6 +2225,8 @@
       },
       "tolerance": null,
       "fixture_refs": [
+        "crates/mpc_conformance/tests/fixtures/host_audio_capture_voice_lifecycle.json",
+        "crates/mpc_conformance/tests/fixtures/count_in_click_transport.json",
         "crates/mpc_audio/src/lib.rs",
         "apps/desktop/src/main.rs"
       ],

@@ -54,7 +54,7 @@ Focused unit tests cover:
 
 ## Source And Evidence Status
 
-This behavior is an internal-spec/manual-investigation foundation. Exact MPC2000XL audio output behavior, device routing, output latency, DAC characteristics, voice scheduling, envelopes, filters, interpolation, effects, and electrical output path evidence remain pending owner-manual mapping, firmware traces, service evidence, or hardware capture.
+This behavior is a fixture-backed internal-spec/manual-investigation foundation. Exact MPC2000XL audio output behavior, device routing, output latency, DAC characteristics, voice scheduling, envelopes, filters, interpolation, effects, and electrical output path evidence remain pending owner-manual mapping, firmware traces, service evidence, or hardware capture.
 
 No proprietary samples, firmware bytes, recordings, binary audio assets, screenshots, or copied reference media are added. The host plumbing continues to use `source_kind = rights_safe_generated` from the deterministic renderer.
 
@@ -72,6 +72,9 @@ Required verification for this slice:
 Additional focused check run during development:
 
 - `cargo test -p mpc_audio`
+- `crates/mpc_conformance/tests/fixtures/host_audio_disabled_ignore.json` verifies disabled host audio ignores playback without capture enqueue or voice allocation.
+- `crates/mpc_conformance/tests/fixtures/host_audio_capture_voice_lifecycle.json` verifies enabled capture enqueue, success counters, bounded voice allocation, and oldest-voice stealing through the fixture harness.
+- `crates/mpc_conformance/tests/fixtures/count_in_click_transport.json` verifies count-in metronome clicks and pad playback share the deterministic host-audio capture path.
 
 ## Next Boundaries
 

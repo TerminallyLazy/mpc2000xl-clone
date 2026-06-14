@@ -1,7 +1,8 @@
 use anyhow::{Context, Result, bail};
 use mpc_audio::{
-    AudioRenderSettings, AudioSourceKind, ChannelBalance, RuntimeSampleLibrary,
-    load_wav_sample_payload, render_intent_with_runtime_samples,
+    AudioRenderKind, AudioRenderSettings, AudioSourceKind, CaptureAudioBackend, ChannelBalance,
+    HostAudioEngine, HostAudioEvent, HostAudioMode, HostAudioState, HostAudioVoiceSummary,
+    RuntimeSampleLibrary, load_wav_sample_payload, render_intent_with_runtime_samples,
 };
 use mpc_core::{
     DiskOperation, HardwareEvent, MachineOutput, MainScreenField, MidiSettingsField, Mode, MpcCore,
@@ -27,6 +28,8 @@ pub struct Fixture {
     #[serde(default)]
     pub post_runtime_wav_import_events: Vec<HardwareEvent>,
     #[serde(default)]
+    pub host_audio: Option<HostAudioFixture>,
+    #[serde(default)]
     pub expect_output_sequence: Vec<MachineOutput>,
     #[serde(default)]
     pub expect_sample_metadata_created: Vec<ExpectedSampleMetadataCreated>,
@@ -50,6 +53,100 @@ pub struct RuntimeWavImport {
     pub channels: u16,
     pub sample_rate_hz: u32,
     pub samples: Vec<i16>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HostAudioFixture {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub settings: AudioRenderSettings,
+    #[serde(default = "default_capture_history")]
+    pub capture_history: usize,
+    #[serde(default = "default_host_audio_fixture_voice_limit")]
+    pub voice_limit: usize,
+    #[serde(default)]
+    pub advance_voice_frames: Vec<usize>,
+    pub expect: ExpectedHostAudioState,
+}
+
+fn default_capture_history() -> usize {
+    16
+}
+
+fn default_host_audio_fixture_voice_limit() -> usize {
+    32
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExpectedHostAudioState {
+    #[serde(default)]
+    pub mode: Option<HostAudioMode>,
+    #[serde(default)]
+    pub backend_name: Option<String>,
+    #[serde(default)]
+    pub render_settings: Option<AudioRenderSettings>,
+    #[serde(default)]
+    pub queued_render_count: Option<u64>,
+    #[serde(default)]
+    pub played_render_count: Option<u64>,
+    #[serde(default)]
+    pub voice_limit: Option<usize>,
+    #[serde(default)]
+    pub active_voice_count: Option<usize>,
+    #[serde(default)]
+    pub completed_voice_count: Option<u64>,
+    #[serde(default)]
+    pub stolen_voice_count: Option<u64>,
+    #[serde(default)]
+    pub released_voice_count: Option<u64>,
+    #[serde(default)]
+    pub choked_voice_count: Option<u64>,
+    #[serde(default)]
+    pub active_voices: Option<Vec<HostAudioVoiceSummary>>,
+    #[serde(default)]
+    pub capture_count: Option<usize>,
+    #[serde(default)]
+    pub capture_frame_counts: Option<Vec<usize>>,
+    #[serde(default)]
+    pub capture_render_kinds: Option<Vec<AudioRenderKind>>,
+    #[serde(default)]
+    pub capture_source_kinds: Option<Vec<AudioSourceKind>>,
+    #[serde(default)]
+    pub capture_source_sample_names: Option<Vec<String>>,
+    #[serde(default)]
+    pub capture_count_in_ticks: Option<Vec<Option<u64>>>,
+    #[serde(default)]
+    pub capture_accents: Option<Vec<Option<bool>>>,
+    #[serde(default)]
+    pub last_event_type: Option<ExpectedHostAudioEventType>,
+    #[serde(default)]
+    pub last_event_backend_name: Option<String>,
+    #[serde(default)]
+    pub last_event_render_kind: Option<AudioRenderKind>,
+    #[serde(default)]
+    pub last_event_source_kind: Option<AudioSourceKind>,
+    #[serde(default)]
+    pub last_event_frame_count: Option<usize>,
+    #[serde(default)]
+    pub last_event_voice_id: Option<u64>,
+    #[serde(default)]
+    pub last_event_stolen_voice_id: Option<u64>,
+    #[serde(default)]
+    pub last_event_choked_voice_count: Option<usize>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExpectedHostAudioEventType {
+    Ignored,
+    Enqueued,
+    Released,
+    Failed,
+}
+
+struct HostAudioFixtureRunner {
+    engine: HostAudioEngine<CaptureAudioBackend>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -391,9 +488,12 @@ pub fn run_fixture(fixture: &Fixture) -> FixtureReport {
     let mut runtime_samples = RuntimeSampleLibrary::default();
     let mut output_sequence = Vec::new();
     let mut details = Vec::new();
+    let mut host_audio = build_host_audio_runner(&mut details, fixture);
 
     for event in &fixture.events {
-        output_sequence.extend(core.dispatch(event.clone()));
+        let outputs = core.dispatch(event.clone());
+        route_host_audio_outputs(&mut details, &mut host_audio, &outputs, &runtime_samples);
+        output_sequence.extend(outputs);
     }
 
     process_runtime_wav_imports(
@@ -405,7 +505,15 @@ pub fn run_fixture(fixture: &Fixture) -> FixtureReport {
     );
 
     for event in &fixture.post_runtime_wav_import_events {
-        output_sequence.extend(core.dispatch(event.clone()));
+        let outputs = core.dispatch(event.clone());
+        route_host_audio_outputs(&mut details, &mut host_audio, &outputs, &runtime_samples);
+        output_sequence.extend(outputs);
+    }
+
+    if let (Some(config), Some(runner)) = (&fixture.host_audio, host_audio.as_mut()) {
+        for frame_count in &config.advance_voice_frames {
+            runner.engine.advance_voice_frames(*frame_count);
+        }
     }
 
     validate_expected_output_sequence(&mut details, &output_sequence, fixture);
@@ -420,6 +528,7 @@ pub fn run_fixture(fixture: &Fixture) -> FixtureReport {
     if let Some(project_round_trip) = &fixture.project_round_trip {
         validate_project_round_trip(&mut details, &core, project_round_trip);
     }
+    validate_host_audio(&mut details, fixture, host_audio.as_ref());
 
     FixtureReport {
         id: fixture.id.clone(),
@@ -435,6 +544,60 @@ pub fn run_fixture_path(path: impl AsRef<Path>) -> Result<FixtureReport> {
         bail!("fixture {} has no source references", fixture.id);
     }
     Ok(run_fixture(&fixture))
+}
+
+fn build_host_audio_runner(
+    details: &mut Vec<String>,
+    fixture: &Fixture,
+) -> Option<HostAudioFixtureRunner> {
+    let Some(config) = &fixture.host_audio else {
+        return None;
+    };
+
+    let backend = CaptureAudioBackend::new(config.capture_history);
+    let engine =
+        match HostAudioEngine::new_with_voice_limit(backend, config.settings, config.voice_limit) {
+            Ok(mut engine) => {
+                engine.set_enabled(config.enabled);
+                engine
+            }
+            Err(error) => {
+                details.push(format!("host_audio setup error: {error}"));
+                return None;
+            }
+        };
+
+    Some(HostAudioFixtureRunner { engine })
+}
+
+fn route_host_audio_outputs(
+    _details: &mut Vec<String>,
+    host_audio: &mut Option<HostAudioFixtureRunner>,
+    outputs: &[MachineOutput],
+    runtime_samples: &RuntimeSampleLibrary,
+) {
+    let Some(runner) = host_audio.as_mut() else {
+        return;
+    };
+
+    for output in outputs {
+        match output {
+            MachineOutput::SamplePlaybackIntent { intent } => {
+                runner
+                    .engine
+                    .play_intent_with_runtime_samples_and_render_summary(intent, runtime_samples);
+            }
+            MachineOutput::MetronomeClick { intent } => {
+                runner
+                    .engine
+                    .play_count_in_click_with_render_summary(intent);
+            }
+            MachineOutput::SampleReleaseIntent { intent } => {
+                runner.engine.release_intent(intent);
+            }
+            _ => {}
+        }
+    }
 }
 
 fn process_runtime_wav_imports(
@@ -645,6 +808,366 @@ fn validate_expected_sample_metadata_created(
             "sample_metadata_created sequence mismatch: expected {:?}, got {:?}",
             fixture.expect_sample_metadata_created, actual_created
         ));
+    }
+}
+
+fn validate_host_audio(
+    details: &mut Vec<String>,
+    fixture: &Fixture,
+    runner: Option<&HostAudioFixtureRunner>,
+) {
+    let Some(config) = &fixture.host_audio else {
+        return;
+    };
+    let Some(runner) = runner else {
+        details.push("host_audio state mismatch: host audio runner was not created".to_string());
+        return;
+    };
+
+    let state = runner.engine.state();
+    let expected = &config.expect;
+
+    if let Some(mode) = expected.mode {
+        push_mismatch(details, "host_audio.mode", &mode, &state.mode);
+    }
+    if let Some(backend_name) = &expected.backend_name {
+        push_mismatch(
+            details,
+            "host_audio.backend_name",
+            backend_name,
+            &state.backend_name,
+        );
+    }
+    if let Some(render_settings) = expected.render_settings {
+        push_mismatch(
+            details,
+            "host_audio.render_settings",
+            &render_settings,
+            &state.render_settings,
+        );
+    }
+    if let Some(queued_render_count) = expected.queued_render_count {
+        push_mismatch(
+            details,
+            "host_audio.queued_render_count",
+            &queued_render_count,
+            &state.queued_render_count,
+        );
+    }
+    if let Some(played_render_count) = expected.played_render_count {
+        push_mismatch(
+            details,
+            "host_audio.played_render_count",
+            &played_render_count,
+            &state.played_render_count,
+        );
+    }
+    if let Some(voice_limit) = expected.voice_limit {
+        push_mismatch(
+            details,
+            "host_audio.voice_limit",
+            &voice_limit,
+            &state.voice_limit,
+        );
+    }
+    if let Some(active_voice_count) = expected.active_voice_count {
+        push_mismatch(
+            details,
+            "host_audio.active_voice_count",
+            &active_voice_count,
+            &state.active_voice_count,
+        );
+    }
+    if let Some(completed_voice_count) = expected.completed_voice_count {
+        push_mismatch(
+            details,
+            "host_audio.completed_voice_count",
+            &completed_voice_count,
+            &state.completed_voice_count,
+        );
+    }
+    if let Some(stolen_voice_count) = expected.stolen_voice_count {
+        push_mismatch(
+            details,
+            "host_audio.stolen_voice_count",
+            &stolen_voice_count,
+            &state.stolen_voice_count,
+        );
+    }
+    if let Some(released_voice_count) = expected.released_voice_count {
+        push_mismatch(
+            details,
+            "host_audio.released_voice_count",
+            &released_voice_count,
+            &state.released_voice_count,
+        );
+    }
+    if let Some(choked_voice_count) = expected.choked_voice_count {
+        push_mismatch(
+            details,
+            "host_audio.choked_voice_count",
+            &choked_voice_count,
+            &state.choked_voice_count,
+        );
+    }
+    if let Some(active_voices) = &expected.active_voices {
+        push_mismatch(
+            details,
+            "host_audio.active_voices",
+            active_voices,
+            &state.active_voices,
+        );
+    }
+    validate_expected_host_audio_captures(details, runner, expected);
+
+    validate_expected_host_audio_last_event(details, &state, expected);
+}
+
+fn validate_expected_host_audio_captures(
+    details: &mut Vec<String>,
+    runner: &HostAudioFixtureRunner,
+    expected: &ExpectedHostAudioState,
+) {
+    let captures = runner.engine.backend().captured_renders();
+
+    if let Some(capture_count) = expected.capture_count {
+        push_mismatch(
+            details,
+            "host_audio.capture_count",
+            &capture_count,
+            &captures.len(),
+        );
+    }
+    if let Some(capture_frame_counts) = &expected.capture_frame_counts {
+        let actual = captures
+            .iter()
+            .map(|capture| capture.frame_count)
+            .collect::<Vec<_>>();
+        push_mismatch(
+            details,
+            "host_audio.capture_frame_counts",
+            capture_frame_counts,
+            &actual,
+        );
+    }
+    if let Some(capture_render_kinds) = &expected.capture_render_kinds {
+        let actual = captures
+            .iter()
+            .map(|capture| capture.summary.render_kind)
+            .collect::<Vec<_>>();
+        push_mismatch(
+            details,
+            "host_audio.capture_render_kinds",
+            capture_render_kinds,
+            &actual,
+        );
+    }
+    if let Some(capture_source_kinds) = &expected.capture_source_kinds {
+        let actual = captures
+            .iter()
+            .map(|capture| capture.summary.source_kind)
+            .collect::<Vec<_>>();
+        push_mismatch(
+            details,
+            "host_audio.capture_source_kinds",
+            capture_source_kinds,
+            &actual,
+        );
+    }
+    if let Some(capture_source_sample_names) = &expected.capture_source_sample_names {
+        let actual = captures
+            .iter()
+            .map(|capture| capture.summary.source_sample_name.clone())
+            .collect::<Vec<_>>();
+        push_mismatch(
+            details,
+            "host_audio.capture_source_sample_names",
+            capture_source_sample_names,
+            &actual,
+        );
+    }
+    if let Some(capture_count_in_ticks) = &expected.capture_count_in_ticks {
+        let actual = captures
+            .iter()
+            .map(|capture| capture.summary.count_in_tick)
+            .collect::<Vec<_>>();
+        push_mismatch(
+            details,
+            "host_audio.capture_count_in_ticks",
+            capture_count_in_ticks,
+            &actual,
+        );
+    }
+    if let Some(capture_accents) = &expected.capture_accents {
+        let actual = captures
+            .iter()
+            .map(|capture| capture.summary.accent)
+            .collect::<Vec<_>>();
+        push_mismatch(
+            details,
+            "host_audio.capture_accents",
+            capture_accents,
+            &actual,
+        );
+    }
+}
+
+fn validate_expected_host_audio_last_event(
+    details: &mut Vec<String>,
+    state: &HostAudioState,
+    expected: &ExpectedHostAudioState,
+) {
+    let Some(event) = &state.last_event else {
+        if expected.last_event_type.is_some() {
+            details.push("host_audio.last_event mismatch: expected event, got None".to_string());
+        }
+        return;
+    };
+
+    if let Some(event_type) = expected.last_event_type {
+        push_mismatch(
+            details,
+            "host_audio.last_event_type",
+            &event_type,
+            &host_audio_event_type(event),
+        );
+    }
+    if let Some(backend_name) = &expected.last_event_backend_name {
+        push_mismatch(
+            details,
+            "host_audio.last_event_backend_name",
+            backend_name,
+            &host_audio_event_backend_name(event).to_string(),
+        );
+    }
+    if let Some(render_kind) = expected.last_event_render_kind {
+        let actual = host_audio_event_render_kind(event);
+        if actual != Some(render_kind) {
+            details.push(format!(
+                "host_audio.last_event_render_kind mismatch: expected {:?}, got {:?}",
+                render_kind, actual
+            ));
+        }
+    }
+    if let Some(source_kind) = expected.last_event_source_kind {
+        let actual = host_audio_event_source_kind(event);
+        if actual != Some(source_kind) {
+            details.push(format!(
+                "host_audio.last_event_source_kind mismatch: expected {:?}, got {:?}",
+                source_kind, actual
+            ));
+        }
+    }
+    if let Some(frame_count) = expected.last_event_frame_count {
+        let actual = host_audio_event_frame_count(event);
+        if actual != Some(frame_count) {
+            details.push(format!(
+                "host_audio.last_event_frame_count mismatch: expected {}, got {:?}",
+                frame_count, actual
+            ));
+        }
+    }
+    if let Some(voice_id) = expected.last_event_voice_id {
+        let actual = host_audio_event_voice_id(event);
+        if actual != Some(voice_id) {
+            details.push(format!(
+                "host_audio.last_event_voice_id mismatch: expected {}, got {:?}",
+                voice_id, actual
+            ));
+        }
+    }
+    if let Some(stolen_voice_id) = expected.last_event_stolen_voice_id {
+        let actual = host_audio_event_stolen_voice_id(event);
+        if actual != Some(stolen_voice_id) {
+            details.push(format!(
+                "host_audio.last_event_stolen_voice_id mismatch: expected {}, got {:?}",
+                stolen_voice_id, actual
+            ));
+        }
+    }
+    if let Some(choked_voice_count) = expected.last_event_choked_voice_count {
+        let actual = host_audio_event_choked_voice_count(event);
+        if actual != Some(choked_voice_count) {
+            details.push(format!(
+                "host_audio.last_event_choked_voice_count mismatch: expected {}, got {:?}",
+                choked_voice_count, actual
+            ));
+        }
+    }
+}
+
+fn host_audio_event_type(event: &HostAudioEvent) -> ExpectedHostAudioEventType {
+    match event {
+        HostAudioEvent::Ignored { .. } => ExpectedHostAudioEventType::Ignored,
+        HostAudioEvent::Enqueued { .. } => ExpectedHostAudioEventType::Enqueued,
+        HostAudioEvent::Released { .. } => ExpectedHostAudioEventType::Released,
+        HostAudioEvent::Failed { .. } => ExpectedHostAudioEventType::Failed,
+    }
+}
+
+fn host_audio_event_backend_name(event: &HostAudioEvent) -> &str {
+    match event {
+        HostAudioEvent::Ignored { backend_name, .. }
+        | HostAudioEvent::Enqueued { backend_name, .. }
+        | HostAudioEvent::Released { backend_name, .. }
+        | HostAudioEvent::Failed { backend_name, .. } => backend_name,
+    }
+}
+
+fn host_audio_event_render_kind(event: &HostAudioEvent) -> Option<AudioRenderKind> {
+    match event {
+        HostAudioEvent::Enqueued { receipt, .. } => Some(receipt.summary.render_kind),
+        HostAudioEvent::Failed { summary, .. } => {
+            summary.as_ref().map(|summary| summary.render_kind)
+        }
+        _ => None,
+    }
+}
+
+fn host_audio_event_source_kind(event: &HostAudioEvent) -> Option<AudioSourceKind> {
+    match event {
+        HostAudioEvent::Enqueued { receipt, .. } => Some(receipt.summary.source_kind),
+        HostAudioEvent::Failed { summary, .. } => {
+            summary.as_ref().map(|summary| summary.source_kind)
+        }
+        _ => None,
+    }
+}
+
+fn host_audio_event_frame_count(event: &HostAudioEvent) -> Option<usize> {
+    match event {
+        HostAudioEvent::Enqueued { receipt, .. } => Some(receipt.frame_count),
+        _ => None,
+    }
+}
+
+fn host_audio_event_voice_id(event: &HostAudioEvent) -> Option<u64> {
+    match event {
+        HostAudioEvent::Enqueued { receipt, .. } => receipt
+            .voice_allocation
+            .as_ref()
+            .map(|allocation| allocation.voice_id),
+        _ => None,
+    }
+}
+
+fn host_audio_event_stolen_voice_id(event: &HostAudioEvent) -> Option<u64> {
+    match event {
+        HostAudioEvent::Enqueued { receipt, .. } => receipt
+            .voice_allocation
+            .as_ref()
+            .and_then(|allocation| allocation.stolen_voice_id),
+        _ => None,
+    }
+}
+
+fn host_audio_event_choked_voice_count(event: &HostAudioEvent) -> Option<usize> {
+    match event {
+        HostAudioEvent::Enqueued { receipt, .. } => receipt
+            .voice_allocation
+            .as_ref()
+            .map(|allocation| allocation.choked_voice_count),
+        _ => None,
     }
 }
 

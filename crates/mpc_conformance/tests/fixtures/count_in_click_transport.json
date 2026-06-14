@@ -267,6 +267,86 @@
       "type": "lcd_changed"
     }
   ],
+  "host_audio": {
+    "enabled": true,
+    "settings": {
+      "sample_rate_hz": 44100,
+      "frame_count": 64
+    },
+    "capture_history": 8,
+    "expect": {
+      "mode": "enabled",
+      "backend_name": "capture",
+      "render_settings": {
+        "sample_rate_hz": 44100,
+        "frame_count": 64
+      },
+      "queued_render_count": 6,
+      "played_render_count": 6,
+      "voice_limit": 32,
+      "active_voice_count": 6,
+      "completed_voice_count": 0,
+      "stolen_voice_count": 0,
+      "released_voice_count": 0,
+      "choked_voice_count": 0,
+      "capture_count": 6,
+      "capture_frame_counts": [
+        64,
+        64,
+        64,
+        64,
+        64,
+        64
+      ],
+      "capture_render_kinds": [
+        "count_in_click",
+        "sample_playback",
+        "count_in_click",
+        "count_in_click",
+        "count_in_click",
+        "sample_playback"
+      ],
+      "capture_source_kinds": [
+        "rights_safe_generated",
+        "rights_safe_generated",
+        "rights_safe_generated",
+        "rights_safe_generated",
+        "rights_safe_generated",
+        "rights_safe_generated"
+      ],
+      "capture_source_sample_names": [
+        "COUNT-IN ACCENT",
+        "SYN-B12",
+        "COUNT-IN CLICK",
+        "COUNT-IN CLICK",
+        "COUNT-IN CLICK",
+        "SYN-B12"
+      ],
+      "capture_count_in_ticks": [
+        0,
+        null,
+        96,
+        192,
+        288,
+        null
+      ],
+      "capture_accents": [
+        true,
+        null,
+        false,
+        false,
+        false,
+        null
+      ],
+      "last_event_type": "enqueued",
+      "last_event_backend_name": "capture",
+      "last_event_render_kind": "sample_playback",
+      "last_event_source_kind": "rights_safe_generated",
+      "last_event_frame_count": 64,
+      "last_event_voice_id": 6,
+      "last_event_choked_voice_count": 0
+    }
+  },
   "expect": {
     "mode": "main",
     "lcd_title": "MAIN",

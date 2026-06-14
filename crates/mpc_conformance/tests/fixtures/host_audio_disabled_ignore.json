@@ -1,0 +1,67 @@
+{
+  "id": "audio.host.disabled-ignore",
+  "name": "Disabled host audio renders intent metadata but does not enqueue or allocate voices",
+  "source_refs": [
+    "docs/superpowers/plans/2026-06-13-mpc2000xl-host-audio-plumbing.md#source-and-evidence-status",
+    "docs/evidence/behavior-matrix.json#audio.host.disabled-ignore"
+  ],
+  "events": [
+    {
+      "type": "strike_pad",
+      "bank": "a",
+      "pad": 1,
+      "velocity": 100
+    }
+  ],
+  "host_audio": {
+    "enabled": false,
+    "settings": {
+      "sample_rate_hz": 44100,
+      "frame_count": 64
+    },
+    "expect": {
+      "mode": "disabled",
+      "backend_name": "capture",
+      "render_settings": {
+        "sample_rate_hz": 44100,
+        "frame_count": 64
+      },
+      "queued_render_count": 0,
+      "played_render_count": 0,
+      "voice_limit": 32,
+      "active_voice_count": 0,
+      "completed_voice_count": 0,
+      "stolen_voice_count": 0,
+      "released_voice_count": 0,
+      "choked_voice_count": 0,
+      "capture_count": 0,
+      "capture_frame_counts": [],
+      "last_event_type": "ignored",
+      "last_event_backend_name": "capture"
+    }
+  },
+  "expect": {
+    "mode": "main",
+    "lcd_title": "MAIN",
+    "playing": false,
+    "recording": false,
+    "event_count": 1,
+    "selected_track": 1,
+    "last_playback": {
+      "type": "intent",
+      "intent": {
+        "selected_track": 1,
+        "program_index": 1,
+        "program_name": "Program01",
+        "bank": "a",
+        "pad_number": 1,
+        "sample_id": "synthetic_a_01",
+        "sample_name": "SYN-A01",
+        "velocity": 100,
+        "level": 100,
+        "pan": 0,
+        "tune_cents": 0
+      }
+    }
+  }
+}

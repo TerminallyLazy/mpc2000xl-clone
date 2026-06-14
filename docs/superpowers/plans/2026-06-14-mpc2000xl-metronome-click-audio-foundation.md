@@ -24,7 +24,7 @@ Implemented behavior:
 
 ## Source And Evidence Status
 
-This behavior is an internal-spec/manual-investigation foundation. Exact MPC2000XL metronome timbre, DAC behavior, output routing, latency, click volume, hardware mixer path, and device timing tolerance remain pending accepted manual, firmware, service, or hardware evidence.
+This behavior is a fixture-backed internal-spec/manual-investigation foundation. Exact MPC2000XL metronome timbre, DAC behavior, output routing, latency, click volume, hardware mixer path, and device timing tolerance remain pending accepted manual, firmware, service, or hardware evidence.
 
 No proprietary samples, firmware bytes, recordings, binary audio assets, copied media, screenshots, or external click files are added.
 
@@ -45,6 +45,7 @@ Focused tests added:
 - Legacy sample render summary JSON defaults to `sample_playback` with absent count-in metadata.
 - Disabled host audio ignores count-in clicks without backend enqueue.
 - Enabled host audio enqueues and captures count-in click render summaries.
+- Conformance fixture `crates/mpc_conformance/tests/fixtures/count_in_click_transport.json` verifies count-in click intents and pad playback route through enabled deterministic capture host audio, with queued/played counters and active voice counts asserted.
 
 ## Next Boundaries
 
