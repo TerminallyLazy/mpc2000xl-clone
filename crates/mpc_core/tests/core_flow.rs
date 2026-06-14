@@ -1594,6 +1594,328 @@ fn main_screen_track_soft_keys_change_track_or_report_structured_ignore() {
 }
 
 #[test]
+fn track_mute_default_state_and_lcd_are_deterministic() {
+    let core = MpcCore::new();
+
+    assert!(core.state().muted_tracks.is_empty());
+    assert!(!core.state().is_track_muted(1));
+    assert!(core.state().lcd.lines[1].contains("Trk 01 Mute off/00"));
+    assert_eq!(core.state().lcd.soft_keys[3], "Mute");
+}
+
+#[test]
+fn track_mute_main_soft_key_4_toggles_outputs_and_serializes() {
+    let mut core = MpcCore::new();
+
+    let mute_outputs = core.dispatch(HardwareEvent::Press {
+        control: PanelControl::SoftKey(4),
+    });
+
+    assert_eq!(core.state().muted_tracks, vec![1]);
+    assert!(core.state().is_track_muted(1));
+    assert!(core.state().lcd.lines[1].contains("Mute on/01"));
+    assert_eq!(
+        mute_outputs,
+        vec![
+            MachineOutput::TrackMuteChanged {
+                track: 1,
+                muted: true,
+                muted_tracks: vec![1],
+            },
+            MachineOutput::LcdChanged,
+        ]
+    );
+    assert_eq!(
+        serde_json::to_value(&mute_outputs[0]).expect("track mute output should serialize"),
+        serde_json::json!({
+            "type": "track_mute_changed",
+            "track": 1,
+            "muted": true,
+            "muted_tracks": [1]
+        })
+    );
+
+    let unmute_outputs = core.dispatch(HardwareEvent::Press {
+        control: PanelControl::SoftKey(4),
+    });
+
+    assert!(core.state().muted_tracks.is_empty());
+    assert!(core.state().lcd.lines[1].contains("Mute off/00"));
+    assert_eq!(
+        unmute_outputs,
+        vec![
+            MachineOutput::TrackMuteChanged {
+                track: 1,
+                muted: false,
+                muted_tracks: Vec::new(),
+            },
+            MachineOutput::LcdChanged,
+        ]
+    );
+}
+
+#[test]
+fn track_mute_playback_skips_muted_track_without_outputs_or_last_playback() {
+    let mut snapshot = snapshot_with_recorded_track_events(&[(1, 48, PadBank::A, 3, 83)]);
+    snapshot.sequence.muted_tracks = vec![1];
+    let previous_playback = SamplePlaybackResolution::Intent {
+        intent: sample_playback_intent_for_track_bank_pad(2, PadBank::D, 16, 127),
+    };
+    reset_snapshot_playhead(&mut snapshot, 0);
+    snapshot.machine.last_playback = Some(previous_playback.clone());
+    let mut core = restore_snapshot(snapshot);
+
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::Play,
+    });
+    let outputs = core.dispatch(HardwareEvent::Tick { micros: 500_000 });
+
+    assert_eq!(core.state().playhead_ticks, 96);
+    assert!(outputs.contains(&MachineOutput::LcdChanged));
+    assert!(
+        !outputs
+            .iter()
+            .any(|output| matches!(output, MachineOutput::SequenceEventPlayed { .. }))
+    );
+    assert!(playback_intents(&outputs).is_empty());
+    assert_eq!(core.state().last_playback, Some(previous_playback));
+}
+
+#[test]
+fn track_mute_playback_schedules_only_unmuted_tracks() {
+    let mut snapshot = snapshot_with_recorded_track_events(&[
+        (1, 48, PadBank::A, 1, 81),
+        (2, 96, PadBank::A, 2, 82),
+    ]);
+    snapshot.sequence.muted_tracks = vec![2];
+    reset_snapshot_playhead(&mut snapshot, 0);
+    let mut core = restore_snapshot(snapshot);
+
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::Play,
+    });
+    let outputs = core.dispatch(HardwareEvent::Tick { micros: 500_000 });
+
+    let played_tracks = outputs
+        .iter()
+        .filter_map(|output| match output {
+            MachineOutput::SequenceEventPlayed { event } => Some(event.selected_track),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let intent_tracks = playback_intents(&outputs)
+        .iter()
+        .map(|intent| intent.selected_track)
+        .collect::<Vec<_>>();
+
+    assert_eq!(played_tracks, vec![1]);
+    assert_eq!(intent_tracks, vec![1]);
+    assert!(matches!(
+        &core.state().last_playback,
+        Some(SamplePlaybackResolution::Intent { intent })
+            if intent.selected_track == 1 && intent.sample_id == "synthetic_a_01"
+    ));
+}
+
+#[test]
+fn track_mute_loop_playback_skips_muted_track_across_boundary() {
+    let mut snapshot = snapshot_with_recorded_track_events(&[
+        (1, 360, PadBank::A, 1, 81),
+        (2, 48, PadBank::A, 2, 82),
+    ]);
+    snapshot.sequence.loop_enabled = true;
+    snapshot.sequence.muted_tracks = vec![1];
+    reset_snapshot_playhead(&mut snapshot, 350);
+    let mut core = restore_snapshot(snapshot);
+
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::Play,
+    });
+    let outputs = core.dispatch(HardwareEvent::Tick { micros: 500_000 });
+
+    let played_tracks = outputs
+        .iter()
+        .filter_map(|output| match output {
+            MachineOutput::SequenceEventPlayed { event } => Some(event.selected_track),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let intent_tracks = playback_intents(&outputs)
+        .iter()
+        .map(|intent| intent.selected_track)
+        .collect::<Vec<_>>();
+
+    assert_eq!(core.state().playhead_ticks, 62);
+    assert_eq!(played_tracks, vec![2]);
+    assert_eq!(intent_tracks, vec![2]);
+    assert!(matches!(
+        &core.state().last_playback,
+        Some(SamplePlaybackResolution::Intent { intent })
+            if intent.selected_track == 2 && intent.sample_id == "synthetic_a_02"
+    ));
+}
+
+#[test]
+fn track_mute_recording_while_muted_still_records_metadata() {
+    let mut core = MpcCore::new();
+
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::SoftKey(4),
+    });
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::Overdub,
+    });
+    let outputs = core.dispatch(HardwareEvent::StrikePad {
+        bank: PadBank::A,
+        pad: 3,
+        velocity: 83,
+    });
+
+    assert_eq!(core.state().muted_tracks, vec![1]);
+    assert_eq!(core.state().recorded_events.len(), 1);
+    let event = &core.state().recorded_events[0];
+    assert_eq!(event.selected_track, 1);
+    assert_eq!(
+        event
+            .playback
+            .as_ref()
+            .map(|intent| intent.sample_id.as_str()),
+        Some("synthetic_a_03")
+    );
+    assert!(outputs.iter().any(|output| matches!(
+        output,
+        MachineOutput::SequenceEventRecorded { event }
+            if event.selected_track == 1
+                && event.playback.as_ref().map(|intent| intent.sample_id.as_str())
+                    == Some("synthetic_a_03")
+    )));
+    assert_eq!(playback_intents(&outputs).len(), 1);
+}
+
+#[test]
+fn track_mute_erase_while_muted_still_erases_selected_track_events() {
+    let mut snapshot = snapshot_with_recorded_track_events(&[(1, 48, PadBank::A, 4, 84)]);
+    snapshot.sequence.muted_tracks = vec![1];
+    snapshot.sequence.selected_track = 1;
+    let mut core = restore_snapshot(snapshot);
+
+    let outputs = core.dispatch(HardwareEvent::Press {
+        control: PanelControl::SoftKey(5),
+    });
+
+    assert!(core.state().recorded_events.is_empty());
+    assert_eq!(core.state().muted_tracks, vec![1]);
+    assert!(matches!(
+        outputs.as_slice(),
+        [
+            MachineOutput::SequenceEventsErased {
+                selected_track: 1,
+                count: 1,
+                events,
+            },
+            MachineOutput::LcdChanged,
+        ] if events.len() == 1
+            && events[0].selected_track == 1
+            && events[0].pad_number == 4
+    ));
+}
+
+#[test]
+fn track_mute_snapshot_defaults_round_trips_sorts_and_validates() {
+    let mut core = MpcCore::new();
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::SoftKey(4),
+    });
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::SoftKey(2),
+    });
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::SoftKey(4),
+    });
+
+    let json = core
+        .to_project_json()
+        .expect("track mute snapshot should encode");
+    assert!(json.contains(r#""muted_tracks": ["#));
+
+    let mut restored = MpcCore::new();
+    restored
+        .restore_project_json(&json)
+        .expect("track mute snapshot should restore");
+    assert_eq!(restored.state().selected_track, 2);
+    assert_eq!(restored.state().muted_tracks, vec![1, 2]);
+    assert!(restored.state().lcd.lines[1].contains("Mute on/02"));
+
+    let mut older_value =
+        serde_json::to_value(MpcCore::new().export_project_snapshot()).expect("snapshot value");
+    older_value
+        .pointer_mut("/sequence")
+        .and_then(serde_json::Value::as_object_mut)
+        .expect("snapshot sequence should be an object")
+        .remove("muted_tracks");
+    let older_json = serde_json::to_string(&older_value).expect("older JSON should encode");
+    let mut older = MpcCore::new();
+    older
+        .restore_project_json(&older_json)
+        .expect("older snapshot without muted_tracks should restore");
+    assert!(older.state().muted_tracks.is_empty());
+
+    let mut unsorted = MpcCore::new().export_project_snapshot();
+    unsorted.sequence.muted_tracks = vec![4, 2];
+    let mut unsorted_restored = MpcCore::new();
+    unsorted_restored
+        .restore_project_snapshot(unsorted)
+        .expect("unsorted unique muted tracks should restore");
+    assert_eq!(unsorted_restored.state().muted_tracks, vec![2, 4]);
+
+    let mut invalid_track = MpcCore::new().export_project_snapshot();
+    invalid_track.sequence.muted_tracks = vec![65];
+    assert_invalid_project_field(
+        MpcCore::new()
+            .restore_project_snapshot(invalid_track)
+            .expect_err("out-of-range muted track should be rejected"),
+        "sequence.muted_tracks[0]",
+        "1..=64",
+    );
+
+    let mut duplicate_track = MpcCore::new().export_project_snapshot();
+    duplicate_track.sequence.muted_tracks = vec![2, 2];
+    assert_invalid_project_field(
+        MpcCore::new()
+            .restore_project_snapshot(duplicate_track)
+            .expect_err("duplicate muted tracks should be rejected"),
+        "sequence.muted_tracks[1]",
+        "duplicate muted track",
+    );
+}
+
+#[test]
+fn track_mute_soft_key_4_is_main_only() {
+    let modes = [
+        (PanelControl::Program, Mode::Program),
+        (PanelControl::Sample, Mode::Sample),
+        (PanelControl::Trim, Mode::Trim),
+        (PanelControl::Song, Mode::Song),
+        (PanelControl::Midi, Mode::Midi),
+        (PanelControl::Disk, Mode::Disk),
+        (PanelControl::Setup, Mode::Setup),
+    ];
+
+    for (control, mode) in modes {
+        let mut core = MpcCore::new();
+        core.dispatch(HardwareEvent::Press { control });
+
+        let outputs = core.dispatch(HardwareEvent::Press {
+            control: PanelControl::SoftKey(4),
+        });
+
+        assert_eq!(core.state().mode, mode);
+        assert!(core.state().muted_tracks.is_empty());
+        assert_no_track_mute_outputs(&outputs);
+    }
+}
+
+#[test]
 fn disk_mode_default_screen_shows_project_json_boundary() {
     let mut core = MpcCore::new();
 
@@ -4361,6 +4683,31 @@ fn snapshot_with_recorded_assigned_events(events: &[(u64, u8, u8)]) -> ProjectSn
     snapshot
 }
 
+fn snapshot_with_recorded_track_events(events: &[(u8, u64, PadBank, u8, u8)]) -> ProjectSnapshot {
+    let core = MpcCore::new();
+    let mut snapshot = core.export_project_snapshot();
+    snapshot.sequence.recorded_events = events
+        .iter()
+        .map(
+            |(selected_track, tick, bank, pad, velocity)| SequenceEvent {
+                selected_track: *selected_track,
+                pad_bank: *bank,
+                pad_number: *pad,
+                velocity: *velocity,
+                tick: *tick,
+                playback: Some(sample_playback_intent_for_track_bank_pad(
+                    *selected_track,
+                    *bank,
+                    *pad,
+                    *velocity,
+                )),
+            },
+        )
+        .collect();
+    snapshot.machine.event_count = snapshot.sequence.recorded_events.len() as u64;
+    snapshot
+}
+
 fn sample_playback_intent_for_pad(pad: u8, velocity: u8) -> SamplePlaybackIntent {
     sample_playback_intent_for_bank_pad(PadBank::A, pad, velocity)
 }
@@ -4437,6 +4784,15 @@ fn assert_no_setup_outputs(outputs: &[MachineOutput]) {
             .iter()
             .all(|output| !matches!(output, MachineOutput::SetupPreferencesChanged { .. })),
         "non-SETUP output sequence must not contain setup outputs: {outputs:?}"
+    );
+}
+
+fn assert_no_track_mute_outputs(outputs: &[MachineOutput]) {
+    assert!(
+        outputs
+            .iter()
+            .all(|output| !matches!(output, MachineOutput::TrackMuteChanged { .. })),
+        "non-MAIN output sequence must not contain track mute outputs: {outputs:?}"
     );
 }
 

@@ -1075,6 +1075,106 @@
       ]
     },
     {
+      "id": "core.sequence.track-mute-playback-foundation",
+      "name": "MAIN track mute skips muted-track events during sequence playback",
+      "area": "sequencer",
+      "state": "fixture-backed-internal-spec",
+      "evidence": [
+        {
+          "source_id": "track-mute-playback-slice-plan",
+          "source_category": "internal_spec",
+          "type": "plan",
+          "status": "mapped",
+          "ref": "docs/superpowers/plans/2026-06-13-mpc2000xl-track-mute-playback.md#behavior-slice"
+        },
+        {
+          "source_id": "sequence-playback-scheduling-slice-plan",
+          "source_category": "internal_spec",
+          "type": "plan",
+          "status": "mapped",
+          "ref": "docs/superpowers/plans/2026-06-13-mpc2000xl-sequence-playback-scheduling.md#behavior-slice"
+        }
+      ],
+      "source_coverage": [
+        {
+          "source_category": "manual",
+          "source_id": "owner-manual",
+          "status": "investigation",
+          "ref": null,
+          "note": "Exact owner-manual mapping for MAIN track mute controls, dedicated Track Mute mode, and playback side effects is pending."
+        },
+        {
+          "source_category": "firmware",
+          "source_id": "mpc2000xl-os-local-reference",
+          "status": "investigation",
+          "ref": null,
+          "note": "No firmware or hardware trace has validated track mute persistence, scheduler filtering, or audio-engine behavior."
+        },
+        {
+          "source_category": "jjos",
+          "source_id": "jjos-unverified-boundary",
+          "status": "conflict-note",
+          "ref": "docs/superpowers/specs/2026-06-13-mpc2000xl-full-app-product-design.md#jj-os-evidence-boundary",
+          "note": "JJ-OS track mute behavior is not used as acceptance evidence for this internal foundation slice."
+        },
+        {
+          "source_category": "internal_spec",
+          "source_id": "track-mute-playback-slice-plan",
+          "status": "mapped",
+          "ref": "docs/superpowers/plans/2026-06-13-mpc2000xl-track-mute-playback.md#source-and-evidence-status",
+          "note": "Current track mute behavior is deterministic foundation behavior, not final MPC2000XL or JJ-OS parity."
+        }
+      ],
+      "inputs": [
+        {
+          "channel": "front_panel",
+          "event": "press",
+          "control": "soft_key_4",
+          "mode": "main"
+        },
+        {
+          "channel": "clock",
+          "event": "tick",
+          "micros": "u64"
+        },
+        {
+          "channel": "sequence",
+          "event": "recorded_event",
+          "selected_track": "1..=64"
+        }
+      ],
+      "expected_outputs": {
+        "state": {
+          "muted_tracks": "sorted unique track numbers in 1..=64",
+          "persistence": "muted_tracks round-trips in sequence snapshots and defaults empty when missing",
+          "playback": "recorded events on muted tracks are skipped",
+          "recording": "muted selected tracks still record metadata",
+          "erase": "MAIN F5 still erases selected-track events while muted"
+        },
+        "lcd": {
+          "title": "MAIN",
+          "selected_track_mute_state": "visible",
+          "muted_track_count": "visible"
+        },
+        "outputs": [
+          "TrackMuteChanged for MAIN soft key 4",
+          "LcdChanged after successful mute toggle",
+          "No SequenceEventPlayed or SamplePlaybackIntent for skipped muted-track events"
+        ],
+        "desktop": {
+          "status": "selected-track mute state and muted track count visible"
+        }
+      },
+      "tolerance": null,
+      "fixture_refs": [
+        "crates/mpc_core/tests/core_flow.rs",
+        "crates/mpc_conformance/tests/fixtures/sequence_track_mute_playback.json"
+      ],
+      "conflict_notes": [
+        "This is an internal MAIN playback-gating foundation only. Dedicated Track Mute mode, solo interaction, JJ-OS extensions, mute automation, MIDI output muting, voice stealing, and audio tail cutoff remain unmapped."
+      ]
+    },
+    {
       "id": "core.midi.note-input-mapping",
       "name": "MIDI note-on maps the default 36..=51 range to bank A pads",
       "area": "midi_input",

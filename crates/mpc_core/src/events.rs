@@ -435,6 +435,11 @@ pub enum MachineOutput {
     LoopChanged {
         enabled: bool,
     },
+    TrackMuteChanged {
+        track: u8,
+        muted: bool,
+        muted_tracks: Vec<u8>,
+    },
     BankChanged {
         bank: PadBank,
     },

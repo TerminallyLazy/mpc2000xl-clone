@@ -29,6 +29,8 @@ pub struct ProjectRoundTripExpectation {
     #[serde(default)]
     pub post_restore_events: Vec<HardwareEvent>,
     #[serde(default)]
+    pub expect_post_restore_output_sequence: Vec<MachineOutput>,
+    #[serde(default)]
     pub restore_playhead_ticks: Option<u64>,
     #[serde(default)]
     pub restore_playhead_tick_remainder: Option<u64>,
@@ -206,6 +208,8 @@ pub struct ExpectedState {
     #[serde(default)]
     pub selected_track: Option<u8>,
     #[serde(default)]
+    pub muted_tracks: Option<Vec<u8>>,
+    #[serde(default)]
     pub pad_bank: Option<PadBank>,
     #[serde(default)]
     pub tempo_bpm_x100: Option<u32>,
@@ -358,14 +362,28 @@ fn validate_expected_output_sequence(
     actual: &[MachineOutput],
     fixture: &Fixture,
 ) {
-    if fixture.expect_output_sequence.is_empty() {
+    validate_output_sequence(
+        details,
+        "output_sequence",
+        actual,
+        &fixture.expect_output_sequence,
+    );
+}
+
+fn validate_output_sequence(
+    details: &mut Vec<String>,
+    label: &str,
+    actual: &[MachineOutput],
+    expected: &[MachineOutput],
+) {
+    if expected.is_empty() {
         return;
     }
 
-    if actual != fixture.expect_output_sequence {
+    if actual != expected {
         details.push(format!(
-            "output_sequence mismatch: expected {:?}, got {:?}",
-            fixture.expect_output_sequence, actual
+            "{label} mismatch: expected {:?}, got {:?}",
+            expected, actual
         ));
     }
 }
@@ -410,9 +428,16 @@ fn validate_project_round_trip(
         return;
     }
 
+    let mut post_restore_output_sequence = Vec::new();
     for event in &expected.post_restore_events {
-        restored.dispatch(event.clone());
+        post_restore_output_sequence.extend(restored.dispatch(event.clone()));
     }
+    validate_output_sequence(
+        details,
+        "project_round_trip.post_restore_output_sequence",
+        &post_restore_output_sequence,
+        &expected.expect_post_restore_output_sequence,
+    );
 
     validate_expected_state(
         details,
@@ -477,6 +502,15 @@ fn validate_expected_state(
             details.push(format!(
                 "{prefix}selected_track mismatch: expected {}, got {}",
                 selected_track, state.selected_track
+            ));
+        }
+    }
+
+    if let Some(muted_tracks) = &expected.muted_tracks {
+        if &state.muted_tracks != muted_tracks {
+            details.push(format!(
+                "{prefix}muted_tracks mismatch: expected {:?}, got {:?}",
+                muted_tracks, state.muted_tracks
             ));
         }
     }

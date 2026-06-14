@@ -156,6 +156,8 @@ pub struct ProjectSequenceSnapshot {
     pub name: String,
     pub tempo_bpm_x100: u32,
     pub selected_track: u8,
+    #[serde(default)]
+    pub muted_tracks: Vec<u8>,
     pub bar_count: u16,
     #[serde(default)]
     pub loop_enabled: bool,
@@ -263,6 +265,8 @@ pub struct MpcState {
     pub recording: bool,
     pub loop_enabled: bool,
     pub selected_track: u8,
+    #[serde(default)]
+    pub muted_tracks: Vec<u8>,
     pub bar_count: u16,
     pub selected_main_field: MainScreenField,
     pub pad_bank: PadBank,
@@ -308,6 +312,8 @@ impl Default for MpcState {
                 sequence_index,
                 &sequence_name,
                 selected_track,
+                false,
+                0,
                 &current_program.name,
                 tempo_bpm_x100,
                 false,
@@ -326,6 +332,7 @@ impl Default for MpcState {
             recording: false,
             loop_enabled: false,
             selected_track,
+            muted_tracks: Vec::new(),
             bar_count,
             selected_main_field,
             pad_bank: PadBank::A,
@@ -363,6 +370,10 @@ impl MpcState {
     pub fn selected_sample(&self) -> Option<SampleCatalogEntry> {
         let catalog = self.sample_catalog();
         selected_sample_entry(&catalog, self.selected_sample_id.as_deref()).cloned()
+    }
+
+    pub fn is_track_muted(&self, track: u8) -> bool {
+        self.muted_tracks.contains(&track)
     }
 }
 
@@ -409,6 +420,7 @@ impl MpcCore {
                 name: self.state.sequence_name.clone(),
                 tempo_bpm_x100: self.state.tempo_bpm_x100,
                 selected_track: self.state.selected_track,
+                muted_tracks: self.state.muted_tracks.clone(),
                 bar_count: self.state.bar_count,
                 loop_enabled: self.state.loop_enabled,
                 recorded_events: self.state.recorded_events.clone(),
@@ -447,6 +459,7 @@ impl MpcCore {
         self.state.recording = false;
         self.state.loop_enabled = snapshot.sequence.loop_enabled;
         self.state.selected_track = snapshot.sequence.selected_track;
+        self.state.muted_tracks = sorted_tracks(snapshot.sequence.muted_tracks);
         self.state.bar_count = snapshot.sequence.bar_count;
         self.state.selected_main_field = snapshot.machine.selected_main_field;
         self.state.pad_bank = snapshot.machine.pad_bank;
@@ -872,9 +885,34 @@ impl MpcCore {
                 self.refresh_lcd();
                 vec![MachineOutput::LcdChanged]
             }
+            4 => self.toggle_selected_track_mute(),
             5 => self.erase_latest_sequence_event_on_selected_track(),
             _ => Self::ignored(format!("main_screen.soft_key.{index}_unimplemented")),
         }
+    }
+
+    fn toggle_selected_track_mute(&mut self) -> Vec<MachineOutput> {
+        let track = self.state.selected_track;
+        let muted = match self.state.muted_tracks.binary_search(&track) {
+            Ok(index) => {
+                self.state.muted_tracks.remove(index);
+                false
+            }
+            Err(index) => {
+                self.state.muted_tracks.insert(index, track);
+                true
+            }
+        };
+
+        self.refresh_lcd();
+        vec![
+            MachineOutput::TrackMuteChanged {
+                track,
+                muted,
+                muted_tracks: self.state.muted_tracks.clone(),
+            },
+            MachineOutput::LcdChanged,
+        ]
     }
 
     fn erase_latest_sequence_event_on_selected_track(&mut self) -> Vec<MachineOutput> {
@@ -1231,6 +1269,8 @@ impl MpcCore {
                 self.state.sequence_index,
                 &self.state.sequence_name,
                 self.state.selected_track,
+                self.state.is_track_muted(self.state.selected_track),
+                self.state.muted_tracks.len(),
                 &self.state.current_program.name,
                 self.state.tempo_bpm_x100,
                 self.state.playing,
@@ -1533,6 +1573,7 @@ impl MpcCore {
             .recorded_events
             .iter()
             .filter(|event| event.tick <= sequence_length_ticks)
+            .filter(|event| !self.state.is_track_muted(event.selected_track))
             .filter(|event| {
                 (include_tick_zero && event.tick == 0)
                     || (previous_tick < event.tick && event.tick <= next_tick)
@@ -1801,6 +1842,7 @@ fn validate_sequence_json_fields(value: &Value) -> Result<(), ProjectSnapshotErr
             "name",
             "tempo_bpm_x100",
             "selected_track",
+            "muted_tracks",
             "bar_count",
             "loop_enabled",
             "recorded_events",
@@ -2128,6 +2170,7 @@ fn validate_project_snapshot(snapshot: &ProjectSnapshot) -> Result<(), ProjectSn
         MIN_TRACK_INDEX,
         MAX_TRACK_INDEX,
     )?;
+    validate_muted_tracks(&snapshot.sequence.muted_tracks)?;
     validate_range_u16(
         "sequence.bar_count",
         snapshot.sequence.bar_count,
@@ -2232,6 +2275,25 @@ fn validate_song_snapshot(song: &ProjectSongSnapshot) -> Result<(), ProjectSnaps
         validate_song_step(&format!("song.steps[{index}]"), step)?;
     }
 
+    Ok(())
+}
+
+fn validate_muted_tracks(muted_tracks: &[u8]) -> Result<(), ProjectSnapshotError> {
+    let mut seen_tracks = BTreeSet::new();
+    for (index, track) in muted_tracks.iter().copied().enumerate() {
+        validate_range_u8(
+            &format!("sequence.muted_tracks[{index}]"),
+            track,
+            MIN_TRACK_INDEX,
+            MAX_TRACK_INDEX,
+        )?;
+        if !seen_tracks.insert(track) {
+            return Err(invalid_value(
+                &format!("sequence.muted_tracks[{index}]"),
+                "duplicate muted track",
+            ));
+        }
+    }
     Ok(())
 }
 
@@ -2485,6 +2547,11 @@ fn default_song_steps() -> Vec<SongStep> {
         sequence_index: MIN_SONG_SEQUENCE_INDEX,
         repeats: MIN_SONG_REPEATS,
     }]
+}
+
+fn sorted_tracks(mut tracks: Vec<u8>) -> Vec<u8> {
+    tracks.sort_unstable();
+    tracks
 }
 
 fn validate_playhead_remainder(remainder: u64) -> Result<(), ProjectSnapshotError> {

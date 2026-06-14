@@ -18,6 +18,8 @@ impl LcdFrame {
         sequence_index: u8,
         sequence_name: &str,
         selected_track: u8,
+        selected_track_muted: bool,
+        muted_track_count: usize,
         program_name: &str,
         tempo_bpm_x100: u32,
         playing: bool,
@@ -37,6 +39,7 @@ impl LcdFrame {
             (false, false) => "STOP",
         };
         let loop_text = if loop_enabled { "LP" } else { "--" };
+        let mute_text = if selected_track_muted { "on" } else { "off" };
         let marker = |field| {
             if selected_field == field { ">" } else { " " }
         };
@@ -51,9 +54,10 @@ impl LcdFrame {
                     sequence_name
                 ),
                 format!(
-                    "{}Trk {:02}  Pgm {}",
+                    "{}Trk {:02} Mute {mute_text}/{:02} Pgm {}",
                     marker(MainScreenField::Track),
                     selected_track,
+                    muted_track_count.min(99),
                     program_name
                 ),
                 format!(
@@ -75,7 +79,7 @@ impl LcdFrame {
                 "TrList".to_string(),
                 "Track+".to_string(),
                 "Track-".to_string(),
-                "Solo".to_string(),
+                "Mute".to_string(),
                 "Erase".to_string(),
                 "Edit".to_string(),
             ],

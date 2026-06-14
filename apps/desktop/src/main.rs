@@ -636,6 +636,21 @@ impl MpcDesktopApp {
             );
         }
 
+        if let Some(MachineOutput::TrackMuteChanged {
+            track,
+            muted,
+            muted_tracks,
+        }) = outputs
+            .iter()
+            .find(|output| matches!(output, MachineOutput::TrackMuteChanged { .. }))
+        {
+            return format!(
+                "Track mute Trk {track:02} {} ({} muted)",
+                if *muted { "on" } else { "off" },
+                muted_tracks.len()
+            );
+        }
+
         if let Some(MachineOutput::BankChanged { bank }) = outputs
             .iter()
             .find(|output| matches!(output, MachineOutput::BankChanged { .. }))
@@ -918,6 +933,9 @@ impl MpcDesktopApp {
         let sequence_length_ticks = state.sequence_length_ticks();
         let playhead_ticks = state.playhead_ticks;
         let recorded_event_count = state.recorded_events.len();
+        let selected_track = state.selected_track;
+        let selected_track_muted = state.is_track_muted(selected_track);
+        let muted_track_count = state.muted_tracks.len();
         let can_erase = state.mode == Mode::Main;
         ui.horizontal_wrapped(|ui| {
             ui.label(format!(
@@ -934,6 +952,16 @@ impl MpcDesktopApp {
             ui.label(format!("Playhead: {} ticks", playhead_ticks));
             ui.separator();
             ui.label(format!("Recorded events: {}", recorded_event_count));
+            ui.separator();
+            ui.label(format!(
+                "Track mute: Trk {selected_track:02} {} ({} muted)",
+                if selected_track_muted {
+                    "muted"
+                } else {
+                    "active"
+                },
+                muted_track_count
+            ));
             ui.separator();
             if ui
                 .add_enabled(can_erase, egui::Button::new("Erase last event"))
@@ -1095,10 +1123,16 @@ impl MpcDesktopApp {
 fn main_screen_status(state: &MpcState) -> String {
     match state.mode {
         Mode::Main => format!(
-            "LCD updated: {} focus, Seq {:02}, Trk {:02}, {}, Tempo {}, Bars {:03}, Loop {}, Len {}, Tick {}, Events {}",
+            "LCD updated: {} focus, Seq {:02}, Trk {:02} {}, {} muted, {}, Tempo {}, Bars {:03}, Loop {}, Len {}, Tick {}, Events {}",
             state.selected_main_field.label(),
             state.sequence_index,
             state.selected_track,
+            if state.is_track_muted(state.selected_track) {
+                "muted"
+            } else {
+                "active"
+            },
+            state.muted_tracks.len(),
             state.current_program.name,
             tempo_text(state.tempo_bpm_x100),
             state.bar_count,
