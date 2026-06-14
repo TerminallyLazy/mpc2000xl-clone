@@ -202,6 +202,46 @@ impl MidiSettingsField {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+pub enum SongEditField {
+    Step,
+    Sequence,
+    Repeats,
+}
+
+impl Default for SongEditField {
+    fn default() -> Self {
+        Self::Step
+    }
+}
+
+impl SongEditField {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Step => "step",
+            Self::Sequence => "sequence",
+            Self::Repeats => "repeats",
+        }
+    }
+
+    pub fn previous(self) -> Self {
+        match self {
+            Self::Step => Self::Repeats,
+            Self::Sequence => Self::Step,
+            Self::Repeats => Self::Sequence,
+        }
+    }
+
+    pub fn next(self) -> Self {
+        match self {
+            Self::Step => Self::Sequence,
+            Self::Sequence => Self::Repeats,
+            Self::Repeats => Self::Step,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum DiskOperation {
     SaveProject,
     LoadProject,
@@ -252,6 +292,12 @@ pub struct SequenceEvent {
     pub tick: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub playback: Option<SamplePlaybackIntent>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SongStep {
+    pub sequence_index: u8,
+    pub repeats: u8,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -369,6 +415,23 @@ pub enum MachineOutput {
     },
     DiskOperationRequested {
         operation: DiskOperation,
+    },
+    SongStepSelected {
+        index: usize,
+        step: SongStep,
+    },
+    SongStepChanged {
+        index: usize,
+        field: SongEditField,
+        step: SongStep,
+    },
+    SongStepInserted {
+        index: usize,
+        step: SongStep,
+    },
+    SongStepDeleted {
+        index: usize,
+        step: SongStep,
     },
     PadAssignmentChanged {
         bank: PadBank,

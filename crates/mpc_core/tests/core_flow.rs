@@ -2,8 +2,8 @@ use mpc_core::{
     DiskOperation, HardwareEvent, INTERNAL_PPQN, MachineOutput, MainScreenField, MidiSettingsField,
     Mode, MpcCore, PROJECT_SNAPSHOT_VERSION, PadAssignment, PadAssignmentChange, PadBank,
     PanelControl, PlaybackMissReason, ProgramEditField, ProgramPad, ProjectSnapshot,
-    ProjectSnapshotError, SamplePlaybackIntent, SamplePlaybackResolution, SequenceEvent,
-    SyntheticSample, sequence_length_ticks_for_bars,
+    ProjectSnapshotError, ProjectSongSnapshot, SamplePlaybackIntent, SamplePlaybackResolution,
+    SequenceEvent, SongEditField, SongStep, SyntheticSample, sequence_length_ticks_for_bars,
 };
 
 #[test]
@@ -1856,6 +1856,544 @@ fn disk_operation_project_snapshot_defaults_missing_field_and_round_trips_select
 }
 
 #[test]
+fn song_mode_default_screen_shows_chain_editor() {
+    let mut core = MpcCore::new();
+
+    assert_eq!(
+        core.state().song_steps,
+        vec![SongStep {
+            sequence_index: 0,
+            repeats: 1,
+        }]
+    );
+    assert_eq!(core.state().selected_song_step_index, 0);
+    assert_eq!(core.state().selected_song_edit_field, SongEditField::Step);
+
+    let outputs = core.dispatch(HardwareEvent::Press {
+        control: PanelControl::Song,
+    });
+
+    assert_eq!(
+        outputs,
+        vec![
+            MachineOutput::ModeChanged { mode: Mode::Song },
+            MachineOutput::LcdChanged,
+        ]
+    );
+    assert_eq!(core.state().mode, Mode::Song);
+    assert_eq!(core.state().lcd.title, "SONG");
+    assert_eq!(core.state().lcd.lines[0], "Step 01/01 Edit step");
+    assert_eq!(core.state().lcd.lines[1], ">Step 01   Seq 01");
+    assert_eq!(core.state().lcd.lines[2], "Sequence Sequence01");
+    assert_eq!(core.state().lcd.lines[3], " Repeats 01");
+    assert_eq!(core.state().lcd.soft_keys[1], "Insert");
+    assert_eq!(core.state().lcd.soft_keys[2], "Delete");
+}
+
+#[test]
+fn song_field_selection_cycles_with_cursor_left_right() {
+    let mut core = MpcCore::new();
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::Song,
+    });
+
+    let sequence_outputs = core.dispatch(HardwareEvent::Press {
+        control: PanelControl::CursorRight,
+    });
+    assert_eq!(sequence_outputs, vec![MachineOutput::LcdChanged]);
+    assert_eq!(
+        core.state().selected_song_edit_field,
+        SongEditField::Sequence
+    );
+    assert!(core.state().lcd.lines[1].contains(">Seq 01"));
+
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::CursorRight,
+    });
+    assert_eq!(
+        core.state().selected_song_edit_field,
+        SongEditField::Repeats
+    );
+    assert!(core.state().lcd.lines[3].starts_with(">Repeats"));
+
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::CursorRight,
+    });
+    assert_eq!(core.state().selected_song_edit_field, SongEditField::Step);
+
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::CursorLeft,
+    });
+    assert_eq!(
+        core.state().selected_song_edit_field,
+        SongEditField::Repeats
+    );
+}
+
+#[test]
+fn song_step_selection_bounds_emit_selected_or_ignored() {
+    let mut core = MpcCore::new();
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::Song,
+    });
+
+    let previous_at_first = core.dispatch(HardwareEvent::Press {
+        control: PanelControl::CursorUp,
+    });
+    assert_eq!(
+        previous_at_first,
+        vec![MachineOutput::Ignored {
+            reason: "song.step.previous_unavailable".to_string(),
+        }]
+    );
+
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::SoftKey(2),
+    });
+    assert_eq!(core.state().selected_song_step_index, 1);
+
+    let next_at_last = core.dispatch(HardwareEvent::Press {
+        control: PanelControl::CursorDown,
+    });
+    assert_eq!(
+        next_at_last,
+        vec![MachineOutput::Ignored {
+            reason: "song.step.next_unavailable".to_string(),
+        }]
+    );
+
+    let previous_outputs = core.dispatch(HardwareEvent::Press {
+        control: PanelControl::CursorUp,
+    });
+    assert_eq!(
+        previous_outputs,
+        vec![
+            MachineOutput::SongStepSelected {
+                index: 0,
+                step: SongStep {
+                    sequence_index: 0,
+                    repeats: 1,
+                },
+            },
+            MachineOutput::LcdChanged,
+        ]
+    );
+    assert_eq!(core.state().selected_song_step_index, 0);
+}
+
+#[test]
+fn song_data_wheel_edits_step_sequence_and_repeats_with_clamps() {
+    let mut core = MpcCore::new();
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::Song,
+    });
+
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::CursorRight,
+    });
+    let sequence_outputs = core.dispatch(HardwareEvent::TurnDataWheel { delta: 4 });
+    assert_eq!(
+        sequence_outputs,
+        vec![
+            MachineOutput::SongStepChanged {
+                index: 0,
+                field: SongEditField::Sequence,
+                step: SongStep {
+                    sequence_index: 4,
+                    repeats: 1,
+                },
+            },
+            MachineOutput::LcdChanged,
+        ]
+    );
+    assert!(core.state().lcd.lines[1].contains(">Seq 05"));
+    assert!(core.state().lcd.lines[2].contains("Sequence05"));
+
+    let zero_outputs = core.dispatch(HardwareEvent::TurnDataWheel { delta: 0 });
+    assert_eq!(
+        zero_outputs,
+        vec![MachineOutput::Ignored {
+            reason: "song.sequence.zero_delta_ignored".to_string(),
+        }]
+    );
+
+    core.dispatch(HardwareEvent::TurnDataWheel { delta: i32::MAX });
+    assert_eq!(core.state().song_steps[0].sequence_index, 98);
+    assert!(core.state().lcd.lines[1].contains(">Seq 99"));
+    assert!(core.state().lcd.lines[2].contains("Sequence99"));
+    let sequence_boundary = core.dispatch(HardwareEvent::TurnDataWheel { delta: 1 });
+    assert_eq!(
+        sequence_boundary,
+        vec![MachineOutput::Ignored {
+            reason: "song.sequence.boundary".to_string(),
+        }]
+    );
+
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::CursorRight,
+    });
+    let repeats_outputs = core.dispatch(HardwareEvent::TurnDataWheel { delta: 8 });
+    assert_eq!(
+        repeats_outputs,
+        vec![
+            MachineOutput::SongStepChanged {
+                index: 0,
+                field: SongEditField::Repeats,
+                step: SongStep {
+                    sequence_index: 98,
+                    repeats: 9,
+                },
+            },
+            MachineOutput::LcdChanged,
+        ]
+    );
+
+    core.dispatch(HardwareEvent::TurnDataWheel { delta: i32::MIN });
+    assert_eq!(core.state().song_steps[0].repeats, 1);
+    let repeats_boundary = core.dispatch(HardwareEvent::TurnDataWheel { delta: -1 });
+    assert_eq!(
+        repeats_boundary,
+        vec![MachineOutput::Ignored {
+            reason: "song.repeats.boundary".to_string(),
+        }]
+    );
+
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::SoftKey(2),
+    });
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::CursorRight,
+    });
+    assert_eq!(core.state().selected_song_edit_field, SongEditField::Step);
+    let step_outputs = core.dispatch(HardwareEvent::TurnDataWheel { delta: -1 });
+    assert_eq!(
+        step_outputs,
+        vec![
+            MachineOutput::SongStepSelected {
+                index: 0,
+                step: SongStep {
+                    sequence_index: 98,
+                    repeats: 1,
+                },
+            },
+            MachineOutput::LcdChanged,
+        ]
+    );
+}
+
+#[test]
+fn song_insert_delete_preserves_at_least_one_step() {
+    let mut core = MpcCore::new();
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::Song,
+    });
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::CursorRight,
+    });
+    core.dispatch(HardwareEvent::TurnDataWheel { delta: 6 });
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::CursorRight,
+    });
+    core.dispatch(HardwareEvent::TurnDataWheel { delta: 2 });
+
+    let insert_outputs = core.dispatch(HardwareEvent::Press {
+        control: PanelControl::SoftKey(2),
+    });
+    assert_eq!(core.state().song_steps.len(), 2);
+    assert_eq!(core.state().selected_song_step_index, 1);
+    assert_eq!(
+        core.state().song_steps,
+        vec![
+            SongStep {
+                sequence_index: 6,
+                repeats: 3,
+            },
+            SongStep {
+                sequence_index: 6,
+                repeats: 1,
+            },
+        ]
+    );
+    assert_eq!(
+        insert_outputs,
+        vec![
+            MachineOutput::SongStepInserted {
+                index: 1,
+                step: SongStep {
+                    sequence_index: 6,
+                    repeats: 1,
+                },
+            },
+            MachineOutput::SongStepSelected {
+                index: 1,
+                step: SongStep {
+                    sequence_index: 6,
+                    repeats: 1,
+                },
+            },
+            MachineOutput::LcdChanged,
+        ]
+    );
+
+    let delete_outputs = core.dispatch(HardwareEvent::Press {
+        control: PanelControl::SoftKey(3),
+    });
+    assert_eq!(
+        delete_outputs,
+        vec![
+            MachineOutput::SongStepDeleted {
+                index: 1,
+                step: SongStep {
+                    sequence_index: 6,
+                    repeats: 1,
+                },
+            },
+            MachineOutput::SongStepSelected {
+                index: 0,
+                step: SongStep {
+                    sequence_index: 6,
+                    repeats: 3,
+                },
+            },
+            MachineOutput::LcdChanged,
+        ]
+    );
+    assert_eq!(core.state().song_steps.len(), 1);
+    assert_eq!(core.state().selected_song_step_index, 0);
+
+    let delete_last_outputs = core.dispatch(HardwareEvent::Press {
+        control: PanelControl::SoftKey(3),
+    });
+    assert_eq!(
+        delete_last_outputs,
+        vec![MachineOutput::Ignored {
+            reason: "song.delete.last_step_ignored".to_string(),
+        }]
+    );
+    assert_eq!(core.state().song_steps.len(), 1);
+}
+
+#[test]
+fn song_outputs_serialize_with_stable_snake_case_shape() {
+    let changed = MachineOutput::SongStepChanged {
+        index: 3,
+        field: SongEditField::Repeats,
+        step: SongStep {
+            sequence_index: 12,
+            repeats: 4,
+        },
+    };
+    let inserted = MachineOutput::SongStepInserted {
+        index: 4,
+        step: SongStep {
+            sequence_index: 12,
+            repeats: 1,
+        },
+    };
+
+    assert_eq!(
+        serde_json::to_value(changed).expect("song output should serialize"),
+        serde_json::json!({
+            "type": "song_step_changed",
+            "index": 3,
+            "field": "repeats",
+            "step": {
+                "sequence_index": 12,
+                "repeats": 4
+            }
+        })
+    );
+    assert_eq!(
+        serde_json::to_value(inserted).expect("song output should serialize"),
+        serde_json::json!({
+            "type": "song_step_inserted",
+            "index": 4,
+            "step": {
+                "sequence_index": 12,
+                "repeats": 1
+            }
+        })
+    );
+}
+
+#[test]
+fn song_soft_keys_are_isolated_from_non_song_modes() {
+    let mut core = MpcCore::new();
+
+    let main_f2 = core.dispatch(HardwareEvent::Press {
+        control: PanelControl::SoftKey(2),
+    });
+    assert_eq!(main_f2, vec![MachineOutput::LcdChanged]);
+    assert_eq!(core.state().selected_track, 2);
+    assert_no_song_outputs(&main_f2);
+
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::Program,
+    });
+    let program_f2 = core.dispatch(HardwareEvent::Press {
+        control: PanelControl::SoftKey(2),
+    });
+    assert!(
+        program_f2
+            .iter()
+            .any(|output| matches!(output, MachineOutput::PadAssignmentChanged { .. }))
+    );
+    assert_no_song_outputs(&program_f2);
+
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::Disk,
+    });
+    let disk_f3 = core.dispatch(HardwareEvent::Press {
+        control: PanelControl::SoftKey(3),
+    });
+    assert_eq!(
+        disk_f3,
+        vec![MachineOutput::DiskOperationRequested {
+            operation: DiskOperation::LoadProject,
+        }]
+    );
+    assert_no_song_outputs(&disk_f3);
+
+    assert_eq!(core.state().song_steps.len(), 1);
+}
+
+#[test]
+fn song_project_snapshot_defaults_round_trips_and_validates() {
+    let mut core = MpcCore::new();
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::Song,
+    });
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::CursorRight,
+    });
+    core.dispatch(HardwareEvent::TurnDataWheel { delta: 8 });
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::CursorRight,
+    });
+    core.dispatch(HardwareEvent::TurnDataWheel { delta: 4 });
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::SoftKey(2),
+    });
+
+    let json = core
+        .to_project_json()
+        .expect("SONG metadata snapshot should encode");
+    assert!(json.contains(r#""song""#));
+    assert!(json.contains(r#""selected_field": "repeats""#));
+
+    let mut restored = MpcCore::new();
+    restored
+        .restore_project_json(&json)
+        .expect("SONG metadata snapshot should restore");
+    assert_eq!(restored.state().mode, Mode::Song);
+    assert_eq!(
+        restored.state().song_steps,
+        vec![
+            SongStep {
+                sequence_index: 8,
+                repeats: 5,
+            },
+            SongStep {
+                sequence_index: 8,
+                repeats: 1,
+            },
+        ]
+    );
+    assert_eq!(restored.state().selected_song_step_index, 1);
+    assert_eq!(
+        restored.state().selected_song_edit_field,
+        SongEditField::Repeats
+    );
+    assert_eq!(restored.state().lcd.title, "SONG");
+
+    let mut older_value =
+        serde_json::to_value(MpcCore::new().export_project_snapshot()).expect("snapshot value");
+    older_value
+        .as_object_mut()
+        .expect("snapshot root should be an object")
+        .remove("song");
+    let older_json = serde_json::to_string(&older_value).expect("older JSON should encode");
+    let mut older = MpcCore::new();
+    older
+        .restore_project_json(&older_json)
+        .expect("older snapshot without song metadata should restore");
+    assert_eq!(
+        older.state().song_steps,
+        vec![SongStep {
+            sequence_index: 0,
+            repeats: 1,
+        }]
+    );
+    assert_eq!(older.state().selected_song_step_index, 0);
+    assert_eq!(older.state().selected_song_edit_field, SongEditField::Step);
+
+    let mut malformed_song_value =
+        serde_json::to_value(MpcCore::new().export_project_snapshot()).expect("snapshot value");
+    malformed_song_value
+        .as_object_mut()
+        .expect("snapshot root should be an object")
+        .insert("song".to_string(), serde_json::json!({}));
+    let malformed_song_json =
+        serde_json::to_string(&malformed_song_value).expect("malformed song JSON should encode");
+    assert_invalid_project_field(
+        MpcCore::new()
+            .restore_project_json(&malformed_song_json)
+            .expect_err("present incomplete song object should be rejected"),
+        "song.steps",
+        "required field is missing",
+    );
+
+    let mut invalid_empty = MpcCore::new().export_project_snapshot();
+    invalid_empty.song.steps.clear();
+    assert_invalid_project_field(
+        MpcCore::new()
+            .restore_project_snapshot(invalid_empty)
+            .expect_err("empty song should be rejected"),
+        "song.steps",
+        "at least one song step",
+    );
+
+    let mut invalid_selected = MpcCore::new().export_project_snapshot();
+    invalid_selected.song.selected_step_index = 1;
+    assert_invalid_project_field(
+        MpcCore::new()
+            .restore_project_snapshot(invalid_selected)
+            .expect_err("out-of-range selected song step should be rejected"),
+        "song.selected_step_index",
+        "0..=0",
+    );
+
+    let mut invalid_sequence = MpcCore::new().export_project_snapshot();
+    invalid_sequence.song.steps[0].sequence_index = 99;
+    assert_invalid_project_field(
+        MpcCore::new()
+            .restore_project_snapshot(invalid_sequence)
+            .expect_err("out-of-range song sequence should be rejected"),
+        "song.steps[0].sequence_index",
+        "0..=98",
+    );
+
+    let invalid_repeats = ProjectSnapshot {
+        song: ProjectSongSnapshot {
+            steps: vec![SongStep {
+                sequence_index: 0,
+                repeats: 0,
+            }],
+            selected_step_index: 0,
+            selected_field: SongEditField::Step,
+        },
+        ..MpcCore::new().export_project_snapshot()
+    };
+    assert_invalid_project_field(
+        MpcCore::new()
+            .restore_project_snapshot(invalid_repeats)
+            .expect_err("out-of-range song repeats should be rejected"),
+        "song.steps[0].repeats",
+        "1..=99",
+    );
+}
+
+#[test]
 fn program_mode_soft_key_clear_makes_selected_pad_unassigned() {
     let mut core = MpcCore::new();
 
@@ -3523,6 +4061,19 @@ fn playback_intents(outputs: &[MachineOutput]) -> Vec<&SamplePlaybackIntent> {
             _ => None,
         })
         .collect()
+}
+
+fn assert_no_song_outputs(outputs: &[MachineOutput]) {
+    assert!(
+        outputs.iter().all(|output| !matches!(
+            output,
+            MachineOutput::SongStepSelected { .. }
+                | MachineOutput::SongStepChanged { .. }
+                | MachineOutput::SongStepInserted { .. }
+                | MachineOutput::SongStepDeleted { .. }
+        )),
+        "non-SONG output sequence must not contain song outputs: {outputs:?}"
+    );
 }
 
 fn assignment_for_pad(core: &MpcCore, pad: ProgramPad) -> Option<&mpc_core::PadAssignment> {

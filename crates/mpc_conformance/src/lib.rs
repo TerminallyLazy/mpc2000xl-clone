@@ -3,7 +3,7 @@ use mpc_audio::{AudioRenderSettings, AudioSourceKind, ChannelBalance, render_int
 use mpc_core::{
     DiskOperation, HardwareEvent, MachineOutput, MainScreenField, MidiSettingsField, Mode, MpcCore,
     MpcState, PROJECT_SNAPSHOT_VERSION, PadBank, ProgramEditField, ProgramPad,
-    SamplePlaybackResolution, SequenceEvent,
+    SamplePlaybackResolution, SequenceEvent, SongEditField, SongStep,
 };
 use serde::de::{self, Visitor};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -248,6 +248,14 @@ pub struct ExpectedState {
     pub selected_midi_settings_field: Option<MidiSettingsField>,
     #[serde(default)]
     pub selected_disk_operation: Option<DiskOperation>,
+    #[serde(default)]
+    pub song_step_count: Option<usize>,
+    #[serde(default)]
+    pub selected_song_step_index: Option<usize>,
+    #[serde(default)]
+    pub selected_song_edit_field: Option<SongEditField>,
+    #[serde(default)]
+    pub song_step: Option<SongStep>,
     #[serde(default)]
     pub midi_mapped_note_range: Option<[u8; 2]>,
     #[serde(default)]
@@ -637,6 +645,47 @@ fn validate_expected_state(
             details.push(format!(
                 "{prefix}selected_disk_operation mismatch: expected {:?}, got {:?}",
                 selected_disk_operation, state.selected_disk_operation
+            ));
+        }
+    }
+
+    if let Some(song_step_count) = expected.song_step_count {
+        if state.song_steps.len() != song_step_count {
+            details.push(format!(
+                "{prefix}song_step_count mismatch: expected {}, got {}",
+                song_step_count,
+                state.song_steps.len()
+            ));
+        }
+    }
+
+    if let Some(selected_song_step_index) = expected.selected_song_step_index {
+        if state.selected_song_step_index != selected_song_step_index {
+            details.push(format!(
+                "{prefix}selected_song_step_index mismatch: expected {}, got {}",
+                selected_song_step_index, state.selected_song_step_index
+            ));
+        }
+    }
+
+    if let Some(selected_song_edit_field) = expected.selected_song_edit_field {
+        if state.selected_song_edit_field != selected_song_edit_field {
+            details.push(format!(
+                "{prefix}selected_song_edit_field mismatch: expected {:?}, got {:?}",
+                selected_song_edit_field, state.selected_song_edit_field
+            ));
+        }
+    }
+
+    if let Some(song_step) = expected.song_step {
+        let actual = state
+            .song_steps
+            .get(state.selected_song_step_index)
+            .copied();
+        if actual != Some(song_step) {
+            details.push(format!(
+                "{prefix}song_step mismatch: expected {:?}, got {:?}",
+                song_step, actual
             ));
         }
     }

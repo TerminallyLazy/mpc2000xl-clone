@@ -1,0 +1,157 @@
+{
+  "id": "core.song.chain-editor-round-trip",
+  "name": "SONG mode edits sequence/repeats, inserts, deletes, and round-trips song metadata",
+  "source_refs": [
+    "docs/superpowers/plans/2026-06-13-mpc2000xl-song-mode-chain-editor.md#behavior-slice",
+    "docs/evidence/behavior-matrix.json#core.song.chain-editor-foundation"
+  ],
+  "events": [
+    {
+      "type": "press",
+      "control": "song"
+    },
+    {
+      "type": "press",
+      "control": "cursor_right"
+    },
+    {
+      "type": "turn_data_wheel",
+      "delta": 4
+    },
+    {
+      "type": "press",
+      "control": "cursor_right"
+    },
+    {
+      "type": "turn_data_wheel",
+      "delta": 2
+    },
+    {
+      "type": "press",
+      "control": {
+        "soft_key": 2
+      }
+    },
+    {
+      "type": "press",
+      "control": "cursor_right"
+    },
+    {
+      "type": "press",
+      "control": {
+        "soft_key": 3
+      }
+    }
+  ],
+  "expect_output_sequence": [
+    {
+      "type": "mode_changed",
+      "mode": "song"
+    },
+    {
+      "type": "lcd_changed"
+    },
+    {
+      "type": "lcd_changed"
+    },
+    {
+      "type": "song_step_changed",
+      "index": 0,
+      "field": "sequence",
+      "step": {
+        "sequence_index": 4,
+        "repeats": 1
+      }
+    },
+    {
+      "type": "lcd_changed"
+    },
+    {
+      "type": "lcd_changed"
+    },
+    {
+      "type": "song_step_changed",
+      "index": 0,
+      "field": "repeats",
+      "step": {
+        "sequence_index": 4,
+        "repeats": 3
+      }
+    },
+    {
+      "type": "lcd_changed"
+    },
+    {
+      "type": "song_step_inserted",
+      "index": 1,
+      "step": {
+        "sequence_index": 4,
+        "repeats": 1
+      }
+    },
+    {
+      "type": "song_step_selected",
+      "index": 1,
+      "step": {
+        "sequence_index": 4,
+        "repeats": 1
+      }
+    },
+    {
+      "type": "lcd_changed"
+    },
+    {
+      "type": "lcd_changed"
+    },
+    {
+      "type": "song_step_deleted",
+      "index": 1,
+      "step": {
+        "sequence_index": 4,
+        "repeats": 1
+      }
+    },
+    {
+      "type": "song_step_selected",
+      "index": 0,
+      "step": {
+        "sequence_index": 4,
+        "repeats": 3
+      }
+    },
+    {
+      "type": "lcd_changed"
+    }
+  ],
+  "expect": {
+    "mode": "song",
+    "lcd_title": "SONG",
+    "playing": false,
+    "recording": false,
+    "event_count": 8,
+    "song_step_count": 1,
+    "selected_song_step_index": 0,
+    "selected_song_edit_field": "step",
+    "song_step": {
+      "sequence_index": 4,
+      "repeats": 3
+    }
+  },
+  "project_round_trip": {
+    "expect_snapshot_version": 1,
+    "expect": {
+      "mode": "song",
+      "lcd_title": "SONG",
+      "playing": false,
+      "recording": false,
+      "event_count": 8,
+      "song_step_count": 1,
+      "selected_song_step_index": 0,
+      "selected_song_edit_field": "step",
+      "song_step": {
+        "sequence_index": 4,
+        "repeats": 3
+      }
+    }
+  }
+}

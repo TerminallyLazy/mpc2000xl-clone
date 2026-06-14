@@ -2129,6 +2129,122 @@
         "This is not real MPC2000XL or JJ-OS sample recording/import/trim editing.",
         "No WAV bytes, factory samples, manuals, service scans, firmware bytes, JJ-OS assets, or copied third-party code are stored in the repo."
       ]
+    },
+    {
+      "id": "core.song.chain-editor-foundation",
+      "name": "SONG mode edits deterministic sequence-chain metadata",
+      "area": "song",
+      "state": "fixture-backed-internal-spec",
+      "evidence": [
+        {
+          "source_id": "song-mode-chain-editor-slice-plan",
+          "source_category": "internal_spec",
+          "type": "plan",
+          "status": "mapped",
+          "ref": "docs/superpowers/plans/2026-06-13-mpc2000xl-song-mode-chain-editor.md#behavior-slice"
+        }
+      ],
+      "source_coverage": [
+        {
+          "source_category": "manual",
+          "source_id": "owner-manual",
+          "status": "investigation",
+          "ref": null,
+          "note": "Exact MPC2000XL SONG screen flow, playback, conversion, and native persistence behavior are not mapped yet."
+        },
+        {
+          "source_category": "firmware",
+          "source_id": "mpc2000xl-os-local-reference",
+          "status": "investigation",
+          "ref": null,
+          "note": "No firmware trace has been captured for SONG mode behavior."
+        },
+        {
+          "source_category": "jjos",
+          "source_id": "jjos-unverified-boundary",
+          "status": "conflict-note",
+          "ref": "docs/superpowers/specs/2026-06-13-mpc2000xl-full-app-product-design.md#jj-os-evidence-boundary",
+          "note": "JJ-OS SONG behavior is explicitly not accepted as reference evidence for this foundation slice."
+        },
+        {
+          "source_category": "internal_spec",
+          "source_id": "song-mode-chain-editor-slice-plan",
+          "status": "mapped",
+          "ref": "docs/superpowers/plans/2026-06-13-mpc2000xl-song-mode-chain-editor.md#source-and-evidence-status",
+          "note": "The current contract is deterministic song-chain metadata editing only."
+        }
+      ],
+      "inputs": [
+        {
+          "channel": "front_panel",
+          "event": "press",
+          "control": "song"
+        },
+        {
+          "channel": "front_panel",
+          "event": "press",
+          "mode": "song",
+          "control": "cursor_left|cursor_right",
+          "policy": "cycle selected edit field"
+        },
+        {
+          "channel": "front_panel",
+          "event": "press",
+          "mode": "song",
+          "control": "cursor_up|cursor_down",
+          "policy": "select previous or next step, clamped at bounds"
+        },
+        {
+          "channel": "front_panel",
+          "event": "turn_data_wheel",
+          "mode": "song",
+          "policy": "edit selected field; stored sequence clamps to 0..=98 and displays as Seq 01..99; repeats clamp to 1..=99"
+        },
+        {
+          "channel": "front_panel",
+          "event": "press",
+          "mode": "song",
+          "control": "soft_key_2|soft_key_3",
+          "policy": "insert after selected step or delete selected step"
+        }
+      ],
+      "expected_outputs": {
+        "state": {
+          "default_song": "one step with stored sequence_index 0 displayed as Seq 01 and repeats 1",
+          "selected_field": "step by default; step, sequence, repeats cycle with cursor left/right",
+          "selection": "selected_song_step_index is zero-based; LCD displays one-based step/count",
+          "minimum_length": "deleting the last remaining step is ignored",
+          "snapshot": "top-level song object persists steps, selected_step_index, and selected_field with current-reader defaults"
+        },
+        "outputs": [
+          "SongStepSelected plus LcdChanged when selection changes",
+          "SongStepChanged plus LcdChanged when sequence or repeats changes",
+          "SongStepInserted, SongStepSelected, and LcdChanged for SONG F2 insert",
+          "SongStepDeleted, SongStepSelected, and LcdChanged for successful SONG F3 delete",
+          "Ignored for zero-delta edits, step-selection bounds, and delete-last-step"
+        ],
+        "lcd": {
+          "title": "SONG",
+          "content": "selected step index/count, selected sequence number/name, repeats, selected field marker, Insert/Delete soft keys"
+        },
+        "deferred": [
+          "song playback scheduling",
+          "song-to-sequence conversion",
+          "native MPC song files",
+          "JJ-OS behavior",
+          "manual parity claims"
+        ]
+      },
+      "tolerance": null,
+      "fixture_refs": [
+        "crates/mpc_core/tests/core_flow.rs",
+        "crates/mpc_conformance/tests/fixtures/song_mode_chain_editor_round_trip.json"
+      ],
+      "conflict_notes": [
+        "This is an internal-spec metadata editor, not full MPC2000XL or JJ-OS SONG behavior.",
+        "Song playback, conversion, native file formats, and manual parity are deferred.",
+        "No proprietary manuals, service scans, firmware bytes, JJ-OS assets, samples, media, binary fixtures, or copied third-party code are stored in the repo."
+      ]
     }
   ]
 }

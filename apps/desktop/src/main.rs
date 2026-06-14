@@ -443,6 +443,56 @@ impl MpcDesktopApp {
             return format!("DISK requested {}", operation.display_label());
         }
 
+        if let Some(MachineOutput::SongStepChanged { index, field, step }) = outputs
+            .iter()
+            .find(|output| matches!(output, MachineOutput::SongStepChanged { .. }))
+        {
+            return format!(
+                "SONG step {:02} {} -> Seq {:02} repeats {:02}",
+                index + 1,
+                field.label(),
+                u16::from(step.sequence_index) + 1,
+                step.repeats
+            );
+        }
+
+        if let Some(MachineOutput::SongStepInserted { index, step }) = outputs
+            .iter()
+            .find(|output| matches!(output, MachineOutput::SongStepInserted { .. }))
+        {
+            return format!(
+                "SONG inserted step {:02}: Seq {:02} repeats {:02}",
+                index + 1,
+                u16::from(step.sequence_index) + 1,
+                step.repeats
+            );
+        }
+
+        if let Some(MachineOutput::SongStepDeleted { index, step }) = outputs
+            .iter()
+            .find(|output| matches!(output, MachineOutput::SongStepDeleted { .. }))
+        {
+            return format!(
+                "SONG deleted step {:02}: Seq {:02} repeats {:02}",
+                index + 1,
+                u16::from(step.sequence_index) + 1,
+                step.repeats
+            );
+        }
+
+        if let Some(MachineOutput::SongStepSelected { index, step }) = outputs
+            .iter()
+            .find(|output| matches!(output, MachineOutput::SongStepSelected { .. }))
+        {
+            return format!(
+                "SONG selected step {:02}/{:02}: Seq {:02} repeats {:02}",
+                index + 1,
+                state.song_steps.len(),
+                u16::from(step.sequence_index) + 1,
+                step.repeats
+            );
+        }
+
         if let Some(MachineOutput::MidiNoteMapped {
             channel,
             note,
@@ -1010,6 +1060,17 @@ fn main_screen_status(state: &MpcState) -> String {
             state.mode,
             selected_sample_text(state.selected_sample().as_ref())
         ),
+        Mode::Song => {
+            let step = state.song_steps[state.selected_song_step_index];
+            format!(
+                "LCD updated: SONG step {:02}/{:02} field {}, Seq {:02}, repeats {:02}",
+                state.selected_song_step_index + 1,
+                state.song_steps.len(),
+                state.selected_song_edit_field.label(),
+                u16::from(step.sequence_index) + 1,
+                step.repeats
+            )
+        }
         Mode::Midi => format!(
             "LCD updated: MIDI input {} base {} range {}",
             midi_input_channel_text(state.midi_input_channel),

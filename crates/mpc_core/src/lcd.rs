@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::events::{
     DiskOperation, MidiSettingsField, PadAssignment, Program, ProgramEditField, ProgramPad,
-    SampleCatalogEntry,
+    SampleCatalogEntry, SongEditField, SongStep,
 };
 use crate::state::MainScreenField;
 
@@ -166,6 +166,53 @@ impl LcdFrame {
                 "F1".to_string(),
                 "F2".to_string(),
                 "F3".to_string(),
+                "F4".to_string(),
+                "F5".to_string(),
+                "F6".to_string(),
+            ],
+        }
+    }
+
+    pub fn song_screen(
+        steps: &[SongStep],
+        selected_index: usize,
+        selected_field: SongEditField,
+        sequence_name: &str,
+    ) -> Self {
+        let selected_step = steps[selected_index];
+        let display_index = selected_index + 1;
+        let sequence_display_index = u16::from(selected_step.sequence_index) + 1;
+        let marker = |field| {
+            if selected_field == field { ">" } else { " " }
+        };
+
+        Self {
+            title: "SONG".to_string(),
+            lines: [
+                format!(
+                    "Step {:02}/{:02} Edit {}",
+                    display_index.min(99),
+                    steps.len().min(99),
+                    selected_field.label()
+                ),
+                format!(
+                    "{}Step {:02}  {}Seq {:02}",
+                    marker(SongEditField::Step),
+                    display_index.min(99),
+                    marker(SongEditField::Sequence),
+                    sequence_display_index
+                ),
+                format!("Sequence {sequence_name}"),
+                format!(
+                    "{}Repeats {:02}",
+                    marker(SongEditField::Repeats),
+                    selected_step.repeats
+                ),
+            ],
+            soft_keys: [
+                "F1".to_string(),
+                "Insert".to_string(),
+                "Delete".to_string(),
                 "F4".to_string(),
                 "F5".to_string(),
                 "F6".to_string(),

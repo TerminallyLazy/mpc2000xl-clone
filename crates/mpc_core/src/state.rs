@@ -7,7 +7,7 @@ use crate::events::{
     DiskOperation, HardwareEvent, MachineOutput, MidiSettingsField, Mode, PadAssignment,
     PadAssignmentChange, PadBank, PanelControl, PlaybackMissReason, Program, ProgramEditField,
     ProgramPad, SampleCatalogEntry, SamplePlaybackIntent, SamplePlaybackMiss,
-    SamplePlaybackResolution, SequenceEvent, SyntheticSample,
+    SamplePlaybackResolution, SequenceEvent, SongEditField, SongStep, SyntheticSample,
 };
 use crate::lcd::LcdFrame;
 
@@ -25,6 +25,10 @@ const MIN_TEMPO_BPM_X100: u32 = 3000;
 const MAX_TEMPO_BPM_X100: u32 = 30000;
 const MIN_SEQUENCE_INDEX: u8 = 1;
 const MAX_SEQUENCE_INDEX: u8 = 99;
+const MIN_SONG_SEQUENCE_INDEX: u8 = 0;
+const MAX_SONG_SEQUENCE_INDEX: u8 = 98;
+const MIN_SONG_REPEATS: u8 = 1;
+const MAX_SONG_REPEATS: u8 = 99;
 const MIN_TRACK_INDEX: u8 = 1;
 const MAX_TRACK_INDEX: u8 = 64;
 const MIN_PROGRAM_INDEX: u8 = 1;
@@ -94,9 +98,12 @@ impl MainScreenField {
 ///
 /// The snapshot intentionally contains metadata only: sequence settings,
 /// program assignments, recorded event metadata, synthetic sample identifiers,
-/// and current UI/playhead position. It does not contain audio bytes, copied
-/// assets, firmware data, manuals, service scans, or transport armed/playing
-/// state. Restoring a snapshot always leaves transport stopped and disarmed.
+/// song-chain metadata, and current UI/playhead position. It does not contain
+/// audio bytes, copied assets, firmware data, manuals, service scans, or
+/// transport armed/playing state. Restoring a snapshot always leaves transport
+/// stopped and disarmed. Version 1 remains additive for foundation metadata:
+/// omitted newer objects restore deterministic defaults, while malformed
+/// present objects are rejected.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProjectSnapshot {
@@ -106,6 +113,8 @@ pub struct ProjectSnapshot {
     pub machine: ProjectMachineSnapshot,
     pub sequence: ProjectSequenceSnapshot,
     pub program: ProjectProgramSnapshot,
+    #[serde(default)]
+    pub song: ProjectSongSnapshot,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -152,6 +161,24 @@ pub struct ProjectProgramSnapshot {
     pub index: u8,
     pub name: String,
     pub pad_assignments: Vec<PadAssignment>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProjectSongSnapshot {
+    pub steps: Vec<SongStep>,
+    pub selected_step_index: usize,
+    pub selected_field: SongEditField,
+}
+
+impl Default for ProjectSongSnapshot {
+    fn default() -> Self {
+        Self {
+            steps: default_song_steps(),
+            selected_step_index: 0,
+            selected_field: SongEditField::Step,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -224,6 +251,9 @@ pub struct MpcState {
     pub midi_base_note: u8,
     pub selected_midi_settings_field: MidiSettingsField,
     pub selected_disk_operation: DiskOperation,
+    pub song_steps: Vec<SongStep>,
+    pub selected_song_step_index: usize,
+    pub selected_song_edit_field: SongEditField,
     pub last_playback: Option<SamplePlaybackResolution>,
     pub playhead_ticks: u64,
     pub playhead_tick_remainder: u64,
@@ -282,6 +312,9 @@ impl Default for MpcState {
             midi_base_note: DEFAULT_MIDI_BASE_NOTE,
             selected_midi_settings_field: MidiSettingsField::InputChannel,
             selected_disk_operation: DiskOperation::SaveProject,
+            song_steps: default_song_steps(),
+            selected_song_step_index: 0,
+            selected_song_edit_field: SongEditField::Step,
             last_playback: None,
             playhead_ticks: 0,
             playhead_tick_remainder: 0,
@@ -358,6 +391,11 @@ impl MpcCore {
                 name: self.state.current_program.name.clone(),
                 pad_assignments,
             },
+            song: ProjectSongSnapshot {
+                steps: self.state.song_steps.clone(),
+                selected_step_index: self.state.selected_song_step_index,
+                selected_field: self.state.selected_song_edit_field,
+            },
         }
     }
 
@@ -396,6 +434,9 @@ impl MpcCore {
         self.state.midi_base_note = snapshot.machine.midi_base_note;
         self.state.selected_midi_settings_field = snapshot.machine.selected_midi_settings_field;
         self.state.selected_disk_operation = snapshot.machine.selected_disk_operation;
+        self.state.song_steps = snapshot.song.steps;
+        self.state.selected_song_step_index = snapshot.song.selected_step_index;
+        self.state.selected_song_edit_field = snapshot.song.selected_field;
         self.state.last_playback = snapshot.machine.last_playback;
         self.state.playhead_ticks = snapshot.machine.playhead_ticks;
         self.state.playhead_tick_remainder = snapshot.machine.playhead_tick_remainder;
@@ -601,6 +642,10 @@ impl MpcCore {
             return self.adjust_disk_operation(delta);
         }
 
+        if self.state.mode == Mode::Song {
+            return self.adjust_song_field(delta);
+        }
+
         if matches!(self.state.mode, Mode::Sample | Mode::Trim) {
             return self.adjust_selected_sample(delta);
         }
@@ -648,6 +693,12 @@ impl MpcCore {
             return self.select_disk_operation(self.state.selected_disk_operation.previous());
         }
 
+        if self.state.mode == Mode::Song {
+            self.state.selected_song_edit_field = self.state.selected_song_edit_field.previous();
+            self.refresh_lcd();
+            return vec![MachineOutput::LcdChanged];
+        }
+
         if self.state.mode != Mode::Main {
             return Self::ignored(format!(
                 "{}.cursor_left_unmapped",
@@ -685,6 +736,12 @@ impl MpcCore {
             return self.select_disk_operation(self.state.selected_disk_operation.next());
         }
 
+        if self.state.mode == Mode::Song {
+            self.state.selected_song_edit_field = self.state.selected_song_edit_field.next();
+            self.refresh_lcd();
+            return vec![MachineOutput::LcdChanged];
+        }
+
         if self.state.mode != Mode::Main {
             return Self::ignored(format!(
                 "{}.cursor_right_unmapped",
@@ -698,6 +755,10 @@ impl MpcCore {
     }
 
     fn move_program_edit_field_up(&mut self) -> Vec<MachineOutput> {
+        if self.state.mode == Mode::Song {
+            return self.select_song_step_by_delta(-1, "song.step.previous_unavailable");
+        }
+
         if self.state.mode != Mode::Program {
             return Self::ignored(format!(
                 "{}.{:?}_unimplemented",
@@ -712,6 +773,10 @@ impl MpcCore {
     }
 
     fn move_program_edit_field_down(&mut self) -> Vec<MachineOutput> {
+        if self.state.mode == Mode::Song {
+            return self.select_song_step_by_delta(1, "song.step.next_unavailable");
+        }
+
         if self.state.mode != Mode::Program {
             return Self::ignored(format!(
                 "{}.{:?}_unimplemented",
@@ -736,6 +801,10 @@ impl MpcCore {
 
         if self.state.mode == Mode::Disk {
             return self.handle_disk_soft_key(index);
+        }
+
+        if self.state.mode == Mode::Song {
+            return self.handle_song_soft_key(index);
         }
 
         if self.state.mode != Mode::Main {
@@ -819,6 +888,14 @@ impl MpcCore {
         }
     }
 
+    fn handle_song_soft_key(&mut self, index: u8) -> Vec<MachineOutput> {
+        match index {
+            2 => self.insert_song_step_after_selected(),
+            3 => self.delete_selected_song_step(),
+            _ => Self::ignored(format!("song.soft_key.{index}_unmapped")),
+        }
+    }
+
     fn adjust_disk_operation(&mut self, delta: i32) -> Vec<MachineOutput> {
         match delta.cmp(&0) {
             std::cmp::Ordering::Less => {
@@ -838,6 +915,145 @@ impl MpcCore {
         self.refresh_lcd();
         vec![
             MachineOutput::DiskOperationSelected { operation },
+            MachineOutput::LcdChanged,
+        ]
+    }
+
+    fn select_song_step_by_delta(
+        &mut self,
+        delta: i32,
+        no_movement_reason: &str,
+    ) -> Vec<MachineOutput> {
+        if delta == 0 {
+            return Self::ignored("song.step.zero_delta_ignored".to_string());
+        }
+
+        let last_index = self.state.song_steps.len().saturating_sub(1);
+        let next_index =
+            clamp_delta_usize(self.state.selected_song_step_index, delta, 0, last_index);
+        if next_index == self.state.selected_song_step_index {
+            return Self::ignored(no_movement_reason.to_string());
+        }
+
+        self.state.selected_song_step_index = next_index;
+        let step = self.state.song_steps[next_index];
+        self.refresh_lcd();
+        vec![
+            MachineOutput::SongStepSelected {
+                index: next_index,
+                step,
+            },
+            MachineOutput::LcdChanged,
+        ]
+    }
+
+    fn adjust_song_field(&mut self, delta: i32) -> Vec<MachineOutput> {
+        if delta == 0 {
+            return Self::ignored(format!(
+                "song.{}.zero_delta_ignored",
+                self.state.selected_song_edit_field.label()
+            ));
+        }
+
+        match self.state.selected_song_edit_field {
+            SongEditField::Step => self.select_song_step_by_delta(delta, "song.step.boundary"),
+            SongEditField::Sequence => self.adjust_selected_song_step_sequence(delta),
+            SongEditField::Repeats => self.adjust_selected_song_step_repeats(delta),
+        }
+    }
+
+    fn adjust_selected_song_step_sequence(&mut self, delta: i32) -> Vec<MachineOutput> {
+        let index = self.state.selected_song_step_index;
+        let step = &mut self.state.song_steps[index];
+        let next = clamp_delta_u8(
+            step.sequence_index,
+            delta,
+            MIN_SONG_SEQUENCE_INDEX,
+            MAX_SONG_SEQUENCE_INDEX,
+        );
+        if next == step.sequence_index {
+            return Self::ignored("song.sequence.boundary".to_string());
+        }
+
+        step.sequence_index = next;
+        let step = *step;
+        self.refresh_lcd();
+        vec![
+            MachineOutput::SongStepChanged {
+                index,
+                field: SongEditField::Sequence,
+                step,
+            },
+            MachineOutput::LcdChanged,
+        ]
+    }
+
+    fn adjust_selected_song_step_repeats(&mut self, delta: i32) -> Vec<MachineOutput> {
+        let index = self.state.selected_song_step_index;
+        let step = &mut self.state.song_steps[index];
+        let next = clamp_delta_u8(step.repeats, delta, MIN_SONG_REPEATS, MAX_SONG_REPEATS);
+        if next == step.repeats {
+            return Self::ignored("song.repeats.boundary".to_string());
+        }
+
+        step.repeats = next;
+        let step = *step;
+        self.refresh_lcd();
+        vec![
+            MachineOutput::SongStepChanged {
+                index,
+                field: SongEditField::Repeats,
+                step,
+            },
+            MachineOutput::LcdChanged,
+        ]
+    }
+
+    fn insert_song_step_after_selected(&mut self) -> Vec<MachineOutput> {
+        let selected_index = self.state.selected_song_step_index;
+        let selected_step = self.state.song_steps[selected_index];
+        let inserted_index = selected_index + 1;
+        let inserted_step = SongStep {
+            sequence_index: selected_step.sequence_index,
+            repeats: MIN_SONG_REPEATS,
+        };
+
+        self.state.song_steps.insert(inserted_index, inserted_step);
+        self.state.selected_song_step_index = inserted_index;
+        self.refresh_lcd();
+        vec![
+            MachineOutput::SongStepInserted {
+                index: inserted_index,
+                step: inserted_step,
+            },
+            MachineOutput::SongStepSelected {
+                index: inserted_index,
+                step: inserted_step,
+            },
+            MachineOutput::LcdChanged,
+        ]
+    }
+
+    fn delete_selected_song_step(&mut self) -> Vec<MachineOutput> {
+        if self.state.song_steps.len() == 1 {
+            return Self::ignored("song.delete.last_step_ignored".to_string());
+        }
+
+        let deleted_index = self.state.selected_song_step_index;
+        let deleted_step = self.state.song_steps.remove(deleted_index);
+        let selected_index = deleted_index.min(self.state.song_steps.len() - 1);
+        self.state.selected_song_step_index = selected_index;
+        let selected_step = self.state.song_steps[selected_index];
+        self.refresh_lcd();
+        vec![
+            MachineOutput::SongStepDeleted {
+                index: deleted_index,
+                step: deleted_step,
+            },
+            MachineOutput::SongStepSelected {
+                index: selected_index,
+                step: selected_step,
+            },
             MachineOutput::LcdChanged,
         ]
     }
@@ -933,7 +1149,17 @@ impl MpcCore {
                 let selected_sample = self.state.selected_sample();
                 LcdFrame::trim_screen(selected_sample.as_ref())
             }
-            Mode::Song => LcdFrame::mode_screen("SONG", "Song mode"),
+            Mode::Song => {
+                let step = self.state.song_steps[self.state.selected_song_step_index];
+                let sequence_name =
+                    sequence_name_for(song_sequence_display_index(step.sequence_index));
+                LcdFrame::song_screen(
+                    &self.state.song_steps,
+                    self.state.selected_song_step_index,
+                    self.state.selected_song_edit_field,
+                    &sequence_name,
+                )
+            }
             Mode::Midi => LcdFrame::midi_screen(
                 self.state.midi_input_channel,
                 self.state.midi_base_note,
@@ -1394,6 +1620,7 @@ fn validate_project_snapshot_json_fields(value: &Value) -> Result<(), ProjectSna
             "machine",
             "sequence",
             "program",
+            "song",
         ],
     )?
     else {
@@ -1408,6 +1635,9 @@ fn validate_project_snapshot_json_fields(value: &Value) -> Result<(), ProjectSna
     }
     if let Some(program) = root.get("program") {
         validate_program_json_fields(program)?;
+    }
+    if let Some(song) = root.get("song") {
+        validate_song_json_fields(song)?;
     }
 
     Ok(())
@@ -1494,6 +1724,39 @@ fn validate_program_json_fields(value: &Value) -> Result<(), ProjectSnapshotErro
         }
     }
 
+    Ok(())
+}
+
+fn validate_song_json_fields(value: &Value) -> Result<(), ProjectSnapshotError> {
+    let Some(song) = reject_unknown_json_fields(
+        "song",
+        value,
+        &["steps", "selected_step_index", "selected_field"],
+    )?
+    else {
+        return Ok(());
+    };
+    require_json_fields(
+        "song",
+        song,
+        &["steps", "selected_step_index", "selected_field"],
+    )?;
+
+    if let Some(steps) = song.get("steps").and_then(Value::as_array) {
+        for (index, step) in steps.iter().enumerate() {
+            validate_song_step_json_fields(&format!("song.steps[{index}]"), step)?;
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_song_step_json_fields(field: &str, value: &Value) -> Result<(), ProjectSnapshotError> {
+    let Some(step) = reject_unknown_json_fields(field, value, &["sequence_index", "repeats"])?
+    else {
+        return Ok(());
+    };
+    require_json_fields(field, step, &["sequence_index", "repeats"])?;
     Ok(())
 }
 
@@ -1654,6 +1917,22 @@ fn reject_unknown_keys(
     Ok(())
 }
 
+fn require_json_fields(
+    field: &str,
+    object: &Map<String, Value>,
+    required: &[&str],
+) -> Result<(), ProjectSnapshotError> {
+    for required_field in required {
+        if !object.contains_key(*required_field) {
+            return Err(invalid_value(
+                &format!("{field}.{required_field}"),
+                "required field is missing",
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn unknown_json_field(parent: &str, field: &str) -> ProjectSnapshotError {
     let field = if parent.is_empty() {
         field.to_string()
@@ -1779,7 +2058,46 @@ fn validate_project_snapshot(snapshot: &ProjectSnapshot) -> Result<(), ProjectSn
         validate_sequence_event(&format!("sequence.recorded_events[{index}]"), event)?;
     }
 
+    validate_song_snapshot(&snapshot.song)?;
+
     Ok(())
+}
+
+fn validate_song_snapshot(song: &ProjectSongSnapshot) -> Result<(), ProjectSnapshotError> {
+    if song.steps.is_empty() {
+        return Err(invalid_value(
+            "song.steps",
+            "must contain at least one song step",
+        ));
+    }
+
+    if song.selected_step_index >= song.steps.len() {
+        return Err(invalid_value(
+            "song.selected_step_index",
+            format!("must be in range 0..={}", song.steps.len() - 1),
+        ));
+    }
+
+    for (index, step) in song.steps.iter().enumerate() {
+        validate_song_step(&format!("song.steps[{index}]"), step)?;
+    }
+
+    Ok(())
+}
+
+fn validate_song_step(field: &str, step: &SongStep) -> Result<(), ProjectSnapshotError> {
+    validate_range_u8(
+        &format!("{field}.sequence_index"),
+        step.sequence_index,
+        MIN_SONG_SEQUENCE_INDEX,
+        MAX_SONG_SEQUENCE_INDEX,
+    )?;
+    validate_range_u8(
+        &format!("{field}.repeats"),
+        step.repeats,
+        MIN_SONG_REPEATS,
+        MAX_SONG_REPEATS,
+    )
 }
 
 fn validate_assignment(
@@ -1997,6 +2315,13 @@ fn default_midi_base_note() -> u8 {
     DEFAULT_MIDI_BASE_NOTE
 }
 
+fn default_song_steps() -> Vec<SongStep> {
+    vec![SongStep {
+        sequence_index: MIN_SONG_SEQUENCE_INDEX,
+        repeats: MIN_SONG_REPEATS,
+    }]
+}
+
 fn validate_playhead_remainder(remainder: u64) -> Result<(), ProjectSnapshotError> {
     if u128::from(remainder) >= TICK_DENOMINATOR {
         return Err(invalid_value(
@@ -2088,6 +2413,10 @@ fn invalid_value(field: &str, message: impl Into<String>) -> ProjectSnapshotErro
 
 fn sequence_name_for(index: u8) -> String {
     format!("Sequence{index:02}")
+}
+
+fn song_sequence_display_index(index: u8) -> u8 {
+    index + 1
 }
 
 pub fn sequence_length_ticks_for_bars(bar_count: u16) -> u64 {
