@@ -1601,6 +1601,110 @@
       ]
     },
     {
+      "id": "storage.disk.project-operations-foundation",
+      "name": "DISK mode requests host project JSON save/load operations",
+      "area": "storage/disk",
+      "state": "fixture-backed-internal-spec",
+      "evidence": [
+        {
+          "source_id": "disk-mode-project-operations-slice-plan",
+          "source_category": "internal_spec",
+          "type": "plan",
+          "status": "mapped",
+          "ref": "docs/superpowers/plans/2026-06-13-mpc2000xl-disk-mode-project-operations.md#behavior-slice"
+        }
+      ],
+      "source_coverage": [
+        {
+          "source_category": "manual",
+          "source_id": "owner-manual",
+          "status": "investigation",
+          "ref": null,
+          "note": "Exact MPC2000XL DISK screen flow, file naming, disk navigation, and error UX are not mapped yet."
+        },
+        {
+          "source_category": "firmware",
+          "source_id": "mpc2000xl-os-local-reference",
+          "status": "investigation",
+          "ref": null,
+          "note": "No firmware trace or native disk image behavior is used for this request-only foundation."
+        },
+        {
+          "source_category": "internal_spec",
+          "source_id": "disk-mode-project-operations-slice-plan",
+          "status": "mapped",
+          "ref": "docs/superpowers/plans/2026-06-13-mpc2000xl-disk-mode-project-operations.md#boundaries",
+          "note": "DISK mode emits requests for existing repo-owned project JSON storage and does not parse or write Akai proprietary disk formats."
+        }
+      ],
+      "inputs": [
+        {
+          "channel": "front_panel",
+          "event": "press",
+          "control": "disk"
+        },
+        {
+          "channel": "front_panel",
+          "event": "press",
+          "control": "cursor_left_or_cursor_right",
+          "mode": "disk"
+        },
+        {
+          "channel": "front_panel",
+          "event": "turn_data_wheel",
+          "mode": "disk",
+          "policy": "non-zero delta toggles selected operation by sign; zero delta is ignored"
+        },
+        {
+          "channel": "front_panel",
+          "event": "press",
+          "control": "soft_key_2",
+          "mode": "disk"
+        },
+        {
+          "channel": "front_panel",
+          "event": "press",
+          "control": "soft_key_3",
+          "mode": "disk"
+        }
+      ],
+      "expected_outputs": {
+        "state": {
+          "selected_disk_operation": "defaults to save_project, persists in machine snapshots, and missing-field restore defaults to save_project",
+          "snapshot": "PROJECT_SNAPSHOT_VERSION remains 1; current-reader missing-field restore is supported; foundation builds explicitly allow additive v1 JSON fields until formal migration/versioning defines a stable older-binary compatibility promise"
+        },
+        "outputs": [
+          "DiskOperationSelected plus LcdChanged when selected_disk_operation changes",
+          "DiskOperationRequested save_project for DISK F2",
+          "DiskOperationRequested load_project for DISK F3",
+          "Ignored for DISK F5/F6 in this slice",
+          "Non-DISK soft keys do not emit disk operation requests"
+        ],
+        "lcd": {
+          "title": "DISK",
+          "body": "selected operation marker, project-file JSON boundary, virtual host-path disk wording, and no-native-format notice",
+          "soft_keys": "F2 Save and F3 Load"
+        },
+        "desktop": {
+          "save": "DiskOperationRequested save_project calls existing save_project_file()",
+          "load": "DiskOperationRequested load_project calls existing load_project_file()",
+          "status": "existing project file path/status controls remain the visible storage surface"
+        }
+      },
+      "tolerance": null,
+      "fixture_refs": [
+        "crates/mpc_core/tests/core_flow.rs",
+        "crates/mpc_conformance/tests/fixtures/disk_project_operations_round_trip.json",
+        "apps/desktop/src/main.rs"
+      ],
+      "conflict_notes": [
+        "This is not native MPC2000XL disk-format support and does not parse or write Akai proprietary formats.",
+        "No manuals, scans, firmware, images, samples, audio bytes, third-party code/assets, or binary disk fixtures are added.",
+        "DISK F5/F6 are intentionally unmapped to avoid implying a broader disk workflow before evidence exists.",
+        "MAIN erase and PROGRAM soft-key behavior remain isolated from DISK project-operation requests."
+      ]
+    },
+    {
       "id": "core.project.restore-validation",
       "name": "Project snapshot restore validates version, ranges, duplicate pads, and transport safety",
       "area": "project_persistence",

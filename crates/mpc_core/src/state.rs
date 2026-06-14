@@ -4,10 +4,10 @@ use std::collections::BTreeSet;
 use std::fmt;
 
 use crate::events::{
-    HardwareEvent, MachineOutput, MidiSettingsField, Mode, PadAssignment, PadAssignmentChange,
-    PadBank, PanelControl, PlaybackMissReason, Program, ProgramEditField, ProgramPad,
-    SampleCatalogEntry, SamplePlaybackIntent, SamplePlaybackMiss, SamplePlaybackResolution,
-    SequenceEvent, SyntheticSample,
+    DiskOperation, HardwareEvent, MachineOutput, MidiSettingsField, Mode, PadAssignment,
+    PadAssignmentChange, PadBank, PanelControl, PlaybackMissReason, Program, ProgramEditField,
+    ProgramPad, SampleCatalogEntry, SamplePlaybackIntent, SamplePlaybackMiss,
+    SamplePlaybackResolution, SequenceEvent, SyntheticSample,
 };
 use crate::lcd::LcdFrame;
 
@@ -125,6 +125,8 @@ pub struct ProjectMachineSnapshot {
     pub midi_base_note: u8,
     #[serde(default)]
     pub selected_midi_settings_field: MidiSettingsField,
+    #[serde(default)]
+    pub selected_disk_operation: DiskOperation,
     pub playhead_ticks: u64,
     pub playhead_tick_remainder: u64,
     pub event_count: u64,
@@ -221,6 +223,7 @@ pub struct MpcState {
     pub midi_input_channel: Option<u8>,
     pub midi_base_note: u8,
     pub selected_midi_settings_field: MidiSettingsField,
+    pub selected_disk_operation: DiskOperation,
     pub last_playback: Option<SamplePlaybackResolution>,
     pub playhead_ticks: u64,
     pub playhead_tick_remainder: u64,
@@ -278,6 +281,7 @@ impl Default for MpcState {
             midi_input_channel: None,
             midi_base_note: DEFAULT_MIDI_BASE_NOTE,
             selected_midi_settings_field: MidiSettingsField::InputChannel,
+            selected_disk_operation: DiskOperation::SaveProject,
             last_playback: None,
             playhead_ticks: 0,
             playhead_tick_remainder: 0,
@@ -334,6 +338,7 @@ impl MpcCore {
                 midi_input_channel: self.state.midi_input_channel,
                 midi_base_note: self.state.midi_base_note,
                 selected_midi_settings_field: self.state.selected_midi_settings_field,
+                selected_disk_operation: self.state.selected_disk_operation,
                 playhead_ticks: self.state.playhead_ticks,
                 playhead_tick_remainder: self.state.playhead_tick_remainder,
                 event_count: self.state.event_count,
@@ -390,6 +395,7 @@ impl MpcCore {
         self.state.midi_input_channel = snapshot.machine.midi_input_channel;
         self.state.midi_base_note = snapshot.machine.midi_base_note;
         self.state.selected_midi_settings_field = snapshot.machine.selected_midi_settings_field;
+        self.state.selected_disk_operation = snapshot.machine.selected_disk_operation;
         self.state.last_playback = snapshot.machine.last_playback;
         self.state.playhead_ticks = snapshot.machine.playhead_ticks;
         self.state.playhead_tick_remainder = snapshot.machine.playhead_tick_remainder;
@@ -591,6 +597,10 @@ impl MpcCore {
             return self.adjust_midi_settings(delta);
         }
 
+        if self.state.mode == Mode::Disk {
+            return self.adjust_disk_operation(delta);
+        }
+
         if matches!(self.state.mode, Mode::Sample | Mode::Trim) {
             return self.adjust_selected_sample(delta);
         }
@@ -634,6 +644,10 @@ impl MpcCore {
             ];
         }
 
+        if self.state.mode == Mode::Disk {
+            return self.select_disk_operation(self.state.selected_disk_operation.previous());
+        }
+
         if self.state.mode != Mode::Main {
             return Self::ignored(format!(
                 "{}.cursor_left_unmapped",
@@ -665,6 +679,10 @@ impl MpcCore {
                 },
                 MachineOutput::LcdChanged,
             ];
+        }
+
+        if self.state.mode == Mode::Disk {
+            return self.select_disk_operation(self.state.selected_disk_operation.next());
         }
 
         if self.state.mode != Mode::Main {
@@ -714,6 +732,10 @@ impl MpcCore {
 
         if matches!(self.state.mode, Mode::Sample | Mode::Trim) {
             return self.handle_sample_soft_key(index);
+        }
+
+        if self.state.mode == Mode::Disk {
+            return self.handle_disk_soft_key(index);
         }
 
         if self.state.mode != Mode::Main {
@@ -783,6 +805,41 @@ impl MpcCore {
                 mode_reason(self.state.mode)
             )),
         }
+    }
+
+    fn handle_disk_soft_key(&mut self, index: u8) -> Vec<MachineOutput> {
+        match index {
+            2 => vec![MachineOutput::DiskOperationRequested {
+                operation: DiskOperation::SaveProject,
+            }],
+            3 => vec![MachineOutput::DiskOperationRequested {
+                operation: DiskOperation::LoadProject,
+            }],
+            _ => Self::ignored(format!("disk.soft_key.{index}_unmapped")),
+        }
+    }
+
+    fn adjust_disk_operation(&mut self, delta: i32) -> Vec<MachineOutput> {
+        match delta.cmp(&0) {
+            std::cmp::Ordering::Less => {
+                self.select_disk_operation(self.state.selected_disk_operation.previous())
+            }
+            std::cmp::Ordering::Greater => {
+                self.select_disk_operation(self.state.selected_disk_operation.next())
+            }
+            std::cmp::Ordering::Equal => {
+                Self::ignored("disk.data_wheel_zero_delta_ignored".to_string())
+            }
+        }
+    }
+
+    fn select_disk_operation(&mut self, operation: DiskOperation) -> Vec<MachineOutput> {
+        self.state.selected_disk_operation = operation;
+        self.refresh_lcd();
+        vec![
+            MachineOutput::DiskOperationSelected { operation },
+            MachineOutput::LcdChanged,
+        ]
     }
 
     fn adjust_sequence(&mut self, delta: i32) {
@@ -882,7 +939,7 @@ impl MpcCore {
                 self.state.midi_base_note,
                 self.state.selected_midi_settings_field,
             ),
-            Mode::Disk => LcdFrame::mode_screen("DISK", "Virtual disk"),
+            Mode::Disk => LcdFrame::disk_screen(self.state.selected_disk_operation),
             Mode::Setup => LcdFrame::mode_screen("SETUP", "System settings"),
         };
     }
@@ -1370,6 +1427,7 @@ fn validate_machine_json_fields(value: &Value) -> Result<(), ProjectSnapshotErro
             "midi_input_channel",
             "midi_base_note",
             "selected_midi_settings_field",
+            "selected_disk_operation",
             "playhead_ticks",
             "playhead_tick_remainder",
             "event_count",

@@ -1,9 +1,9 @@
 use mpc_core::{
-    HardwareEvent, INTERNAL_PPQN, MachineOutput, MainScreenField, MidiSettingsField, Mode, MpcCore,
-    PROJECT_SNAPSHOT_VERSION, PadAssignment, PadAssignmentChange, PadBank, PanelControl,
-    PlaybackMissReason, ProgramEditField, ProgramPad, ProjectSnapshot, ProjectSnapshotError,
-    SamplePlaybackIntent, SamplePlaybackResolution, SequenceEvent, SyntheticSample,
-    sequence_length_ticks_for_bars,
+    DiskOperation, HardwareEvent, INTERNAL_PPQN, MachineOutput, MainScreenField, MidiSettingsField,
+    Mode, MpcCore, PROJECT_SNAPSHOT_VERSION, PadAssignment, PadAssignmentChange, PadBank,
+    PanelControl, PlaybackMissReason, ProgramEditField, ProgramPad, ProjectSnapshot,
+    ProjectSnapshotError, SamplePlaybackIntent, SamplePlaybackResolution, SequenceEvent,
+    SyntheticSample, sequence_length_ticks_for_bars,
 };
 
 #[test]
@@ -1589,6 +1589,269 @@ fn main_screen_track_soft_keys_change_track_or_report_structured_ignore() {
         vec![MachineOutput::Ignored {
             reason: "main_screen.soft_key.1_unimplemented".to_string(),
         }]
+    );
+}
+
+#[test]
+fn disk_mode_default_screen_shows_project_json_boundary() {
+    let mut core = MpcCore::new();
+
+    let outputs = core.dispatch(HardwareEvent::Press {
+        control: PanelControl::Disk,
+    });
+
+    assert_eq!(core.state().mode, Mode::Disk);
+    assert_eq!(
+        core.state().selected_disk_operation,
+        DiskOperation::SaveProject
+    );
+    assert_eq!(
+        outputs,
+        vec![
+            MachineOutput::ModeChanged { mode: Mode::Disk },
+            MachineOutput::LcdChanged,
+        ]
+    );
+    assert_eq!(core.state().lcd.title, "DISK");
+    assert!(core.state().lcd.lines[0].contains(">Save Project"));
+    assert_eq!(core.state().lcd.lines[1], "Project file JSON only");
+    assert_eq!(core.state().lcd.lines[2], "Virtual disk via host path");
+    assert_eq!(core.state().lcd.lines[3], "No MPC disk/image formats");
+    assert_eq!(core.state().lcd.soft_keys[1], "Save");
+    assert_eq!(core.state().lcd.soft_keys[2], "Load");
+}
+
+#[test]
+fn disk_operation_selection_uses_cursor_and_data_wheel_outputs() {
+    let mut core = MpcCore::new();
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::Disk,
+    });
+
+    let right_outputs = core.dispatch(HardwareEvent::Press {
+        control: PanelControl::CursorRight,
+    });
+    assert_eq!(
+        right_outputs,
+        vec![
+            MachineOutput::DiskOperationSelected {
+                operation: DiskOperation::LoadProject,
+            },
+            MachineOutput::LcdChanged,
+        ]
+    );
+    assert_eq!(
+        core.state().selected_disk_operation,
+        DiskOperation::LoadProject
+    );
+    assert!(core.state().lcd.lines[0].contains(">Load Project"));
+
+    let left_outputs = core.dispatch(HardwareEvent::Press {
+        control: PanelControl::CursorLeft,
+    });
+    assert_eq!(
+        left_outputs,
+        vec![
+            MachineOutput::DiskOperationSelected {
+                operation: DiskOperation::SaveProject,
+            },
+            MachineOutput::LcdChanged,
+        ]
+    );
+    assert_eq!(
+        core.state().selected_disk_operation,
+        DiskOperation::SaveProject
+    );
+
+    let positive_wheel = core.dispatch(HardwareEvent::TurnDataWheel { delta: 8 });
+    assert_eq!(
+        positive_wheel,
+        vec![
+            MachineOutput::DiskOperationSelected {
+                operation: DiskOperation::LoadProject,
+            },
+            MachineOutput::LcdChanged,
+        ]
+    );
+
+    let negative_wheel = core.dispatch(HardwareEvent::TurnDataWheel { delta: -2 });
+    assert_eq!(
+        negative_wheel,
+        vec![
+            MachineOutput::DiskOperationSelected {
+                operation: DiskOperation::SaveProject,
+            },
+            MachineOutput::LcdChanged,
+        ]
+    );
+
+    let zero_wheel = core.dispatch(HardwareEvent::TurnDataWheel { delta: 0 });
+    assert_eq!(
+        zero_wheel,
+        vec![MachineOutput::Ignored {
+            reason: "disk.data_wheel_zero_delta_ignored".to_string(),
+        }]
+    );
+    assert_eq!(
+        core.state().selected_disk_operation,
+        DiskOperation::SaveProject
+    );
+}
+
+#[test]
+fn disk_soft_keys_request_save_and_load_project_operations() {
+    let mut core = MpcCore::new();
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::Disk,
+    });
+
+    let save_outputs = core.dispatch(HardwareEvent::Press {
+        control: PanelControl::SoftKey(2),
+    });
+    assert_eq!(
+        save_outputs,
+        vec![MachineOutput::DiskOperationRequested {
+            operation: DiskOperation::SaveProject,
+        }]
+    );
+
+    let load_outputs = core.dispatch(HardwareEvent::Press {
+        control: PanelControl::SoftKey(3),
+    });
+    assert_eq!(
+        load_outputs,
+        vec![MachineOutput::DiskOperationRequested {
+            operation: DiskOperation::LoadProject,
+        }]
+    );
+
+    let unsupported_outputs = core.dispatch(HardwareEvent::Press {
+        control: PanelControl::SoftKey(5),
+    });
+    assert_eq!(
+        unsupported_outputs,
+        vec![MachineOutput::Ignored {
+            reason: "disk.soft_key.5_unmapped".to_string(),
+        }]
+    );
+}
+
+#[test]
+fn disk_operation_outputs_serialize_snake_case() {
+    let selected = MachineOutput::DiskOperationSelected {
+        operation: DiskOperation::LoadProject,
+    };
+    let requested = MachineOutput::DiskOperationRequested {
+        operation: DiskOperation::SaveProject,
+    };
+
+    assert_eq!(
+        serde_json::to_value(selected).expect("selected output should serialize"),
+        serde_json::json!({
+            "type": "disk_operation_selected",
+            "operation": "load_project"
+        })
+    );
+    assert_eq!(
+        serde_json::to_value(requested).expect("requested output should serialize"),
+        serde_json::json!({
+            "type": "disk_operation_requested",
+            "operation": "save_project"
+        })
+    );
+}
+
+#[test]
+fn disk_soft_keys_are_isolated_from_non_disk_modes() {
+    let mut core = MpcCore::new();
+
+    let main_track_outputs = core.dispatch(HardwareEvent::Press {
+        control: PanelControl::SoftKey(2),
+    });
+    assert_eq!(main_track_outputs, vec![MachineOutput::LcdChanged]);
+    assert_eq!(core.state().mode, Mode::Main);
+    assert_eq!(core.state().selected_track, 2);
+    assert!(
+        !main_track_outputs
+            .iter()
+            .any(|output| matches!(output, MachineOutput::DiskOperationRequested { .. }))
+    );
+
+    let main_erase_outputs = core.dispatch(HardwareEvent::Press {
+        control: PanelControl::SoftKey(5),
+    });
+    assert_eq!(
+        main_erase_outputs,
+        vec![MachineOutput::Ignored {
+            reason: "sequence.erase.track_2.no_events".to_string(),
+        }]
+    );
+
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::Program,
+    });
+    let program_outputs = core.dispatch(HardwareEvent::Press {
+        control: PanelControl::SoftKey(2),
+    });
+    assert!(program_outputs.iter().any(|output| {
+        matches!(
+            output,
+            MachineOutput::PadAssignmentChanged {
+                action: PadAssignmentChange::Restored,
+                ..
+            }
+        )
+    }));
+    assert!(
+        !program_outputs
+            .iter()
+            .any(|output| matches!(output, MachineOutput::DiskOperationRequested { .. }))
+    );
+}
+
+#[test]
+fn disk_operation_project_snapshot_defaults_missing_field_and_round_trips_selection() {
+    let mut core = MpcCore::new();
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::Disk,
+    });
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::CursorRight,
+    });
+
+    let json = core
+        .to_project_json()
+        .expect("DISK operation snapshot should encode");
+    assert!(json.contains(r#""selected_disk_operation": "load_project""#));
+
+    let mut restored = MpcCore::new();
+    restored
+        .restore_project_json(&json)
+        .expect("DISK operation snapshot should restore");
+    assert_eq!(restored.state().mode, Mode::Disk);
+    assert_eq!(
+        restored.state().selected_disk_operation,
+        DiskOperation::LoadProject
+    );
+    assert!(restored.state().lcd.lines[0].contains(">Load Project"));
+
+    let mut value =
+        serde_json::to_value(MpcCore::new().export_project_snapshot()).expect("snapshot value");
+    value
+        .pointer_mut("/machine")
+        .and_then(serde_json::Value::as_object_mut)
+        .expect("snapshot machine should be an object")
+        .remove("selected_disk_operation");
+    let missing_field_json =
+        serde_json::to_string(&value).expect("older snapshot JSON should encode");
+
+    let mut older = MpcCore::new();
+    older
+        .restore_project_json(&missing_field_json)
+        .expect("older snapshot without DISK operation should restore");
+    assert_eq!(
+        older.state().selected_disk_operation,
+        DiskOperation::SaveProject
     );
 }
 

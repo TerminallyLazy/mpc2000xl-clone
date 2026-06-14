@@ -3,10 +3,10 @@ pub mod lcd;
 pub mod state;
 
 pub use events::{
-    HardwareEvent, MachineOutput, MidiSettingsField, Mode, PadAssignment, PadAssignmentChange,
-    PadBank, PanelControl, PlaybackMissReason, Program, ProgramEditField, ProgramPad,
-    SampleCatalogEntry, SamplePlaybackIntent, SamplePlaybackMiss, SamplePlaybackResolution,
-    SequenceEvent, SyntheticSample,
+    DiskOperation, HardwareEvent, MachineOutput, MidiSettingsField, Mode, PadAssignment,
+    PadAssignmentChange, PadBank, PanelControl, PlaybackMissReason, Program, ProgramEditField,
+    ProgramPad, SampleCatalogEntry, SamplePlaybackIntent, SamplePlaybackMiss,
+    SamplePlaybackResolution, SequenceEvent, SyntheticSample,
 };
 pub use lcd::LcdFrame;
 pub use state::{

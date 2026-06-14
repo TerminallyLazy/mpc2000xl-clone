@@ -1,0 +1,105 @@
+{
+  "id": "core.disk.project-operations-round-trip",
+  "name": "DISK mode selects project save/load operations and keeps the selected operation through project JSON",
+  "source_refs": [
+    "docs/superpowers/plans/2026-06-13-mpc2000xl-disk-mode-project-operations.md#behavior-slice",
+    "docs/evidence/behavior-matrix.json#storage.disk.project-operations-foundation"
+  ],
+  "events": [
+    {
+      "type": "press",
+      "control": "disk"
+    },
+    {
+      "type": "press",
+      "control": "cursor_right"
+    },
+    {
+      "type": "press",
+      "control": {
+        "soft_key": 3
+      }
+    },
+    {
+      "type": "press",
+      "control": "cursor_left"
+    },
+    {
+      "type": "press",
+      "control": {
+        "soft_key": 2
+      }
+    },
+    {
+      "type": "turn_data_wheel",
+      "delta": 1
+    },
+    {
+      "type": "press",
+      "control": {
+        "soft_key": 3
+      }
+    }
+  ],
+  "expect_output_sequence": [
+    {
+      "type": "mode_changed",
+      "mode": "disk"
+    },
+    {
+      "type": "lcd_changed"
+    },
+    {
+      "type": "disk_operation_selected",
+      "operation": "load_project"
+    },
+    {
+      "type": "lcd_changed"
+    },
+    {
+      "type": "disk_operation_requested",
+      "operation": "load_project"
+    },
+    {
+      "type": "disk_operation_selected",
+      "operation": "save_project"
+    },
+    {
+      "type": "lcd_changed"
+    },
+    {
+      "type": "disk_operation_requested",
+      "operation": "save_project"
+    },
+    {
+      "type": "disk_operation_selected",
+      "operation": "load_project"
+    },
+    {
+      "type": "lcd_changed"
+    },
+    {
+      "type": "disk_operation_requested",
+      "operation": "load_project"
+    }
+  ],
+  "expect": {
+    "mode": "disk",
+    "lcd_title": "DISK",
+    "playing": false,
+    "recording": false,
+    "event_count": 7,
+    "selected_disk_operation": "load_project"
+  },
+  "project_round_trip": {
+    "expect_snapshot_version": 1,
+    "expect": {
+      "mode": "disk",
+      "lcd_title": "DISK",
+      "playing": false,
+      "recording": false,
+      "event_count": 7,
+      "selected_disk_operation": "load_project"
+    }
+  }
+}

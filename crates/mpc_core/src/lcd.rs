@@ -1,7 +1,8 @@
 use serde::{Deserialize, Serialize};
 
 use crate::events::{
-    MidiSettingsField, PadAssignment, Program, ProgramEditField, ProgramPad, SampleCatalogEntry,
+    DiskOperation, MidiSettingsField, PadAssignment, Program, ProgramEditField, ProgramPad,
+    SampleCatalogEntry,
 };
 use crate::state::MainScreenField;
 
@@ -276,6 +277,38 @@ impl LcdFrame {
                 "F1".to_string(),
                 "F2".to_string(),
                 "F3".to_string(),
+                "F4".to_string(),
+                "F5".to_string(),
+                "F6".to_string(),
+            ],
+        }
+    }
+
+    pub fn disk_screen(selected_operation: DiskOperation) -> Self {
+        let marker = |operation| {
+            if selected_operation == operation {
+                ">"
+            } else {
+                " "
+            }
+        };
+
+        Self {
+            title: "DISK".to_string(),
+            lines: [
+                format!(
+                    "Op {}Save Project  {}Load Project",
+                    marker(DiskOperation::SaveProject),
+                    marker(DiskOperation::LoadProject)
+                ),
+                "Project file JSON only".to_string(),
+                "Virtual disk via host path".to_string(),
+                "No MPC disk/image formats".to_string(),
+            ],
+            soft_keys: [
+                "F1".to_string(),
+                "Save".to_string(),
+                "Load".to_string(),
                 "F4".to_string(),
                 "F5".to_string(),
                 "F6".to_string(),

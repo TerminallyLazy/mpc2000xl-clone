@@ -4,8 +4,9 @@ use mpc_audio::{
     HostAudioEvent, HostAudioState,
 };
 use mpc_core::{
-    HardwareEvent, MachineOutput, MidiSettingsField, Mode, MpcCore, MpcState, PadAssignmentChange,
-    PadBank, PanelControl, ProgramPad, SampleCatalogEntry, SamplePlaybackResolution,
+    DiskOperation, HardwareEvent, MachineOutput, MidiSettingsField, Mode, MpcCore, MpcState,
+    PadAssignmentChange, PadBank, PanelControl, ProgramPad, SampleCatalogEntry,
+    SamplePlaybackResolution,
 };
 use mpc_storage::{
     DEFAULT_PROJECT_FILE_PATH, load_project_file_with_report,
@@ -348,8 +349,25 @@ impl MpcDesktopApp {
     fn dispatch_event(&mut self, event: HardwareEvent) {
         let outputs = self.core.dispatch(event);
         let render_or_host_error = self.handle_last_playback_intent(&outputs);
-        self.last_status = render_or_host_error
+        let disk_operation_status = self.handle_disk_operation_request(&outputs);
+        self.last_status = disk_operation_status
+            .or(render_or_host_error)
             .unwrap_or_else(|| Self::status_from_outputs(&outputs, self.core.state()));
+    }
+
+    fn handle_disk_operation_request(&mut self, outputs: &[MachineOutput]) -> Option<String> {
+        let Some(operation) = outputs.iter().find_map(|output| match output {
+            MachineOutput::DiskOperationRequested { operation } => Some(*operation),
+            _ => None,
+        }) else {
+            return None;
+        };
+
+        match operation {
+            DiskOperation::SaveProject => self.save_project_file(),
+            DiskOperation::LoadProject => self.load_project_file(),
+        }
+        Some(self.last_status.clone())
     }
 
     fn handle_last_playback_intent(&mut self, outputs: &[MachineOutput]) -> Option<String> {
@@ -409,6 +427,20 @@ impl MpcDesktopApp {
             .find(|output| matches!(output, MachineOutput::MidiInputIgnored { .. }))
         {
             return format!("MIDI ignored: {reason}");
+        }
+
+        if let Some(MachineOutput::DiskOperationSelected { operation }) = outputs
+            .iter()
+            .find(|output| matches!(output, MachineOutput::DiskOperationSelected { .. }))
+        {
+            return format!("DISK selected {}", operation.display_label());
+        }
+
+        if let Some(MachineOutput::DiskOperationRequested { operation }) = outputs
+            .iter()
+            .find(|output| matches!(output, MachineOutput::DiskOperationRequested { .. }))
+        {
+            return format!("DISK requested {}", operation.display_label());
         }
 
         if let Some(MachineOutput::MidiNoteMapped {

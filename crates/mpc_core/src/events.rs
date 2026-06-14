@@ -200,6 +200,49 @@ impl MidiSettingsField {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DiskOperation {
+    SaveProject,
+    LoadProject,
+}
+
+impl Default for DiskOperation {
+    fn default() -> Self {
+        Self::SaveProject
+    }
+}
+
+impl DiskOperation {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::SaveProject => "save_project",
+            Self::LoadProject => "load_project",
+        }
+    }
+
+    pub fn display_label(self) -> &'static str {
+        match self {
+            Self::SaveProject => "Save Project",
+            Self::LoadProject => "Load Project",
+        }
+    }
+
+    pub fn previous(self) -> Self {
+        match self {
+            Self::SaveProject => Self::LoadProject,
+            Self::LoadProject => Self::SaveProject,
+        }
+    }
+
+    pub fn next(self) -> Self {
+        match self {
+            Self::SaveProject => Self::LoadProject,
+            Self::LoadProject => Self::SaveProject,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SequenceEvent {
     pub selected_track: u8,
@@ -320,6 +363,12 @@ pub enum MachineOutput {
         input_channel: Option<u8>,
         base_note: u8,
         selected_field: MidiSettingsField,
+    },
+    DiskOperationSelected {
+        operation: DiskOperation,
+    },
+    DiskOperationRequested {
+        operation: DiskOperation,
     },
     PadAssignmentChanged {
         bank: PadBank,

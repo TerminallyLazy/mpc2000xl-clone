@@ -1,9 +1,9 @@
 use anyhow::{Context, Result, bail};
 use mpc_audio::{AudioRenderSettings, AudioSourceKind, ChannelBalance, render_intent};
 use mpc_core::{
-    HardwareEvent, MainScreenField, MidiSettingsField, Mode, MpcCore, MpcState,
-    PROJECT_SNAPSHOT_VERSION, PadBank, ProgramEditField, ProgramPad, SamplePlaybackResolution,
-    SequenceEvent,
+    DiskOperation, HardwareEvent, MachineOutput, MainScreenField, MidiSettingsField, Mode, MpcCore,
+    MpcState, PROJECT_SNAPSHOT_VERSION, PadBank, ProgramEditField, ProgramPad,
+    SamplePlaybackResolution, SequenceEvent,
 };
 use serde::de::{self, Visitor};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -17,6 +17,8 @@ pub struct Fixture {
     pub name: String,
     pub source_refs: Vec<String>,
     pub events: Vec<HardwareEvent>,
+    #[serde(default)]
+    pub expect_output_sequence: Vec<MachineOutput>,
     pub expect: ExpectedState,
     #[serde(default)]
     pub project_round_trip: Option<ProjectRoundTripExpectation>,
@@ -245,6 +247,8 @@ pub struct ExpectedState {
     #[serde(default)]
     pub selected_midi_settings_field: Option<MidiSettingsField>,
     #[serde(default)]
+    pub selected_disk_operation: Option<DiskOperation>,
+    #[serde(default)]
     pub midi_mapped_note_range: Option<[u8; 2]>,
     #[serde(default)]
     pub midi_host_io_enabled: Option<bool>,
@@ -304,12 +308,14 @@ pub fn load_fixture(path: impl AsRef<Path>) -> Result<Fixture> {
 
 pub fn run_fixture(fixture: &Fixture) -> FixtureReport {
     let mut core = MpcCore::new();
+    let mut output_sequence = Vec::new();
 
     for event in &fixture.events {
-        core.dispatch(event.clone());
+        output_sequence.extend(core.dispatch(event.clone()));
     }
 
     let mut details = Vec::new();
+    validate_expected_output_sequence(&mut details, &output_sequence, fixture);
     validate_expected_state(&mut details, "", core.state(), &fixture.expect);
     if let Some(project_round_trip) = &fixture.project_round_trip {
         validate_project_round_trip(&mut details, &core, project_round_trip);
@@ -329,6 +335,23 @@ pub fn run_fixture_path(path: impl AsRef<Path>) -> Result<FixtureReport> {
         bail!("fixture {} has no source references", fixture.id);
     }
     Ok(run_fixture(&fixture))
+}
+
+fn validate_expected_output_sequence(
+    details: &mut Vec<String>,
+    actual: &[MachineOutput],
+    fixture: &Fixture,
+) {
+    if fixture.expect_output_sequence.is_empty() {
+        return;
+    }
+
+    if actual != fixture.expect_output_sequence {
+        details.push(format!(
+            "output_sequence mismatch: expected {:?}, got {:?}",
+            fixture.expect_output_sequence, actual
+        ));
+    }
 }
 
 fn validate_project_round_trip(
@@ -605,6 +628,15 @@ fn validate_expected_state(
             details.push(format!(
                 "{prefix}selected_midi_settings_field mismatch: expected {:?}, got {:?}",
                 selected_midi_settings_field, state.selected_midi_settings_field
+            ));
+        }
+    }
+
+    if let Some(selected_disk_operation) = expected.selected_disk_operation {
+        if state.selected_disk_operation != selected_disk_operation {
+            details.push(format!(
+                "{prefix}selected_disk_operation mismatch: expected {:?}, got {:?}",
+                selected_disk_operation, state.selected_disk_operation
             ));
         }
     }
