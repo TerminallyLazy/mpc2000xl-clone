@@ -4,9 +4,10 @@ pub mod state;
 
 pub use events::{
     CountInClickIntent, DiskOperation, HardwareEvent, IMPORTED_SAMPLE_LENGTH_FRAMES, MachineOutput,
-    MidiOutputIntent, MidiSettingsField, Mode, PadAssignment, PadAssignmentChange, PadBank,
-    PanelControl, PlaybackMissReason, Program, ProgramEditField, ProgramPad,
-    RECORDED_SAMPLE_LENGTH_FRAMES, SampleCatalogEntry, SamplePlaybackIntent, SamplePlaybackMiss,
+    MidiOutputIntent, MidiOutputIntentKind, MidiSettingsField, Mode, PadAssignment,
+    PadAssignmentChange, PadBank, PanelControl, PlaybackMissReason, Program, ProgramEditField,
+    ProgramPad, RECORDED_SAMPLE_LENGTH_FRAMES, SampleCatalogEntry, SamplePlaybackIntent,
+    SamplePlaybackMiss,
     SamplePlaybackResolution, SampleReleaseIntent, SampleSourceKind, SampleTrim, SequenceEvent,
     SetupField, SetupPreferences, SongEditField, SongStep, SyntheticSample, TimingCorrectDivision,
     TimingCorrectField, TimingCorrectSettings, TrimEditField, generated_sample_length_frames,

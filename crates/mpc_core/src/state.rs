@@ -5,8 +5,9 @@ use std::fmt;
 
 use crate::events::{
     CountInClickIntent, DiskOperation, HardwareEvent, IMPORTED_SAMPLE_LENGTH_FRAMES, MachineOutput,
-    MidiOutputIntent, MidiSettingsField, Mode, PadAssignment, PadAssignmentChange, PadBank,
-    PanelControl, PlaybackMissReason, Program, ProgramEditField, ProgramPad,
+    MidiOutputIntent, MidiOutputIntentKind, MidiSettingsField, Mode, PadAssignment,
+    PadAssignmentChange, PadBank, PanelControl, PlaybackMissReason, Program, ProgramEditField,
+    ProgramPad,
     RECORDED_SAMPLE_LENGTH_FRAMES, SampleCatalogEntry, SamplePlaybackIntent, SamplePlaybackMiss,
     SamplePlaybackResolution, SampleReleaseIntent, SampleSourceKind, SampleTrim, SequenceEvent,
     SetupField, SetupPreferences, SongEditField, SongStep, SyntheticSample, TimingCorrectField,
@@ -2404,6 +2405,7 @@ impl MpcCore {
             midi_output_note_for_pad(self.state.midi_base_note, intent.bank, intent.pad_number)?;
 
         Some(MidiOutputIntent {
+            kind: MidiOutputIntentKind::NoteOn,
             selected_track: intent.selected_track,
             program_index: intent.program_index,
             program_name: intent.program_name.clone(),
@@ -2414,6 +2416,7 @@ impl MpcCore {
             channel: midi_output_channel_for_track(intent.selected_track),
             note,
             velocity: intent.velocity,
+            window_length_frames: intent.window_length_frames,
         })
     }
 }

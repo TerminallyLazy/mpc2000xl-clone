@@ -5469,6 +5469,28 @@ fn physical_pad_strike_emits_midi_output_intent_from_playback_metadata() {
 }
 
 #[test]
+fn midi_output_intent_includes_note_on_kind_and_window_length() {
+    let mut core = MpcCore::new();
+
+    let outputs = core.dispatch(HardwareEvent::StrikePad {
+        bank: PadBank::A,
+        pad: 1,
+        velocity: 100,
+    });
+
+    let intent = outputs
+        .iter()
+        .find_map(|output| match output {
+            MachineOutput::MidiOutputIntent { intent } => Some(intent),
+            _ => None,
+        })
+        .expect("pad playback should emit midi output");
+
+    assert_eq!(intent.kind, mpc_core::MidiOutputIntentKind::NoteOn);
+    assert_eq!(intent.window_length_frames, 48_000);
+}
+
+#[test]
 fn incoming_midi_note_on_does_not_echo_midi_output_intent() {
     let mut core = MpcCore::new();
 
@@ -5548,6 +5570,7 @@ fn sequence_playback_emits_midi_output_intent_for_scheduled_event() {
 fn midi_output_intent_serializes_stably() {
     let output = MachineOutput::MidiOutputIntent {
         intent: mpc_core::MidiOutputIntent {
+            kind: mpc_core::MidiOutputIntentKind::NoteOn,
             selected_track: 2,
             program_index: 1,
             program_name: "Program01".to_string(),
@@ -5558,6 +5581,7 @@ fn midi_output_intent_serializes_stably() {
             channel: 2,
             note: 55,
             velocity: 84,
+            window_length_frames: 0,
         },
     };
 
