@@ -51,6 +51,7 @@ struct MpcDesktopApp {
     host_audio: HostAudioEngine<DesktopAudioBackend>,
     host_midi: HostMidiEngine<DesktopMidiBackend>,
     outbound_midi_notes: OutboundMidiNoteScheduler,
+    blocked_midi_note_offs: Vec<mpc_core::MidiOutputIntent>,
     runtime_started_at: std::time::Instant,
     host_midi_input: Option<DeviceMidiInputConnection>,
     midi_input_ports: Vec<MidiPortDescriptor>,
@@ -199,6 +200,8 @@ enum RuntimeSampleStatus {
         actual_sample_rate_hz: u32,
         expected_frame_count: u32,
         actual_frame_count: usize,
+        expected_byte_count: usize,
+        actual_byte_count: usize,
     },
     LoadFailed {
         path: String,
@@ -309,6 +312,7 @@ impl Default for MpcDesktopApp {
             .expect("desktop host audio preview settings should satisfy guardrails"),
             host_midi: HostMidiEngine::enabled(DesktopMidiBackend::capture()),
             outbound_midi_notes: OutboundMidiNoteScheduler::default(),
+            blocked_midi_note_offs: Vec::new(),
             runtime_started_at: std::time::Instant::now(),
             host_midi_input: None,
             midi_input_ports: Vec::new(),
@@ -483,7 +487,7 @@ impl MpcDesktopApp {
             return None;
         }
 
-        self.flush_midi_note_offs_due_by(now, now, "due")
+        self.flush_midi_note_offs_due_by(now, "due")
     }
 
     fn flush_all_pending_midi_note_offs(&mut self, reason: &str) -> Option<String> {
@@ -491,16 +495,12 @@ impl MpcDesktopApp {
             return None;
         }
 
-        let now = self.runtime_millis();
-        self.flush_midi_note_offs_due_by(u64::MAX, now, reason)
+        let blocked_error = self.flush_blocked_midi_note_offs(reason);
+        let pending_error = self.flush_midi_note_offs_due_by(u64::MAX, reason);
+        blocked_error.or(pending_error)
     }
 
-    fn flush_midi_note_offs_due_by(
-        &mut self,
-        due_by_millis: u64,
-        retry_base_millis: u64,
-        reason: &str,
-    ) -> Option<String> {
+    fn flush_midi_note_offs_due_by(&mut self, due_by_millis: u64, reason: &str) -> Option<String> {
         let due = self.outbound_midi_notes.drain_due_note_offs(due_by_millis);
         if due.is_empty() {
             return None;
@@ -518,12 +518,12 @@ impl MpcDesktopApp {
                 }
                 DesktopMidiSendResult::Ignored { .. } => {
                     ignored_count += 1;
-                    self.requeue_note_off_retry(&intent, retry_base_millis);
+                    self.block_midi_note_off(intent);
                 }
                 DesktopMidiSendResult::Failed { message } => {
                     failed_count += 1;
                     last_failure = Some(message);
-                    self.requeue_note_off_retry(&intent, retry_base_millis);
+                    self.block_midi_note_off(intent);
                 }
             }
         }
@@ -540,18 +540,59 @@ impl MpcDesktopApp {
         last_failure.or_else(|| Some(self.last_midi_note_off_status.clone()))
     }
 
-    fn requeue_note_off_retry(&mut self, intent: &mpc_core::MidiOutputIntent, now_millis: u64) {
-        let mut retry_intent = intent.clone();
-        retry_intent.kind = mpc_core::MidiOutputIntentKind::NoteOn;
-        let _ = self.outbound_midi_notes.register_note_on(
-            &retry_intent,
-            now_millis,
-            MIN_OUTBOUND_NOTE_DURATION_MILLIS,
+    fn flush_blocked_midi_note_offs(&mut self, reason: &str) -> Option<String> {
+        if self.blocked_midi_note_offs.is_empty() {
+            return None;
+        }
+
+        let blocked = std::mem::take(&mut self.blocked_midi_note_offs);
+        let blocked_count = blocked.len();
+        let mut queued_count = 0usize;
+        let mut ignored_count = 0usize;
+        let mut failed_count = 0usize;
+        let mut last_failure = None;
+
+        for intent in blocked {
+            match self.send_midi_intent(&intent) {
+                DesktopMidiSendResult::Queued => {
+                    queued_count += 1;
+                }
+                DesktopMidiSendResult::Ignored { .. } => {
+                    ignored_count += 1;
+                    self.block_midi_note_off(intent);
+                }
+                DesktopMidiSendResult::Failed { message } => {
+                    failed_count += 1;
+                    last_failure = Some(message);
+                    self.block_midi_note_off(intent);
+                }
+            }
+        }
+
+        if ignored_count == 0 && failed_count == 0 {
+            self.last_midi_note_off_status =
+                format!("MIDI note-off sent {queued_count} blocked {reason} note-off(s)");
+            return None;
+        }
+
+        self.last_midi_note_off_status = format!(
+            "MIDI note-off blocked: sent {queued_count}/{blocked_count} {reason} note-off(s); {ignored_count} ignored, {failed_count} failed"
         );
+        last_failure.or_else(|| Some(self.last_midi_note_off_status.clone()))
+    }
+
+    fn block_midi_note_off(&mut self, intent: mpc_core::MidiOutputIntent) {
+        if !self.blocked_midi_note_offs.contains(&intent) {
+            self.blocked_midi_note_offs.push(intent);
+        }
+    }
+
+    fn has_unsent_midi_note_offs(&self) -> bool {
+        self.outbound_midi_notes.has_pending() || !self.blocked_midi_note_offs.is_empty()
     }
 
     fn flush_pending_before_midi_backend_change(&mut self) -> Result<(), String> {
-        if !self.outbound_midi_notes.has_pending() {
+        if !self.has_unsent_midi_note_offs() {
             return Ok(());
         }
 
@@ -568,7 +609,7 @@ impl MpcDesktopApp {
             return Err(message);
         }
 
-        if self.outbound_midi_notes.has_pending() {
+        if self.has_unsent_midi_note_offs() {
             let message = "MIDI output switch blocked: pending note-offs were not sent".to_string();
             self.last_midi_note_off_status = message.clone();
             return Err(message);
@@ -1094,69 +1135,112 @@ impl MpcDesktopApp {
         host_audio_error_message(&report.event)
     }
 
+    fn send_displaced_midi_note_offs(
+        &mut self,
+        note_offs: Vec<mpc_core::MidiOutputIntent>,
+    ) -> (usize, usize, usize, Option<String>) {
+        let mut queued_count = 0usize;
+        let mut ignored_count = 0usize;
+        let mut failed_count = 0usize;
+        let mut last_failure = None;
+
+        for note_off in note_offs {
+            match self.send_midi_intent(&note_off) {
+                DesktopMidiSendResult::Queued => {
+                    queued_count += 1;
+                }
+                DesktopMidiSendResult::Ignored { .. } => {
+                    ignored_count += 1;
+                    self.block_midi_note_off(note_off);
+                }
+                DesktopMidiSendResult::Failed { message } => {
+                    failed_count += 1;
+                    last_failure = Some(message);
+                    self.block_midi_note_off(note_off);
+                }
+            }
+        }
+
+        (queued_count, ignored_count, failed_count, last_failure)
+    }
+
     fn handle_midi_outputs(&mut self, outputs: &[MachineOutput]) -> Option<String> {
         let mut midi_error = None;
 
         for output in outputs {
             if let MachineOutput::MidiOutputIntent { intent } = output {
-                match self.send_midi_intent(intent) {
-                    DesktopMidiSendResult::Queued
-                        if intent.kind == mpc_core::MidiOutputIntentKind::NoteOn =>
-                    {
-                        let duration = self.outbound_note_duration_millis(intent);
-                        let displaced_note_offs = self.outbound_midi_notes.register_note_on(
-                            intent,
-                            self.runtime_millis(),
-                            duration,
-                        );
-                        let displaced_count = displaced_note_offs.len();
-                        let mut displaced_queued_count = 0usize;
-                        let mut displaced_ignored_count = 0usize;
-                        let mut displaced_failed_count = 0usize;
-                        for note_off in displaced_note_offs {
-                            match self.send_midi_intent(&note_off) {
-                                DesktopMidiSendResult::Queued => {
-                                    displaced_queued_count += 1;
-                                }
-                                DesktopMidiSendResult::Ignored { .. } => {
-                                    displaced_ignored_count += 1;
-                                }
-                                DesktopMidiSendResult::Failed { message } => {
-                                    displaced_failed_count += 1;
-                                    midi_error = Some(message);
-                                }
-                            }
-                        }
+                if intent.kind == mpc_core::MidiOutputIntentKind::NoteOn {
+                    let duration = self.outbound_note_duration_millis(intent);
+                    let displaced_note_offs = self
+                        .outbound_midi_notes
+                        .release_matching_note(intent, self.runtime_millis());
+                    let displaced_count = displaced_note_offs.len();
+                    let (
+                        displaced_queued_count,
+                        displaced_ignored_count,
+                        displaced_failed_count,
+                        displaced_error,
+                    ) = self.send_displaced_midi_note_offs(displaced_note_offs);
+                    if displaced_error.is_some() {
+                        midi_error = displaced_error;
+                    }
 
-                        self.last_midi_note_off_status = match (
+                    if displaced_ignored_count != 0 || displaced_failed_count != 0 {
+                        let message = format!(
+                            "MIDI retrigger blocked: sent {}/{} displaced note-off(s); {} ignored, {} failed",
+                            displaced_queued_count,
                             displaced_count,
                             displaced_ignored_count,
-                            displaced_failed_count,
-                        ) {
-                            (0, _, _) => format!(
-                                "MIDI note-off scheduled ch {} note {} in {} ms",
-                                intent.channel, intent.note, duration
-                            ),
-                            (_, 0, 0) => format!(
-                                "MIDI note-off scheduled ch {} note {} in {} ms; sent {} displaced note-off(s)",
-                                intent.channel, intent.note, duration, displaced_queued_count
-                            ),
-                            _ => format!(
-                                "MIDI note-off scheduled ch {} note {} in {} ms; sent {}/{} displaced note-off(s); {} ignored, {} failed",
-                                intent.channel,
-                                intent.note,
+                            displaced_failed_count
+                        );
+                        self.last_midi_note_off_status = message.clone();
+                        if midi_error.is_none() {
+                            midi_error = Some(message);
+                        }
+                        continue;
+                    }
+
+                    match self.send_midi_intent(intent) {
+                        DesktopMidiSendResult::Queued => {
+                            let unexpected_displaced = self.outbound_midi_notes.register_note_on(
+                                intent,
+                                self.runtime_millis(),
                                 duration,
-                                displaced_queued_count,
-                                displaced_count,
-                                displaced_ignored_count,
-                                displaced_failed_count
-                            ),
-                        };
+                            );
+                            debug_assert!(unexpected_displaced.is_empty());
+                            for note_off in unexpected_displaced {
+                                self.block_midi_note_off(note_off);
+                            }
+
+                            self.last_midi_note_off_status = if displaced_count == 0 {
+                                format!(
+                                    "MIDI note-off scheduled ch {} note {} in {} ms",
+                                    intent.channel, intent.note, duration
+                                )
+                            } else {
+                                format!(
+                                    "MIDI note-off sent {} displaced note-off(s); scheduled ch {} note {} in {} ms",
+                                    displaced_queued_count, intent.channel, intent.note, duration
+                                )
+                            };
+                        }
+                        DesktopMidiSendResult::Failed { message } => {
+                            midi_error = Some(message);
+                        }
+                        DesktopMidiSendResult::Ignored { .. } => {}
                     }
-                    DesktopMidiSendResult::Failed { message } => {
-                        midi_error = Some(message);
+                } else {
+                    match self.send_midi_intent(intent) {
+                        DesktopMidiSendResult::Queued => {
+                            let _ = self
+                                .outbound_midi_notes
+                                .release_matching_note(intent, self.runtime_millis());
+                        }
+                        DesktopMidiSendResult::Failed { message } => {
+                            midi_error = Some(message);
+                        }
+                        DesktopMidiSendResult::Ignored { .. } => {}
                     }
-                    DesktopMidiSendResult::Queued | DesktopMidiSendResult::Ignored { .. } => {}
                 }
             }
         }
@@ -1217,6 +1301,8 @@ impl MpcDesktopApp {
                             actual_sample_rate_hz: payload.sample_rate_hz,
                             expected_frame_count: reference.frame_count,
                             actual_frame_count: payload.frame_count,
+                            expected_byte_count: reference.byte_count,
+                            actual_byte_count: payload.byte_count,
                         },
                     );
                     return Err(());
@@ -2294,20 +2380,21 @@ impl MpcDesktopApp {
         ui.horizontal_wrapped(|ui| {
             let mut enabled = self.host_midi.is_enabled();
             if ui.checkbox(&mut enabled, "Host MIDI").changed() {
-                if self.host_midi.is_enabled() && !enabled && self.outbound_midi_notes.has_pending()
-                {
+                if self.host_midi.is_enabled() && !enabled && self.has_unsent_midi_note_offs() {
                     if let Some(message) =
                         self.flush_all_pending_midi_note_offs("before disabling Host MIDI")
                     {
                         self.last_status = message;
                     }
+                    if self.has_unsent_midi_note_offs() {
+                        enabled = true;
+                        let message = "Host MIDI disable blocked: pending note-offs were not sent"
+                            .to_string();
+                        self.last_midi_note_off_status = message.clone();
+                        self.last_status = message;
+                    }
                 }
                 self.host_midi.set_enabled(enabled);
-                if !enabled && self.outbound_midi_notes.has_pending() {
-                    self.last_midi_note_off_status =
-                        "MIDI note-off pending: Host MIDI disabled before all note-offs were sent"
-                            .to_string();
-                }
             }
 
             ui.separator();
@@ -2367,8 +2454,22 @@ impl MpcDesktopApp {
             ui.label(host_midi_state_text(&state));
             ui.separator();
             if ui.button("MIDI panic").clicked() {
-                self.outbound_midi_notes.clear();
-                self.last_midi_note_off_status = "MIDI panic: pending notes cleared".to_string();
+                let had_unsent_note_offs = self.has_unsent_midi_note_offs();
+                if !had_unsent_note_offs {
+                    self.last_midi_note_off_status = "MIDI panic: no pending notes".to_string();
+                } else if !self.host_midi.is_enabled() {
+                    self.last_midi_note_off_status =
+                        "MIDI panic blocked: Host MIDI disabled with pending note-offs".to_string();
+                } else if let Some(message) = self.flush_all_pending_midi_note_offs("panic") {
+                    self.last_status = message;
+                }
+
+                if had_unsent_note_offs && !self.has_unsent_midi_note_offs() {
+                    self.outbound_midi_notes.clear();
+                    self.blocked_midi_note_offs.clear();
+                    self.last_midi_note_off_status =
+                        "MIDI panic: pending note-offs sent".to_string();
+                }
                 self.last_status = self.last_midi_note_off_status.clone();
             }
             ui.separator();
@@ -2992,6 +3093,7 @@ fn runtime_payload_matches_reference(
 ) -> bool {
     payload.sample_rate_hz == reference.sample_rate_hz
         && payload.frame_count == reference.frame_count as usize
+        && payload.byte_count == reference.byte_count
 }
 
 fn runtime_sample_relink_status_text(
@@ -3046,8 +3148,10 @@ fn runtime_sample_actionable_issue_text(
             actual_sample_rate_hz,
             expected_frame_count,
             actual_frame_count,
+            expected_byte_count,
+            actual_byte_count,
         } => Some(format!(
-            "first issue: {sample_id} metadata mismatch at {path}: expected {expected_sample_rate_hz} Hz/{expected_frame_count} frames, got {actual_sample_rate_hz} Hz/{actual_frame_count} frames"
+            "first issue: {sample_id} metadata mismatch at {path}: expected {expected_sample_rate_hz} Hz/{expected_frame_count} frames/{expected_byte_count} bytes, got {actual_sample_rate_hz} Hz/{actual_frame_count} frames/{actual_byte_count} bytes"
         )),
         RuntimeSampleStatus::LoadFailed { path, message } => Some(format!(
             "first issue: {sample_id} load failed at {path}: {message}"
@@ -3448,5 +3552,69 @@ mod tests {
         assert!(!should_request_runtime_repaint(false, false, true, false));
         assert!(should_request_runtime_repaint(false, true, true, false));
         assert!(should_request_runtime_repaint(false, false, false, true));
+    }
+
+    #[test]
+    fn midi_retrigger_sends_displaced_note_off_before_replacement_note_on() {
+        let mut app = MpcDesktopApp::default();
+        let intent = test_midi_output_intent();
+        let output = MachineOutput::MidiOutputIntent {
+            intent: intent.clone(),
+        };
+
+        assert!(
+            app.handle_midi_outputs(std::slice::from_ref(&output))
+                .is_none()
+        );
+        assert!(app.handle_midi_outputs(&[output]).is_none());
+
+        let messages = match app.host_midi.backend() {
+            DesktopMidiBackend::Capture(backend) => backend.messages(),
+            DesktopMidiBackend::Device(_) => panic!("default desktop MIDI backend should capture"),
+        };
+        assert_eq!(messages.len(), 3);
+        assert_eq!(messages[0].kind, mpc_midi::MidiMessageKind::NoteOn);
+        assert_eq!(messages[1].kind, mpc_midi::MidiMessageKind::NoteOff);
+        assert_eq!(messages[2].kind, mpc_midi::MidiMessageKind::NoteOn);
+    }
+
+    #[test]
+    fn runtime_payload_reference_matching_rejects_byte_count_drift() {
+        let payload = WavSamplePayload {
+            sample_rate_hz: 44_100,
+            channel_count: 1,
+            frame_count: 10,
+            byte_count: 20,
+            frames: Vec::new(),
+        };
+        let reference = mpc_core::ProjectImportedMediaReference {
+            sample_id: "sample_imported_kick".to_string(),
+            source_path: "local-assets/samples/kick.wav".to_string(),
+            managed_copy_path: None,
+            sample_name: "KICK".to_string(),
+            sample_rate_hz: 44_100,
+            frame_count: 10,
+            byte_count: 22,
+            source_kind: mpc_core::SampleSourceKind::Imported,
+        };
+
+        assert!(!runtime_payload_matches_reference(&payload, &reference));
+    }
+
+    fn test_midi_output_intent() -> mpc_core::MidiOutputIntent {
+        mpc_core::MidiOutputIntent {
+            kind: mpc_core::MidiOutputIntentKind::NoteOn,
+            selected_track: 1,
+            program_index: 0,
+            program_name: "Program 01".to_string(),
+            bank: PadBank::A,
+            pad_number: 1,
+            source_sample_id: "synthetic_a_01".to_string(),
+            source_sample_name: "A01".to_string(),
+            channel: 1,
+            note: 36,
+            velocity: 100,
+            window_length_frames: 11_025,
+        }
     }
 }
