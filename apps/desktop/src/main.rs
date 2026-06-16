@@ -72,7 +72,25 @@ struct MpcDesktopApp {
 
 enum DesktopAudioBackend {
     Capture(CaptureAudioBackend),
-    Device(DeviceAudioBackend),
+    Device {
+        backend: DeviceAudioBackend,
+        origin: DesktopAudioDeviceOrigin,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DesktopAudioDeviceOrigin {
+    Default,
+    Selected,
+}
+
+impl DesktopAudioDeviceOrigin {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Default => "default device",
+            Self::Selected => "selected device",
+        }
+    }
 }
 
 impl DesktopAudioBackend {
@@ -83,7 +101,41 @@ impl DesktopAudioBackend {
     fn device_status(&self) -> Option<DeviceAudioBackendStatus> {
         match self {
             Self::Capture(_) => None,
-            Self::Device(backend) => Some(backend.status()),
+            Self::Device { backend, .. } => Some(backend.status()),
+        }
+    }
+
+    fn device_origin(&self) -> Option<DesktopAudioDeviceOrigin> {
+        match self {
+            Self::Capture(_) => None,
+            Self::Device { origin, .. } => Some(*origin),
+        }
+    }
+
+    fn is_default_device(&self) -> bool {
+        matches!(
+            self,
+            Self::Device {
+                origin: DesktopAudioDeviceOrigin::Default,
+                ..
+            }
+        )
+    }
+
+    fn is_selected_device(&self) -> bool {
+        matches!(
+            self,
+            Self::Device {
+                origin: DesktopAudioDeviceOrigin::Selected,
+                ..
+            }
+        )
+    }
+
+    fn is_device(&self) -> bool {
+        match self {
+            Self::Capture(_) => false,
+            Self::Device { .. } => true,
         }
     }
 }
@@ -92,7 +144,7 @@ impl HostAudioBackend for DesktopAudioBackend {
     fn backend_name(&self) -> &str {
         match self {
             Self::Capture(backend) => backend.backend_name(),
-            Self::Device(backend) => backend.backend_name(),
+            Self::Device { backend, .. } => backend.backend_name(),
         }
     }
 
@@ -102,7 +154,7 @@ impl HostAudioBackend for DesktopAudioBackend {
     ) -> Result<mpc_audio::HostAudioBackendReceipt, HostAudioBackendError> {
         match self {
             Self::Capture(backend) => backend.enqueue_render(rendered),
-            Self::Device(backend) => backend.enqueue_render(rendered),
+            Self::Device { backend, .. } => backend.enqueue_render(rendered),
         }
     }
 }
@@ -786,21 +838,15 @@ impl MpcDesktopApp {
     fn relink_runtime_samples_from_project(&mut self, reason: &str) {
         self.clear_runtime_sample_payloads(reason);
         let references = self.core.state().imported_media_references.clone();
-        let mut loaded_count = 0_usize;
-        let mut missing_count = 0_usize;
 
         for reference in references {
-            match self.load_runtime_sample_reference(&reference) {
-                Ok(()) => loaded_count = loaded_count.saturating_add(1),
-                Err(()) => missing_count = missing_count.saturating_add(1),
-            }
+            let _ = self.load_runtime_sample_reference(&reference);
         }
 
         self.last_audio_render = None;
         self.last_audio_render_error = None;
-        self.last_runtime_sample_status = format!(
-            "Runtime WAV: relink after {reason}: {loaded_count} loaded, {missing_count} missing"
-        );
+        self.last_runtime_sample_status =
+            runtime_sample_relink_status_text(reason, &self.runtime_sample_statuses);
     }
 
     fn load_runtime_sample_reference(
@@ -944,14 +990,12 @@ impl MpcDesktopApp {
     }
 
     fn prune_runtime_samples_to_project_metadata(&mut self) {
-        if self.runtime_samples.is_empty() {
-            return;
-        }
-
         let retained_sample_ids = runtime_sample_ids_referenced_by_project(self.core.state());
+        self.runtime_sample_statuses
+            .retain(|sample_id, _| retained_sample_ids.contains(sample_id));
         self.runtime_samples
             .retain(|sample_id, _| retained_sample_ids.contains(sample_id));
-        if self.runtime_samples.is_empty() {
+        if self.runtime_samples.is_empty() && self.runtime_sample_statuses.is_empty() {
             self.last_runtime_sample_status =
                 "Runtime WAV: none referenced by current project metadata".to_string();
         }
@@ -1844,15 +1888,15 @@ impl MpcDesktopApp {
             }
 
             ui.separator();
-            let capture_selected =
-                matches!(self.host_audio.backend(), DesktopAudioBackend::Capture(_));
+            let capture_selected = !self.host_audio.backend().is_device();
             if ui.selectable_label(capture_selected, "Capture").clicked() {
                 self.switch_host_audio_to_capture();
             }
-            let device_selected =
-                matches!(self.host_audio.backend(), DesktopAudioBackend::Device(_));
             if ui
-                .selectable_label(device_selected, "Default device")
+                .selectable_label(
+                    self.host_audio.backend().is_default_device(),
+                    "Default device",
+                )
                 .clicked()
             {
                 self.switch_host_audio_to_default_device();
@@ -1866,7 +1910,13 @@ impl MpcDesktopApp {
                 &mut self.selected_audio_output_device,
             );
             ui.add_enabled_ui(!self.audio_output_devices.is_empty(), |ui| {
-                if ui.button("Open selected").clicked() {
+                if ui
+                    .selectable_label(
+                        self.host_audio.backend().is_selected_device(),
+                        "Selected device",
+                    )
+                    .clicked()
+                {
                     self.switch_host_audio_to_selected_device();
                 }
             });
@@ -2016,7 +2066,7 @@ impl MpcDesktopApp {
     }
 
     fn switch_host_audio_to_default_device(&mut self) {
-        if matches!(self.host_audio.backend(), DesktopAudioBackend::Device(_)) {
+        if self.host_audio.backend().is_default_device() {
             return;
         }
 
@@ -2036,7 +2086,10 @@ impl MpcDesktopApp {
                     }
                 };
                 self.replace_host_audio_backend(
-                    DesktopAudioBackend::Device(backend),
+                    DesktopAudioBackend::Device {
+                        backend,
+                        origin: DesktopAudioDeviceOrigin::Default,
+                    },
                     device_render_settings,
                     format!(
                         "Host audio backend: default device {} {} Hz {} ch {}",
@@ -2082,7 +2135,10 @@ impl MpcDesktopApp {
                     }
                 };
                 self.replace_host_audio_backend(
-                    DesktopAudioBackend::Device(backend),
+                    DesktopAudioBackend::Device {
+                        backend,
+                        origin: DesktopAudioDeviceOrigin::Selected,
+                    },
                     device_render_settings,
                     format!(
                         "Host audio backend: device {} {} Hz {} ch {}",
@@ -2444,6 +2500,68 @@ fn runtime_payload_matches_reference(
         && payload.frame_count == reference.frame_count as usize
 }
 
+fn runtime_sample_relink_status_text(
+    reason: &str,
+    statuses: &BTreeMap<String, RuntimeSampleStatus>,
+) -> String {
+    let mut loaded_count = 0_usize;
+    let mut missing_count = 0_usize;
+    let mut mismatch_count = 0_usize;
+    let mut failed_count = 0_usize;
+    let mut first_issue = None;
+
+    for (sample_id, status) in statuses {
+        match status {
+            RuntimeSampleStatus::Loaded { .. } => {
+                loaded_count = loaded_count.saturating_add(1);
+            }
+            RuntimeSampleStatus::Missing { .. } => {
+                missing_count = missing_count.saturating_add(1);
+            }
+            RuntimeSampleStatus::MetadataMismatch { .. } => {
+                mismatch_count = mismatch_count.saturating_add(1);
+            }
+            RuntimeSampleStatus::LoadFailed { .. } => {
+                failed_count = failed_count.saturating_add(1);
+            }
+        }
+
+        if first_issue.is_none() {
+            first_issue = runtime_sample_actionable_issue_text(sample_id, status);
+        }
+    }
+
+    let mut text = format!(
+        "Runtime WAV: relink after {reason}: {loaded_count} loaded, {missing_count} missing, {mismatch_count} mismatch, {failed_count} failed"
+    );
+    if let Some(issue) = first_issue {
+        text.push_str("; ");
+        text.push_str(&issue);
+    }
+    text
+}
+
+fn runtime_sample_actionable_issue_text(
+    sample_id: &str,
+    status: &RuntimeSampleStatus,
+) -> Option<String> {
+    match status {
+        RuntimeSampleStatus::MetadataMismatch {
+            path,
+            expected_sample_rate_hz,
+            actual_sample_rate_hz,
+            expected_frame_count,
+            actual_frame_count,
+        } => Some(format!(
+            "first issue: {sample_id} metadata mismatch at {path}: expected {expected_sample_rate_hz} Hz/{expected_frame_count} frames, got {actual_sample_rate_hz} Hz/{actual_frame_count} frames"
+        )),
+        RuntimeSampleStatus::LoadFailed { path, message } => Some(format!(
+            "first issue: {sample_id} load failed at {path}: {message}"
+        )),
+        RuntimeSampleStatus::Loaded { .. } | RuntimeSampleStatus::Missing { .. } => None,
+    }
+}
+
 fn wav_sample_load_error_is_not_found(error: &WavSampleLoadError) -> bool {
     let message = match error {
         WavSampleLoadError::Metadata { message, .. } | WavSampleLoadError::Open { message, .. } => {
@@ -2516,16 +2634,20 @@ fn host_audio_state_text(state: &HostAudioState) -> String {
 }
 
 fn host_audio_backend_detail_text(backend: &DesktopAudioBackend) -> String {
-    match backend.device_status() {
-        Some(status) => device_audio_backend_status_text(&status),
-        None => "Host audio backend detail: capture retains summaries only".to_string(),
+    match (backend.device_origin(), backend.device_status()) {
+        (Some(origin), Some(status)) => device_audio_backend_status_text(origin, &status),
+        _ => "Host audio backend detail: capture retains summaries only".to_string(),
     }
 }
 
-fn device_audio_backend_status_text(status: &DeviceAudioBackendStatus) -> String {
+fn device_audio_backend_status_text(
+    origin: DesktopAudioDeviceOrigin,
+    status: &DeviceAudioBackendStatus,
+) -> String {
     let stream_errors = status.recent_stream_errors.len();
     format!(
-        "Host audio device: {} {} Hz {} ch {} queued {}/{} cb {} underrun {} errors {}",
+        "Host audio {}: {} {} Hz {} ch {} queued {}/{} cb {} underrun {} errors {}",
+        origin.label(),
         status.device_name,
         status.sample_rate_hz,
         status.channels,
