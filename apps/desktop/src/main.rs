@@ -26,6 +26,9 @@ use std::collections::{BTreeMap, BTreeSet};
 const DEFAULT_OUTBOUND_NOTE_DURATION_MILLIS: u64 = 250;
 const MIN_OUTBOUND_NOTE_DURATION_MILLIS: u64 = 30;
 const MAX_OUTBOUND_NOTE_DURATION_MILLIS: u64 = 4_000;
+const PAD_HIT_MEMORY_MILLIS: u64 = 700;
+const PAD_ASSIGNED_INTENSITY: f32 = 0.18;
+const PAD_MISSING_INTENSITY: f32 = 0.35;
 
 fn main() -> eframe::Result<()> {
     let options = eframe::NativeOptions {
@@ -62,6 +65,7 @@ struct MpcDesktopApp {
     last_audio_render_error: Option<String>,
     runtime_samples: RuntimeSampleLibrary,
     runtime_sample_statuses: BTreeMap<String, RuntimeSampleStatus>,
+    pad_lights: PadLightMemory,
     sample_import_path: String,
     last_runtime_sample_status: String,
     last_project_snapshot_json: Option<String>,
@@ -202,6 +206,59 @@ enum RuntimeSampleStatus {
     },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct PadVisualState {
+    assigned: bool,
+    missing_runtime_sample: bool,
+    selected: bool,
+    active_pressure: f32,
+    hit_memory: f32,
+    intensity: f32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PadHitLight {
+    velocity: u8,
+    hit_millis: u64,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct PadLightMemory {
+    hits: BTreeMap<ProgramPad, PadHitLight>,
+}
+
+impl PadLightMemory {
+    fn record_hit(&mut self, pad: ProgramPad, velocity: u8, now_millis: u64) {
+        self.hits.insert(
+            pad,
+            PadHitLight {
+                velocity,
+                hit_millis: now_millis,
+            },
+        );
+    }
+
+    fn intensity_for(&self, pad: ProgramPad, now_millis: u64) -> f32 {
+        let Some(hit) = self.hits.get(&pad) else {
+            return 0.0;
+        };
+        let elapsed = now_millis.saturating_sub(hit.hit_millis);
+        if elapsed >= PAD_HIT_MEMORY_MILLIS {
+            return 0.0;
+        }
+
+        let velocity = f32::from(hit.velocity).clamp(1.0, 127.0) / 127.0;
+        let remaining = 1.0 - (elapsed as f32 / PAD_HIT_MEMORY_MILLIS as f32);
+        velocity * remaining
+    }
+
+    fn has_active_memory(&self, now_millis: u64) -> bool {
+        self.hits
+            .values()
+            .any(|hit| now_millis.saturating_sub(hit.hit_millis) < PAD_HIT_MEMORY_MILLIS)
+    }
+}
+
 impl DesktopMidiBackend {
     fn capture() -> Self {
         Self::Capture(CaptureMidiBackend::new(16))
@@ -266,6 +323,7 @@ impl Default for MpcDesktopApp {
             last_audio_render_error: None,
             runtime_samples: RuntimeSampleLibrary::default(),
             runtime_sample_statuses: BTreeMap::new(),
+            pad_lights: PadLightMemory::default(),
             sample_import_path: "local-assets/samples/import.wav".to_string(),
             last_runtime_sample_status: "Runtime WAV: none".to_string(),
             last_project_snapshot_json: None,
@@ -318,7 +376,8 @@ impl eframe::App for MpcDesktopApp {
             ui.label(format!("Status: {}", self.last_status));
         });
         if self.host_midi_input.is_some()
-            || (self.host_midi.is_enabled() && self.outbound_midi_notes.has_pending())
+            || self.outbound_midi_notes.has_pending()
+            || self.pad_lights.has_active_memory(self.runtime_millis())
         {
             ui.ctx()
                 .request_repaint_after(std::time::Duration::from_millis(10));
@@ -333,6 +392,35 @@ impl MpcDesktopApp {
             .as_millis()
             .try_into()
             .unwrap_or(u64::MAX)
+    }
+
+    fn record_pad_lights_from_outputs(&mut self, outputs: &[MachineOutput]) {
+        let now = self.runtime_millis();
+        for output in outputs {
+            match output {
+                MachineOutput::PadTriggered {
+                    bank,
+                    pad,
+                    velocity,
+                } => self.pad_lights.record_hit(
+                    ProgramPad {
+                        bank: *bank,
+                        pad_number: *pad,
+                    },
+                    *velocity,
+                    now,
+                ),
+                MachineOutput::SamplePlaybackIntent { intent } => self.pad_lights.record_hit(
+                    ProgramPad {
+                        bank: intent.bank,
+                        pad_number: intent.pad_number,
+                    },
+                    intent.velocity,
+                    now,
+                ),
+                _ => {}
+            }
+        }
     }
 
     fn outbound_note_duration_millis(&self, intent: &mpc_core::MidiOutputIntent) -> u64 {
@@ -737,6 +825,7 @@ impl MpcDesktopApp {
 
     fn dispatch_event(&mut self, event: HardwareEvent) {
         let outputs = self.core.dispatch(event);
+        self.record_pad_lights_from_outputs(&outputs);
         let render_or_host_error = self.handle_audio_outputs(&outputs);
         let midi_host_error = self.handle_midi_outputs(&outputs);
         let disk_operation_status = self.handle_disk_operation_request(&outputs);
@@ -1241,6 +1330,21 @@ impl MpcDesktopApp {
             self.last_runtime_sample_status =
                 "Runtime WAV: none referenced by current project metadata".to_string();
         }
+    }
+
+    fn pad_has_missing_runtime_sample(&self, pad: ProgramPad) -> bool {
+        self.core
+            .state()
+            .current_program
+            .pad_assignments
+            .iter()
+            .find(|assignment| assignment.pad == pad)
+            .and_then(|assignment| {
+                self.runtime_sample_statuses
+                    .get(&assignment.sample.id)
+                    .map(|status| !matches!(status, RuntimeSampleStatus::Loaded { .. }))
+            })
+            .unwrap_or(false)
     }
 
     fn status_from_outputs(outputs: &[MachineOutput], state: &MpcState) -> String {
@@ -2270,6 +2374,7 @@ impl MpcDesktopApp {
         let active_bank = self.core.state().pad_bank;
         let selected_program_pad = self.core.state().selected_program_pad;
         let program_mode = self.core.state().mode == Mode::Program;
+        let now = self.runtime_millis();
         ui.horizontal(|ui| {
             self.bank_button(ui, "A", PadBank::A, PanelControl::PadBankA);
             self.bank_button(ui, "B", PadBank::B, PanelControl::PadBankB);
@@ -2287,10 +2392,30 @@ impl MpcDesktopApp {
                         pad_number: pad,
                     };
                     let selected = program_mode && selected_program_pad == pad_address;
-                    if ui
-                        .selectable_label(selected, program_pad_label(pad_address))
-                        .clicked()
-                    {
+                    let assigned = self
+                        .core
+                        .state()
+                        .current_program
+                        .pad_assignments
+                        .iter()
+                        .any(|assignment| assignment.pad == pad_address);
+                    let missing_runtime_sample = self.pad_has_missing_runtime_sample(pad_address);
+                    let visual = pad_visual_state(
+                        pad_address,
+                        assigned,
+                        missing_runtime_sample,
+                        selected,
+                        None,
+                        &self.pad_lights,
+                        now,
+                    );
+                    let mut button = egui::Button::new(program_pad_label(pad_address))
+                        .fill(pad_color_for_visual_state(visual))
+                        .min_size(egui::vec2(72.0, 48.0));
+                    if selected {
+                        button = button.stroke(egui::Stroke::new(2.0, egui::Color32::WHITE));
+                    }
+                    if ui.add(button).clicked() {
                         self.dispatch_event(HardwareEvent::StrikePad {
                             bank: active_bank,
                             pad,
@@ -2532,6 +2657,52 @@ fn assignment_action_text(action: PadAssignmentChange) -> &'static str {
 
 fn program_pad_label(pad: ProgramPad) -> String {
     format!("{}{:02}", pad.bank.label(), pad.pad_number)
+}
+
+fn pad_visual_state(
+    pad: ProgramPad,
+    assigned: bool,
+    missing_runtime_sample: bool,
+    selected: bool,
+    active_velocity: Option<u8>,
+    memory: &PadLightMemory,
+    now_millis: u64,
+) -> PadVisualState {
+    let active_pressure = active_velocity
+        .map(|velocity| f32::from(velocity).clamp(1.0, 127.0) / 127.0)
+        .unwrap_or(0.0);
+    let hit_memory = memory.intensity_for(pad, now_millis);
+    let base = if missing_runtime_sample {
+        PAD_MISSING_INTENSITY
+    } else if assigned {
+        PAD_ASSIGNED_INTENSITY
+    } else {
+        0.0
+    };
+    let intensity = active_pressure.max(hit_memory).max(base).min(1.0);
+
+    PadVisualState {
+        assigned,
+        missing_runtime_sample,
+        selected,
+        active_pressure,
+        hit_memory,
+        intensity,
+    }
+}
+
+fn pad_color_for_visual_state(visual: PadVisualState) -> egui::Color32 {
+    if visual.missing_runtime_sample {
+        let red = (154.0 + 86.0 * visual.intensity) as u8;
+        let green = if visual.selected { 76 } else { 54 };
+        let blue = if visual.selected { 64 } else { 38 };
+        return egui::Color32::from_rgb(red, green, blue);
+    }
+
+    let green = (42.0 + 190.0 * visual.intensity) as u8;
+    let blue = (44.0 + 112.0 * visual.hit_memory) as u8;
+    let red = if visual.selected { 92 } else { 36 };
+    egui::Color32::from_rgb(red, green, blue)
 }
 
 fn selected_assignment_text(state: &MpcState) -> String {
@@ -3147,4 +3318,41 @@ fn optional_u64_text(value: Option<u64>) -> String {
     value
         .map(|value| value.to_string())
         .unwrap_or_else(|| "?".to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pad_light_layers_assignment_memory_and_pressure() {
+        let mut memory = PadLightMemory::default();
+        let pad = ProgramPad {
+            bank: PadBank::A,
+            pad_number: 1,
+        };
+        memory.record_hit(pad, 100, 1000);
+
+        let visual = pad_visual_state(pad, true, false, false, Some(127), &memory, 1100);
+
+        assert!(visual.assigned);
+        assert!(visual.hit_memory > 0.0);
+        assert_eq!(visual.active_pressure, 1.0);
+        assert_eq!(visual.intensity, 1.0);
+    }
+
+    #[test]
+    fn pad_light_memory_decays_to_zero() {
+        let mut memory = PadLightMemory::default();
+        let pad = ProgramPad {
+            bank: PadBank::A,
+            pad_number: 1,
+        };
+        memory.record_hit(pad, 100, 1000);
+
+        let visual = pad_visual_state(pad, false, false, false, None, &memory, 2000);
+
+        assert_eq!(visual.hit_memory, 0.0);
+        assert_eq!(visual.intensity, 0.0);
+    }
 }
