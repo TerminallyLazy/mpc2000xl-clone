@@ -1022,13 +1022,27 @@ fn device_audio_device_id(device: &cpal::Device) -> Result<String, HostAudioBack
         .map_err(|error| device_audio_backend_error(format!("output device id failed: {error}")))
 }
 
+fn output_device_label_from_id_result(device_id: Result<String, String>) -> String {
+    device_id.unwrap_or_else(|error| format!("unknown output device ({error})"))
+}
+
+fn fallback_output_device_label(device: &cpal::Device) -> String {
+    output_device_label_from_id_result(
+        device
+            .id()
+            .map(|id| id.to_string())
+            .map_err(|error| error.to_string()),
+    )
+}
+
 impl DeviceAudioBackend {
     pub fn open_default(config: DeviceAudioBackendConfig) -> Result<Self, HostAudioBackendError> {
         let host = cpal::default_host();
         let device = host
             .default_output_device()
             .ok_or_else(|| device_audio_backend_error("default output device is not available"))?;
-        Self::open_device(device, config)
+        let device_name = fallback_output_device_label(&device);
+        Self::open_device(device, device_name, config)
     }
 
     pub fn open_output_device_id(
@@ -1040,8 +1054,11 @@ impl DeviceAudioBackend {
             device_audio_backend_error(format!("output device list failed: {error}"))
         })?;
         for device in devices {
-            if device_audio_device_id(&device).ok().as_deref() == Some(device_id) {
-                return Self::open_device(device, config);
+            let Ok(id) = device_audio_device_id(&device) else {
+                continue;
+            };
+            if id == device_id {
+                return Self::open_device(device, id, config);
             }
         }
         Err(device_audio_backend_error(format!(
@@ -1051,9 +1068,9 @@ impl DeviceAudioBackend {
 
     fn open_device(
         device: cpal::Device,
+        device_name: String,
         config: DeviceAudioBackendConfig,
     ) -> Result<Self, HostAudioBackendError> {
-        let device_name = device_audio_device_id(&device)?;
         let supported_config = device.default_output_config().map_err(|error| {
             device_audio_backend_error(format!("default output config failed: {error}"))
         })?;
@@ -2292,6 +2309,14 @@ mod tests {
         };
 
         assert_eq!(descriptor.display_label(), "External Interface");
+    }
+
+    #[test]
+    fn device_audio_output_label_falls_back_when_device_id_fails() {
+        assert_eq!(
+            output_device_label_from_id_result(Err("core audio denied id".to_string())),
+            "unknown output device (core audio denied id)"
+        );
     }
 
     #[test]
