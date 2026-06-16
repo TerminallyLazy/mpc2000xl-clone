@@ -15,13 +15,17 @@ use mpc_midi::{
     CaptureMidiBackend, DeviceMidiInputConfig, DeviceMidiInputConnection, DeviceMidiInputStatus,
     DeviceMidiOutputBackend, DeviceMidiOutputStatus, HostMidiBackend, HostMidiEngine,
     HostMidiEvent, HostMidiOutputReport, HostMidiState, MidiInputEvent, MidiPortDescriptor,
-    list_device_midi_input_ports, list_device_midi_output_ports,
+    OutboundMidiNoteScheduler, list_device_midi_input_ports, list_device_midi_output_ports,
 };
 use mpc_storage::{
     DEFAULT_PROJECT_FILE_PATH, load_project_file_with_report,
     save_project_file as save_project_file_to_path,
 };
 use std::collections::{BTreeMap, BTreeSet};
+
+const DEFAULT_OUTBOUND_NOTE_DURATION_MILLIS: u64 = 250;
+const MIN_OUTBOUND_NOTE_DURATION_MILLIS: u64 = 30;
+const MAX_OUTBOUND_NOTE_DURATION_MILLIS: u64 = 4_000;
 
 fn main() -> eframe::Result<()> {
     let options = eframe::NativeOptions {
@@ -43,6 +47,8 @@ struct MpcDesktopApp {
     core: MpcCore,
     host_audio: HostAudioEngine<DesktopAudioBackend>,
     host_midi: HostMidiEngine<DesktopMidiBackend>,
+    outbound_midi_notes: OutboundMidiNoteScheduler,
+    runtime_started_at: std::time::Instant,
     host_midi_input: Option<DeviceMidiInputConnection>,
     midi_input_ports: Vec<MidiPortDescriptor>,
     midi_output_ports: Vec<MidiPortDescriptor>,
@@ -51,6 +57,7 @@ struct MpcDesktopApp {
     selected_midi_output_port: usize,
     selected_audio_output_device: usize,
     last_status: String,
+    last_midi_note_off_status: String,
     last_audio_render: Option<AudioRenderSummary>,
     last_audio_render_error: Option<String>,
     runtime_samples: RuntimeSampleLibrary,
@@ -237,6 +244,8 @@ impl Default for MpcDesktopApp {
             )
             .expect("desktop host audio preview settings should satisfy guardrails"),
             host_midi: HostMidiEngine::enabled(DesktopMidiBackend::capture()),
+            outbound_midi_notes: OutboundMidiNoteScheduler::default(),
+            runtime_started_at: std::time::Instant::now(),
             host_midi_input: None,
             midi_input_ports: Vec::new(),
             midi_output_ports: Vec::new(),
@@ -245,6 +254,7 @@ impl Default for MpcDesktopApp {
             selected_midi_output_port: 0,
             selected_audio_output_device: 0,
             last_status: "Ready".to_string(),
+            last_midi_note_off_status: "MIDI note-off: none pending".to_string(),
             last_audio_render: None,
             last_audio_render_error: None,
             runtime_samples: RuntimeSampleLibrary::default(),
@@ -269,6 +279,9 @@ impl Default for MpcDesktopApp {
 impl eframe::App for MpcDesktopApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.poll_host_midi_input();
+        if let Some(error) = self.flush_due_midi_note_offs() {
+            self.last_status = error;
+        }
         egui::Frame::central_panel(ui.style()).show(ui, |ui| {
             ui.heading("MPC2000XL Clone Foundation");
             ui.label("Rights-safe desktop shell wired to deterministic machine core.");
@@ -297,7 +310,7 @@ impl eframe::App for MpcDesktopApp {
             ui.add_space(16.0);
             ui.label(format!("Status: {}", self.last_status));
         });
-        if self.host_midi_input.is_some() {
+        if self.host_midi_input.is_some() || self.outbound_midi_notes.has_pending() {
             ui.ctx()
                 .request_repaint_after(std::time::Duration::from_millis(10));
         }
@@ -305,6 +318,78 @@ impl eframe::App for MpcDesktopApp {
 }
 
 impl MpcDesktopApp {
+    fn runtime_millis(&self) -> u64 {
+        self.runtime_started_at
+            .elapsed()
+            .as_millis()
+            .try_into()
+            .unwrap_or(u64::MAX)
+    }
+
+    fn outbound_note_duration_millis(&self, intent: &mpc_core::MidiOutputIntent) -> u64 {
+        if intent.window_length_frames == 0 {
+            return DEFAULT_OUTBOUND_NOTE_DURATION_MILLIS;
+        }
+
+        let sample_rate_hz = u64::from(self.host_audio.render_settings().sample_rate_hz);
+        let frames = u64::from(intent.window_length_frames);
+        frames
+            .saturating_mul(1_000)
+            .checked_div(sample_rate_hz)
+            .unwrap_or(DEFAULT_OUTBOUND_NOTE_DURATION_MILLIS)
+            .clamp(
+                MIN_OUTBOUND_NOTE_DURATION_MILLIS,
+                MAX_OUTBOUND_NOTE_DURATION_MILLIS,
+            )
+    }
+
+    fn send_midi_intent(&mut self, intent: &mpc_core::MidiOutputIntent) -> Option<String> {
+        let report = self.host_midi.send_intent(intent);
+        let note_off_queued = intent.kind == mpc_core::MidiOutputIntentKind::NoteOff
+            && matches!(&report.event, HostMidiEvent::Queued { .. });
+        let error = self.record_midi_report(report);
+
+        if error.is_none() && note_off_queued {
+            self.last_midi_note_off_status = format!(
+                "MIDI note-off sent ch {} note {} {:?}{:02}",
+                intent.channel, intent.note, intent.bank, intent.pad_number
+            );
+        }
+
+        error
+    }
+
+    fn midi_intent_was_queued(&self, intent: &mpc_core::MidiOutputIntent) -> bool {
+        let state = self.host_midi.state();
+        matches!(
+            state.last_event.as_ref(),
+            Some(HostMidiEvent::Queued { receipt }) if receipt.intent == *intent
+        )
+    }
+
+    fn flush_due_midi_note_offs(&mut self) -> Option<String> {
+        let now = self.runtime_millis();
+        let due = self.outbound_midi_notes.drain_due_note_offs(now);
+        if due.is_empty() {
+            return None;
+        }
+
+        let due_count = due.len();
+        let mut last_error = None;
+        for intent in due {
+            if let Some(error) = self.send_midi_intent(&intent) {
+                last_error = Some(error);
+            }
+        }
+
+        if last_error.is_none() {
+            self.last_midi_note_off_status =
+                format!("MIDI note-off sent {due_count} due note-off(s)");
+        }
+
+        last_error
+    }
+
     fn draw_lcd(&mut self, ui: &mut egui::Ui) {
         let lcd = self.core.state().lcd.clone();
         egui::Frame::group(ui.style()).show(ui, |ui| {
@@ -821,9 +906,38 @@ impl MpcDesktopApp {
 
         for output in outputs {
             if let MachineOutput::MidiOutputIntent { intent } = output {
-                let report = self.host_midi.send_intent(intent);
-                if let Some(message) = self.record_midi_report(report) {
+                if let Some(message) = self.send_midi_intent(intent) {
                     midi_error = Some(message);
+                    continue;
+                }
+
+                if intent.kind == mpc_core::MidiOutputIntentKind::NoteOn
+                    && self.midi_intent_was_queued(intent)
+                {
+                    let duration = self.outbound_note_duration_millis(intent);
+                    let displaced_note_offs = self.outbound_midi_notes.register_note_on(
+                        intent,
+                        self.runtime_millis(),
+                        duration,
+                    );
+                    let displaced_count = displaced_note_offs.len();
+                    for note_off in displaced_note_offs {
+                        if let Some(message) = self.send_midi_intent(&note_off) {
+                            midi_error = Some(message);
+                        }
+                    }
+
+                    self.last_midi_note_off_status = if displaced_count == 0 {
+                        format!(
+                            "MIDI note-off scheduled ch {} note {} in {} ms",
+                            intent.channel, intent.note, duration
+                        )
+                    } else {
+                        format!(
+                            "MIDI note-off scheduled ch {} note {} in {} ms; sent {} displaced note-off(s)",
+                            intent.channel, intent.note, duration, displaced_count
+                        )
+                    };
                 }
             }
         }
@@ -1074,7 +1188,8 @@ impl MpcDesktopApp {
             .find(|output| matches!(output, MachineOutput::MidiOutputIntent { .. }))
         {
             return format!(
-                "MIDI out ch {} note {} vel {} from {:?}{:02} {}",
+                "MIDI out {:?} ch {} note {} vel {} from {:?}{:02} {}",
+                intent.kind,
                 intent.channel,
                 intent.note,
                 intent.velocity,
@@ -1994,6 +2109,14 @@ impl MpcDesktopApp {
             ui.separator();
             ui.label(host_midi_state_text(&state));
             ui.separator();
+            if ui.button("MIDI panic").clicked() {
+                self.outbound_midi_notes.clear();
+                self.last_midi_note_off_status = "MIDI panic: pending notes cleared".to_string();
+                self.last_status = self.last_midi_note_off_status.clone();
+            }
+            ui.separator();
+            ui.label(&self.last_midi_note_off_status);
+            ui.separator();
             ui.label(last_host_midi_event_text(state.last_event.as_ref()));
             ui.separator();
             ui.label(host_midi_backend_detail_text(self.host_midi.backend()));
@@ -2723,16 +2846,17 @@ fn clamp_port_index(index: usize, port_count: usize) -> usize {
 fn host_midi_backend_detail_text(backend: &DesktopMidiBackend) -> String {
     match backend.device_output_status() {
         Some(status) => device_midi_output_status_text(&status),
-        None => "Host MIDI output: capture retains note-on messages only".to_string(),
+        None => "Host MIDI output: capture retains note-on and note-off messages".to_string(),
     }
 }
 
 fn device_midi_output_status_text(status: &DeviceMidiOutputStatus) -> String {
     match &status.last_sent_message {
         Some(message) => format!(
-            "Host MIDI output device: {} sent {} last ch {} note {} vel {}",
+            "Host MIDI output device: {} sent {} last {:?} ch {} note {} vel {}",
             midi_port_label(&status.output_port),
             status.total_sent_message_count,
+            message.kind,
             message.channel,
             message.note,
             message.velocity
@@ -2833,7 +2957,8 @@ fn last_host_audio_event_text(event: Option<&HostAudioEvent>) -> String {
 fn last_host_midi_event_text(event: Option<&HostMidiEvent>) -> String {
     match event {
         Some(HostMidiEvent::Queued { receipt }) => format!(
-            "Host MIDI event: ch {} note {} vel {} from {:?}{:02}",
+            "Host MIDI event: {:?} ch {} note {} vel {} from {:?}{:02}",
+            receipt.message.kind,
             receipt.message.channel,
             receipt.message.note,
             receipt.message.velocity,
@@ -2841,13 +2966,13 @@ fn last_host_midi_event_text(event: Option<&HostMidiEvent>) -> String {
             receipt.intent.pad_number
         ),
         Some(HostMidiEvent::Ignored { reason, intent }) => format!(
-            "Host MIDI event: ignored {reason:?} ch {} note {}",
-            intent.channel, intent.note
+            "Host MIDI event: ignored {reason:?} {:?} ch {} note {}",
+            intent.kind, intent.channel, intent.note
         ),
         Some(HostMidiEvent::Failed { error, intent }) => {
             format!(
-                "Host MIDI event: failed ch {} note {}: {}",
-                intent.channel, intent.note, error
+                "Host MIDI event: failed {:?} ch {} note {}: {}",
+                intent.kind, intent.channel, intent.note, error
             )
         }
         None => "Host MIDI event: none".to_string(),
