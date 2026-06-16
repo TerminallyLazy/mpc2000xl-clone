@@ -1,9 +1,10 @@
 use eframe::egui;
 use mpc_audio::{
-    AudioRenderKind, AudioRenderSettings, AudioRenderSummary, CaptureAudioBackend,
-    DeviceAudioBackend, DeviceAudioBackendConfig, DeviceAudioBackendStatus, HostAudioBackend,
-    HostAudioBackendError, HostAudioEngine, HostAudioError, HostAudioEvent,
-    HostAudioPlaybackReport, HostAudioState, RuntimeSampleLibrary, load_wav_sample_payload,
+    list_output_devices, AudioOutputDeviceDescriptor, AudioRenderKind, AudioRenderSettings,
+    AudioRenderSummary, CaptureAudioBackend, DeviceAudioBackend, DeviceAudioBackendConfig,
+    DeviceAudioBackendStatus, HostAudioBackend, HostAudioBackendError, HostAudioEngine,
+    HostAudioError, HostAudioEvent, HostAudioPlaybackReport, HostAudioState,
+    RuntimeSampleLibrary, WavSamplePayload, load_wav_sample_payload,
 };
 use mpc_core::{
     DiskOperation, HardwareEvent, MachineOutput, MidiSettingsField, Mode, MpcCore, MpcState,
@@ -20,7 +21,7 @@ use mpc_storage::{
     DEFAULT_PROJECT_FILE_PATH, load_project_file_with_report,
     save_project_file as save_project_file_to_path,
 };
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 fn main() -> eframe::Result<()> {
     let options = eframe::NativeOptions {
@@ -45,12 +46,15 @@ struct MpcDesktopApp {
     host_midi_input: Option<DeviceMidiInputConnection>,
     midi_input_ports: Vec<MidiPortDescriptor>,
     midi_output_ports: Vec<MidiPortDescriptor>,
+    audio_output_devices: Vec<AudioOutputDeviceDescriptor>,
     selected_midi_input_port: usize,
     selected_midi_output_port: usize,
+    selected_audio_output_device: usize,
     last_status: String,
     last_audio_render: Option<AudioRenderSummary>,
     last_audio_render_error: Option<String>,
     runtime_samples: RuntimeSampleLibrary,
+    runtime_sample_statuses: BTreeMap<String, RuntimeSampleStatus>,
     sample_import_path: String,
     last_runtime_sample_status: String,
     last_project_snapshot_json: Option<String>,
@@ -108,6 +112,30 @@ enum DesktopMidiBackend {
     Device(DeviceMidiOutputBackend),
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum RuntimeSampleStatus {
+    Loaded {
+        path: String,
+        frame_count: usize,
+        sample_rate_hz: u32,
+        byte_count: usize,
+    },
+    Missing {
+        attempted_paths: Vec<String>,
+    },
+    MetadataMismatch {
+        path: String,
+        expected_sample_rate_hz: u32,
+        actual_sample_rate_hz: u32,
+        expected_frame_count: u32,
+        actual_frame_count: usize,
+    },
+    LoadFailed {
+        path: String,
+        message: String,
+    },
+}
+
 impl DesktopMidiBackend {
     fn capture() -> Self {
         Self::Capture(CaptureMidiBackend::new(16))
@@ -160,12 +188,15 @@ impl Default for MpcDesktopApp {
             host_midi_input: None,
             midi_input_ports: Vec::new(),
             midi_output_ports: Vec::new(),
+            audio_output_devices: Vec::new(),
             selected_midi_input_port: 0,
             selected_midi_output_port: 0,
+            selected_audio_output_device: 0,
             last_status: "Ready".to_string(),
             last_audio_render: None,
             last_audio_render_error: None,
             runtime_samples: RuntimeSampleLibrary::default(),
+            runtime_sample_statuses: BTreeMap::new(),
             sample_import_path: "local-assets/samples/import.wav".to_string(),
             last_runtime_sample_status: "Runtime WAV: none".to_string(),
             last_project_snapshot_json: None,
@@ -384,7 +415,7 @@ impl MpcDesktopApp {
                 let version = snapshot.version;
                 match self.core.restore_project_snapshot(snapshot) {
                     Ok(()) => {
-                        self.clear_runtime_sample_payloads("snapshot load");
+                        self.relink_runtime_samples_from_project("snapshot load");
                         self.last_project_snapshot_version = Some(version);
                         self.last_project_snapshot_bytes = Some(byte_count);
                         self.last_project_snapshot_status = format!(
@@ -439,7 +470,7 @@ impl MpcDesktopApp {
                 let report = loaded.report;
                 match self.core.restore_project_snapshot(loaded.snapshot) {
                     Ok(()) => {
-                        self.clear_runtime_sample_payloads("project file load");
+                        self.relink_runtime_samples_from_project("project file load");
                         self.last_project_file_version = Some(report.snapshot_version);
                         self.last_project_file_bytes = Some(report.byte_count);
                         self.last_project_file_status = format!(
@@ -556,6 +587,27 @@ impl MpcDesktopApp {
         }
 
         self.last_status = format!("MIDI devices: {}", status_parts.join(", "));
+    }
+
+    fn refresh_audio_output_devices(&mut self) {
+        match list_output_devices() {
+            Ok(devices) => {
+                self.audio_output_devices = devices;
+                self.selected_audio_output_device = clamp_port_index(
+                    self.selected_audio_output_device,
+                    self.audio_output_devices.len(),
+                );
+                self.last_status = format!(
+                    "Audio devices: {} output device(s)",
+                    self.audio_output_devices.len()
+                );
+            }
+            Err(error) => {
+                self.audio_output_devices.clear();
+                self.selected_audio_output_device = 0;
+                self.last_status = format!("Audio device refresh failed: {error}");
+            }
+        }
     }
 
     fn switch_host_midi_to_capture(&mut self) {
@@ -731,6 +783,83 @@ impl MpcDesktopApp {
         host_midi_error_message(&report.event)
     }
 
+    fn relink_runtime_samples_from_project(&mut self, reason: &str) {
+        self.clear_runtime_sample_payloads(reason);
+        let references = self.core.state().imported_media_references.clone();
+        let mut loaded_count = 0_usize;
+        let mut missing_count = 0_usize;
+
+        for reference in references {
+            match self.load_runtime_sample_reference(&reference) {
+                Ok(()) => loaded_count = loaded_count.saturating_add(1),
+                Err(()) => missing_count = missing_count.saturating_add(1),
+            }
+        }
+
+        self.last_audio_render = None;
+        self.last_audio_render_error = None;
+        self.last_runtime_sample_status = format!(
+            "Runtime WAV: relink after {reason}: {loaded_count} loaded, {missing_count} missing"
+        );
+    }
+
+    fn load_runtime_sample_reference(
+        &mut self,
+        reference: &mpc_core::ProjectImportedMediaReference,
+    ) -> Result<(), ()> {
+        let mut attempted_paths = Vec::new();
+        for path in media_reference_candidate_paths(reference) {
+            attempted_paths.push(path.clone());
+            match load_wav_sample_payload(&path) {
+                Ok(payload) if runtime_payload_matches_reference(&payload, reference) => {
+                    self.runtime_samples.insert(
+                        reference.sample_id.clone(),
+                        reference.sample_name.clone(),
+                        payload.clone(),
+                    );
+                    self.runtime_sample_statuses.insert(
+                        reference.sample_id.clone(),
+                        RuntimeSampleStatus::Loaded {
+                            path,
+                            frame_count: payload.frame_count,
+                            sample_rate_hz: payload.sample_rate_hz,
+                            byte_count: payload.byte_count,
+                        },
+                    );
+                    return Ok(());
+                }
+                Ok(payload) => {
+                    self.runtime_sample_statuses.insert(
+                        reference.sample_id.clone(),
+                        RuntimeSampleStatus::MetadataMismatch {
+                            path,
+                            expected_sample_rate_hz: reference.sample_rate_hz,
+                            actual_sample_rate_hz: payload.sample_rate_hz,
+                            expected_frame_count: reference.frame_count,
+                            actual_frame_count: payload.frame_count,
+                        },
+                    );
+                    return Err(());
+                }
+                Err(error) => {
+                    self.runtime_sample_statuses.insert(
+                        reference.sample_id.clone(),
+                        RuntimeSampleStatus::LoadFailed {
+                            path,
+                            message: error.to_string(),
+                        },
+                    );
+                }
+            }
+        }
+
+        self.runtime_sample_statuses.insert(
+            reference.sample_id.clone(),
+            RuntimeSampleStatus::Missing { attempted_paths },
+        );
+        Err(())
+    }
+
     fn load_wav_to_selected_pad(&mut self) {
         let path = self.sample_import_path.trim();
         if path.is_empty() {
@@ -770,6 +899,31 @@ impl MpcDesktopApp {
             let sample_rate_hz = payload.sample_rate_hz;
             self.runtime_samples
                 .insert(sample.id.clone(), sample.name.clone(), payload);
+            let reference = mpc_core::ProjectImportedMediaReference {
+                sample_id: sample.id.clone(),
+                source_path: path.to_string(),
+                managed_copy_path: None,
+                sample_name: sample.name.clone(),
+                sample_rate_hz,
+                frame_count: length_frames,
+                byte_count,
+                source_kind: mpc_core::SampleSourceKind::Imported,
+            };
+            if let Err(error) = self.core.upsert_imported_media_reference(reference) {
+                let message = format!("Runtime WAV import metadata failed: {error}");
+                self.last_runtime_sample_status = message.clone();
+                self.last_status = message;
+                return;
+            }
+            self.runtime_sample_statuses.insert(
+                sample.id.clone(),
+                RuntimeSampleStatus::Loaded {
+                    path: path.to_string(),
+                    frame_count: length_frames as usize,
+                    sample_rate_hz,
+                    byte_count,
+                },
+            );
             self.prune_runtime_samples_to_project_metadata();
             self.last_runtime_sample_status = format!(
                 "Runtime WAV loaded: {} {} frames @ {} Hz ({} bytes)",
@@ -784,6 +938,7 @@ impl MpcDesktopApp {
 
     fn clear_runtime_sample_payloads(&mut self, reason: &str) {
         self.runtime_samples.clear();
+        self.runtime_sample_statuses.clear();
         self.last_audio_render = None;
         self.last_audio_render_error = None;
         self.last_runtime_sample_status = format!("Runtime WAV: cleared after {reason}");
@@ -1703,6 +1858,19 @@ impl MpcDesktopApp {
             {
                 self.switch_host_audio_to_default_device();
             }
+            if ui.button("Refresh audio").clicked() {
+                self.refresh_audio_output_devices();
+            }
+            audio_output_device_combo(
+                ui,
+                &self.audio_output_devices,
+                &mut self.selected_audio_output_device,
+            );
+            ui.add_enabled_ui(!self.audio_output_devices.is_empty(), |ui| {
+                if ui.button("Open selected").clicked() {
+                    self.switch_host_audio_to_selected_device();
+                }
+            });
 
             let state = self.host_audio.state();
             ui.separator();
@@ -1873,6 +2041,52 @@ impl MpcDesktopApp {
                     device_render_settings,
                     format!(
                         "Host audio backend: default device {} {} Hz {} ch {}",
+                        status.device_name,
+                        status.sample_rate_hz,
+                        status.channels,
+                        status.sample_format
+                    ),
+                );
+            }
+            Err(error) => {
+                self.last_status = format!("Host audio device unavailable: {error}");
+            }
+        }
+    }
+
+    fn switch_host_audio_to_selected_device(&mut self) {
+        let Some(device) = self
+            .audio_output_devices
+            .get(self.selected_audio_output_device)
+            .cloned()
+        else {
+            self.last_status = "No audio output device selected".to_string();
+            return;
+        };
+
+        match DeviceAudioBackend::open_output_device_id(
+            &device.id,
+            DeviceAudioBackendConfig::default(),
+        ) {
+            Ok(backend) => {
+                let status = backend.status();
+                let current_render_settings = self.host_audio.render_settings();
+                let device_render_settings = match AudioRenderSettings::new(
+                    status.sample_rate_hz,
+                    current_render_settings.frame_count,
+                ) {
+                    Ok(settings) => settings,
+                    Err(error) => {
+                        self.last_status =
+                            format!("Host audio device render settings unsupported: {error}");
+                        return;
+                    }
+                };
+                self.replace_host_audio_backend(
+                    DesktopAudioBackend::Device(backend),
+                    device_render_settings,
+                    format!(
+                        "Host audio backend: device {} {} Hz {} ch {}",
                         status.device_name,
                         status.sample_rate_hz,
                         status.channels,
@@ -2209,6 +2423,29 @@ fn runtime_sample_ids_referenced_by_project(state: &MpcState) -> BTreeSet<String
     sample_ids
 }
 
+fn media_reference_candidate_paths(
+    reference: &mpc_core::ProjectImportedMediaReference,
+) -> Vec<String> {
+    let mut paths = Vec::new();
+    if let Some(path) = &reference.managed_copy_path {
+        paths.push(path.clone());
+    }
+    if !reference.source_path.is_empty()
+        && !paths.iter().any(|path| path == &reference.source_path)
+    {
+        paths.push(reference.source_path.clone());
+    }
+    paths
+}
+
+fn runtime_payload_matches_reference(
+    payload: &WavSamplePayload,
+    reference: &mpc_core::ProjectImportedMediaReference,
+) -> bool {
+    payload.sample_rate_hz == reference.sample_rate_hz
+        && payload.frame_count == reference.frame_count as usize
+}
+
 fn project_snapshot_status_text(
     status: &str,
     version: Option<u16>,
@@ -2310,6 +2547,31 @@ fn selected_midi_port_text(ports: &[MidiPortDescriptor], selected_index: usize) 
     ports
         .get(selected_index)
         .map(midi_port_label)
+        .unwrap_or_else(|| "none".to_string())
+}
+
+fn audio_output_device_combo(
+    ui: &mut egui::Ui,
+    devices: &[AudioOutputDeviceDescriptor],
+    selected_index: &mut usize,
+) {
+    *selected_index = clamp_port_index(*selected_index, devices.len());
+    egui::ComboBox::from_label("Audio out")
+        .selected_text(selected_audio_output_device_text(devices, *selected_index))
+        .show_ui(ui, |ui| {
+            for (index, device) in devices.iter().enumerate() {
+                ui.selectable_value(selected_index, index, device.display_label());
+            }
+        });
+}
+
+fn selected_audio_output_device_text(
+    devices: &[AudioOutputDeviceDescriptor],
+    selected_index: usize,
+) -> String {
+    devices
+        .get(selected_index)
+        .map(AudioOutputDeviceDescriptor::display_label)
         .unwrap_or_else(|| "none".to_string())
 }
 
