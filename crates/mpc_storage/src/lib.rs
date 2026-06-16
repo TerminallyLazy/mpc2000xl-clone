@@ -233,7 +233,10 @@ fn project_json_error(path: &Path, source: ProjectSnapshotError) -> ProjectStora
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mpc_core::{HardwareEvent, PROJECT_SNAPSHOT_VERSION, PadBank, PanelControl, ProgramPad};
+    use mpc_core::{
+        HardwareEvent, PROJECT_SNAPSHOT_VERSION, PadBank, PanelControl, ProgramPad,
+        ProjectImportedMediaReference,
+    };
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -375,6 +378,48 @@ mod tests {
         let json = fs::read_to_string(&path).expect("saved file should be readable");
 
         assert!(json.contains("\"rights_boundary\": \"metadata_only_no_audio_bytes\""));
+        assert!(!json.contains("\"audio_bytes\""));
+        assert!(!json.contains("\"sample_file_contents\""));
+
+        remove_temp_root(root);
+    }
+
+    #[test]
+    fn saved_json_keeps_imported_media_references_metadata_only() {
+        let root = temp_root("imported_media_metadata");
+        let path = root.join("metadata.mpc2000xl-project.json");
+        let mut core = MpcCore::new();
+        core.dispatch(HardwareEvent::Press {
+            control: PanelControl::Sample,
+        });
+        let outputs = core.import_sample_metadata_for_selected_pad("KICK".to_string(), 44_100);
+        let sample_id = outputs
+            .iter()
+            .find_map(|output| match output {
+                mpc_core::MachineOutput::SampleMetadataCreated { sample, .. } => {
+                    Some(sample.id.clone())
+                }
+                _ => None,
+            })
+            .expect("import should create sample metadata");
+
+        core.upsert_imported_media_reference(ProjectImportedMediaReference {
+            sample_id,
+            source_path: "local-assets/samples/kick.wav".to_string(),
+            managed_copy_path: None,
+            sample_name: "KICK".to_string(),
+            sample_rate_hz: 44_100,
+            frame_count: 44_100,
+            byte_count: 88_244,
+            source_kind: mpc_core::SampleSourceKind::Imported,
+        })
+        .expect("media reference should attach");
+
+        save_project_file(&core, &path).expect("project file should save");
+        let json = fs::read_to_string(&path).expect("saved file should be readable");
+
+        assert!(json.contains("\"imported_media_references\""));
+        assert!(json.contains("local-assets/samples/kick.wav"));
         assert!(!json.contains("\"audio_bytes\""));
         assert!(!json.contains("\"sample_file_contents\""));
 
