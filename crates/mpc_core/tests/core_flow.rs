@@ -2,11 +2,12 @@ use mpc_core::{
     CountInClickIntent, DiskOperation, HardwareEvent, IMPORTED_SAMPLE_LENGTH_FRAMES, INTERNAL_PPQN,
     MachineOutput, MainScreenField, MidiSettingsField, Mode, MpcCore, PROJECT_SNAPSHOT_VERSION,
     PadAssignment, PadAssignmentChange, PadBank, PanelControl, PlaybackMissReason,
-    ProgramEditField, ProgramPad, ProjectSetupSnapshot, ProjectSnapshot, ProjectSnapshotError,
-    ProjectSongSnapshot, RECORDED_SAMPLE_LENGTH_FRAMES, SamplePlaybackIntent,
-    SamplePlaybackResolution, SampleReleaseIntent, SampleSourceKind, SampleTrim, SequenceEvent,
-    SetupField, SetupPreferences, SongEditField, SongStep, SyntheticSample, TimingCorrectDivision,
-    TimingCorrectField, TimingCorrectSettings, TrimEditField, sequence_length_ticks_for_bars,
+    ProgramEditField, ProgramPad, ProjectImportedMediaReference, ProjectSetupSnapshot,
+    ProjectSnapshot, ProjectSnapshotError, ProjectSongSnapshot, RECORDED_SAMPLE_LENGTH_FRAMES,
+    SamplePlaybackIntent, SamplePlaybackResolution, SampleReleaseIntent, SampleSourceKind,
+    SampleTrim, SequenceEvent, SetupField, SetupPreferences, SongEditField, SongStep,
+    SyntheticSample, TimingCorrectDivision, TimingCorrectField, TimingCorrectSettings,
+    TrimEditField, sequence_length_ticks_for_bars,
 };
 
 #[test]
@@ -1468,6 +1469,72 @@ fn trim_project_snapshot_defaults_round_trips_and_validates_entries() {
         "program.sample_trims[0].audio_bytes",
         "unknown field",
     );
+}
+
+#[test]
+fn imported_media_reference_round_trips_without_audio_bytes() {
+    let mut core = MpcCore::new();
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::Sample,
+    });
+    let outputs = core.import_sample_metadata_for_selected_pad("KICK".to_string(), 44_100);
+    let sample_id = outputs
+        .iter()
+        .find_map(|output| match output {
+            MachineOutput::SampleMetadataCreated { sample, .. } => Some(sample.id.clone()),
+            _ => None,
+        })
+        .expect("import should create sample metadata");
+
+    let reference = ProjectImportedMediaReference {
+        sample_id: sample_id.clone(),
+        source_path: "local-assets/samples/kick.wav".to_string(),
+        managed_copy_path: Some("local-assets/projects/media/kick.wav".to_string()),
+        sample_name: "KICK".to_string(),
+        sample_rate_hz: 44_100,
+        frame_count: 44_100,
+        byte_count: 88_244,
+        source_kind: SampleSourceKind::Imported,
+    };
+    core.upsert_imported_media_reference(reference.clone())
+        .expect("imported sample reference should attach");
+
+    let json = core.to_project_json().expect("project should encode");
+    assert!(json.contains("\"imported_media_references\""));
+    assert!(json.contains("local-assets/samples/kick.wav"));
+    assert!(!json.contains("\"audio_bytes\""));
+    assert!(!json.contains("sample_file_contents"));
+
+    let snapshot = MpcCore::from_project_json(&json).expect("project should decode");
+    assert_eq!(snapshot.program.imported_media_references, vec![reference]);
+}
+
+#[test]
+fn imported_media_reference_rejects_unknown_or_generated_samples() {
+    let mut core = MpcCore::new();
+    let unknown = ProjectImportedMediaReference {
+        sample_id: "missing".to_string(),
+        source_path: "local-assets/samples/missing.wav".to_string(),
+        managed_copy_path: None,
+        sample_name: "MISSING".to_string(),
+        sample_rate_hz: 44_100,
+        frame_count: 1,
+        byte_count: 44,
+        source_kind: SampleSourceKind::Imported,
+    };
+    assert!(core.upsert_imported_media_reference(unknown).is_err());
+
+    let generated = ProjectImportedMediaReference {
+        sample_id: "synthetic_a_01".to_string(),
+        source_path: "local-assets/samples/a01.wav".to_string(),
+        managed_copy_path: None,
+        sample_name: "A01".to_string(),
+        sample_rate_hz: 44_100,
+        frame_count: 1,
+        byte_count: 44,
+        source_kind: SampleSourceKind::Generated,
+    };
+    assert!(core.upsert_imported_media_reference(generated).is_err());
 }
 
 #[test]

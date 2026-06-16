@@ -186,6 +186,22 @@ pub struct ProjectProgramSnapshot {
     pub pad_assignments: Vec<PadAssignment>,
     #[serde(default)]
     pub sample_trims: Vec<SampleTrim>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub imported_media_references: Vec<ProjectImportedMediaReference>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProjectImportedMediaReference {
+    pub sample_id: String,
+    pub source_path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub managed_copy_path: Option<String>,
+    pub sample_name: String,
+    pub sample_rate_hz: u32,
+    pub frame_count: u32,
+    pub byte_count: usize,
+    pub source_kind: SampleSourceKind,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -292,6 +308,8 @@ pub struct MpcState {
     pub selected_sample_id: Option<String>,
     pub selected_trim_edit_field: TrimEditField,
     pub sample_trims: Vec<SampleTrim>,
+    #[serde(default)]
+    pub imported_media_references: Vec<ProjectImportedMediaReference>,
     pub midi_input_channel: Option<u8>,
     pub midi_base_note: u8,
     pub selected_midi_settings_field: MidiSettingsField,
@@ -368,6 +386,7 @@ impl Default for MpcState {
             selected_sample_id,
             selected_trim_edit_field: TrimEditField::Start,
             sample_trims: Vec::new(),
+            imported_media_references: Vec::new(),
             midi_input_channel: None,
             midi_base_note: DEFAULT_MIDI_BASE_NOTE,
             selected_midi_settings_field: MidiSettingsField::InputChannel,
@@ -474,6 +493,10 @@ impl MpcCore {
                     &self.state.current_program,
                     &self.state.sample_trims,
                 ),
+                imported_media_references: normalized_imported_media_references(
+                    &self.state.current_program,
+                    &self.state.imported_media_references,
+                ),
             },
             song: ProjectSongSnapshot {
                 steps: self.state.song_steps.clone(),
@@ -523,6 +546,10 @@ impl MpcCore {
         self.state.selected_trim_edit_field = snapshot.machine.selected_trim_edit_field;
         self.state.sample_trims =
             normalized_sample_trims(&self.state.current_program, &snapshot.program.sample_trims);
+        self.state.imported_media_references = normalized_imported_media_references(
+            &self.state.current_program,
+            &snapshot.program.imported_media_references,
+        );
         self.state.midi_input_channel = snapshot.machine.midi_input_channel;
         self.state.midi_base_note = snapshot.machine.midi_base_note;
         self.state.selected_midi_settings_field = snapshot.machine.selected_midi_settings_field;
@@ -569,6 +596,25 @@ impl MpcCore {
     pub fn restore_project_json(&mut self, json: &str) -> Result<(), ProjectSnapshotError> {
         let snapshot = Self::from_project_json(json)?;
         self.restore_project_snapshot(snapshot)
+    }
+
+    pub fn upsert_imported_media_reference(
+        &mut self,
+        reference: ProjectImportedMediaReference,
+    ) -> Result<(), ProjectSnapshotError> {
+        validate_imported_media_reference(
+            "program.imported_media_references[]",
+            &reference,
+            &self.state.current_program.pad_assignments,
+        )?;
+        self.state
+            .imported_media_references
+            .retain(|existing| existing.sample_id != reference.sample_id);
+        self.state.imported_media_references.push(reference);
+        self.state
+            .imported_media_references
+            .sort_by(|left, right| left.sample_id.cmp(&right.sample_id));
+        Ok(())
     }
 
     pub fn import_sample_metadata_for_selected_pad(
@@ -2343,6 +2389,10 @@ impl MpcCore {
     fn prune_sample_trims_for_current_program(&mut self) {
         self.state.sample_trims =
             normalized_sample_trims(&self.state.current_program, &self.state.sample_trims);
+        self.state.imported_media_references = normalized_imported_media_references(
+            &self.state.current_program,
+            &self.state.imported_media_references,
+        );
     }
 
     fn midi_output_intent_for_playback(
@@ -2493,7 +2543,13 @@ fn validate_program_json_fields(value: &Value) -> Result<(), ProjectSnapshotErro
     let Some(program) = reject_unknown_json_fields(
         "program",
         value,
-        &["index", "name", "pad_assignments", "sample_trims"],
+        &[
+            "index",
+            "name",
+            "pad_assignments",
+            "sample_trims",
+            "imported_media_references",
+        ],
     )?
     else {
         return Ok(());
@@ -2515,6 +2571,17 @@ fn validate_program_json_fields(value: &Value) -> Result<(), ProjectSnapshotErro
             )?;
         }
     }
+    if let Some(imported_media_references) = program
+        .get("imported_media_references")
+        .and_then(Value::as_array)
+    {
+        for (index, reference) in imported_media_references.iter().enumerate() {
+            validate_imported_media_reference_json_fields(
+                &format!("program.imported_media_references[{index}]"),
+                reference,
+            )?;
+        }
+    }
 
     Ok(())
 }
@@ -2524,6 +2591,27 @@ fn validate_sample_trim_json_fields(
     value: &Value,
 ) -> Result<(), ProjectSnapshotError> {
     reject_unknown_json_fields(field, value, &["sample_id", "start_frame", "end_frame"])?;
+    Ok(())
+}
+
+fn validate_imported_media_reference_json_fields(
+    field: &str,
+    value: &Value,
+) -> Result<(), ProjectSnapshotError> {
+    reject_unknown_json_fields(
+        field,
+        value,
+        &[
+            "sample_id",
+            "source_path",
+            "managed_copy_path",
+            "sample_name",
+            "sample_rate_hz",
+            "frame_count",
+            "byte_count",
+            "source_kind",
+        ],
+    )?;
     Ok(())
 }
 
@@ -2909,6 +2997,10 @@ fn validate_project_snapshot(snapshot: &ProjectSnapshot) -> Result<(), ProjectSn
         }
     }
     validate_sample_trims(&snapshot.program.sample_trims, &default_catalog)?;
+    validate_imported_media_references(
+        &snapshot.program.imported_media_references,
+        &snapshot.program.pad_assignments,
+    )?;
     validate_playback_resolution(
         "machine.last_playback",
         snapshot.machine.last_playback.as_ref(),
@@ -3104,6 +3196,74 @@ fn validate_sample_trims(
             trim.window_length_frames(),
             entry.length_frames,
         )?;
+    }
+    Ok(())
+}
+
+fn validate_imported_media_references(
+    references: &[ProjectImportedMediaReference],
+    assignments: &[PadAssignment],
+) -> Result<(), ProjectSnapshotError> {
+    let mut seen = BTreeSet::new();
+    for (index, reference) in references.iter().enumerate() {
+        let field = format!("program.imported_media_references[{index}]");
+        if !seen.insert(reference.sample_id.as_str()) {
+            return Err(invalid_value(
+                &format!("{field}.sample_id"),
+                "duplicate imported media reference",
+            ));
+        }
+        validate_imported_media_reference(&field, reference, assignments)?;
+    }
+    Ok(())
+}
+
+fn validate_imported_media_reference(
+    field: &str,
+    reference: &ProjectImportedMediaReference,
+    assignments: &[PadAssignment],
+) -> Result<(), ProjectSnapshotError> {
+    validate_non_empty(&format!("{field}.sample_id"), &reference.sample_id)?;
+    validate_non_empty(&format!("{field}.source_path"), &reference.source_path)?;
+    if let Some(path) = &reference.managed_copy_path {
+        validate_non_empty(&format!("{field}.managed_copy_path"), path)?;
+    }
+    validate_non_empty(&format!("{field}.sample_name"), &reference.sample_name)?;
+    validate_range_u32(
+        &format!("{field}.sample_rate_hz"),
+        reference.sample_rate_hz,
+        8_000,
+        192_000,
+    )?;
+    validate_range_u32(
+        &format!("{field}.frame_count"),
+        reference.frame_count,
+        1,
+        MAX_USER_SAMPLE_LENGTH_FRAMES,
+    )?;
+    if reference.byte_count == 0 {
+        return Err(invalid_value(&format!("{field}.byte_count"), "must be > 0"));
+    }
+    if reference.source_kind != SampleSourceKind::Imported {
+        return Err(invalid_value(
+            &format!("{field}.source_kind"),
+            "must be imported",
+        ));
+    }
+    let Some(assignment) = assignments
+        .iter()
+        .find(|assignment| assignment.sample.id == reference.sample_id)
+    else {
+        return Err(invalid_value(
+            &format!("{field}.sample_id"),
+            format!("unknown sample id {:?}", reference.sample_id),
+        ));
+    };
+    if assignment.sample.source_kind != SampleSourceKind::Imported {
+        return Err(invalid_value(
+            &format!("{field}.sample_id"),
+            "referenced sample must be imported",
+        ));
     }
     Ok(())
 }
@@ -3681,6 +3841,26 @@ fn normalized_sample_trims(program: &Program, sample_trims: &[SampleTrim]) -> Ve
         .cloned()
         .collect::<Vec<_>>();
     normalized.sort_by(|left, right| left.sample_id.cmp(&right.sample_id));
+    normalized
+}
+
+fn normalized_imported_media_references(
+    program: &Program,
+    references: &[ProjectImportedMediaReference],
+) -> Vec<ProjectImportedMediaReference> {
+    let imported_sample_ids = program
+        .pad_assignments
+        .iter()
+        .filter(|assignment| assignment.sample.source_kind == SampleSourceKind::Imported)
+        .map(|assignment| assignment.sample.id.as_str())
+        .collect::<BTreeSet<_>>();
+    let mut normalized = references
+        .iter()
+        .filter(|reference| imported_sample_ids.contains(reference.sample_id.as_str()))
+        .cloned()
+        .collect::<Vec<_>>();
+    normalized.sort_by(|left, right| left.sample_id.cmp(&right.sample_id));
+    normalized.dedup_by(|left, right| left.sample_id == right.sample_id);
     normalized
 }
 

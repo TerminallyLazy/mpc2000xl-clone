@@ -15,7 +15,7 @@ pub use events::{
 pub use lcd::LcdFrame;
 pub use state::{
     FOUNDATION_BEATS_PER_BAR, INTERNAL_PPQN, MainScreenField, MpcCore, MpcState,
-    PROJECT_SNAPSHOT_VERSION, ProjectMachineSnapshot, ProjectProgramSnapshot,
-    ProjectSequenceSnapshot, ProjectSetupSnapshot, ProjectSnapshot, ProjectSnapshotError,
-    ProjectSongSnapshot, sequence_length_ticks_for_bars,
+    PROJECT_SNAPSHOT_VERSION, ProjectImportedMediaReference, ProjectMachineSnapshot,
+    ProjectProgramSnapshot, ProjectSequenceSnapshot, ProjectSetupSnapshot, ProjectSnapshot,
+    ProjectSnapshotError, ProjectSongSnapshot, sequence_length_ticks_for_bars,
 };
