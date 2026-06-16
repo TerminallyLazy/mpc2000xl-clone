@@ -148,17 +148,26 @@ impl OutboundMidiNoteScheduler {
         intent: &MidiOutputIntent,
         now_millis: u64,
         duration_millis: u64,
-    ) {
+    ) -> Vec<MidiOutputIntent> {
         if intent.kind != MidiOutputIntentKind::NoteOn {
-            return;
+            return Vec::new();
         }
         let due = now_millis.saturating_add(duration_millis);
-        self.pending_notes
-            .retain(|pending| !same_outbound_note(&pending.intent, intent));
+        let mut replaced = Vec::new();
+        let mut pending = Vec::with_capacity(self.pending_notes.len());
+        for note in self.pending_notes.drain(..) {
+            if same_outbound_note(&note.intent, intent) {
+                replaced.push(note_off_intent(&note.intent));
+            } else {
+                pending.push(note);
+            }
+        }
+        self.pending_notes = pending;
         self.pending_notes.push(PendingOutboundMidiNote {
             intent: intent.clone(),
             note_off_due_millis: due,
         });
+        replaced
     }
 
     pub fn drain_due_note_offs(&mut self, now_millis: u64) -> Vec<MidiOutputIntent> {
@@ -1039,7 +1048,7 @@ mod tests {
         let mut scheduler = OutboundMidiNoteScheduler::default();
         let note_on = intent();
 
-        scheduler.register_note_on(&note_on, 100, 250);
+        assert!(scheduler.register_note_on(&note_on, 100, 250).is_empty());
         assert_eq!(scheduler.pending_count(), 1);
         assert!(scheduler.drain_due_note_offs(349).is_empty());
 
@@ -1057,7 +1066,7 @@ mod tests {
         let mut scheduler = OutboundMidiNoteScheduler::default();
         let note_on = intent();
 
-        scheduler.register_note_on(&note_on, 100, 250);
+        assert!(scheduler.register_note_on(&note_on, 100, 250).is_empty());
         let released = scheduler.release_matching_note(&note_on, 150);
 
         assert_eq!(released.len(), 1);
@@ -1065,6 +1074,46 @@ mod tests {
         assert_eq!(released[0].note, note_on.note);
         assert_eq!(scheduler.pending_count(), 0);
         assert!(scheduler.drain_due_note_offs(400).is_empty());
+    }
+
+    #[test]
+    fn outbound_note_scheduler_retrigger_returns_displaced_note_off() {
+        let mut scheduler = OutboundMidiNoteScheduler::default();
+        let note_on = intent();
+
+        assert!(scheduler.register_note_on(&note_on, 100, 250).is_empty());
+        let displaced = scheduler.register_note_on(&note_on, 150, 250);
+
+        assert_eq!(displaced.len(), 1);
+        assert_eq!(displaced[0].kind, mpc_core::MidiOutputIntentKind::NoteOff);
+        assert_eq!(displaced[0].channel, note_on.channel);
+        assert_eq!(displaced[0].note, note_on.note);
+        assert_eq!(displaced[0].velocity, 0);
+        assert_eq!(scheduler.pending_count(), 1);
+        assert!(scheduler.drain_due_note_offs(399).is_empty());
+        assert_eq!(scheduler.drain_due_note_offs(400).len(), 1);
+        assert_eq!(scheduler.pending_count(), 0);
+    }
+
+    #[test]
+    fn midi_message_missing_kind_deserializes_as_note_on() {
+        use serde::de::IntoDeserializer;
+
+        let fields = [
+            ("channel".into_deserializer(), 2u8.into_deserializer()),
+            ("note".into_deserializer(), 55u8.into_deserializer()),
+            ("velocity".into_deserializer(), 84u8.into_deserializer()),
+        ];
+        let message = MidiMessage::deserialize(serde::de::value::MapDeserializer::<
+            _,
+            serde::de::value::Error,
+        >::new(fields.into_iter()))
+        .expect("old message payload should deserialize");
+
+        assert_eq!(message.kind, MidiMessageKind::NoteOn);
+        assert_eq!(message.channel, 2);
+        assert_eq!(message.note, 55);
+        assert_eq!(message.velocity, 84);
     }
 
     #[test]

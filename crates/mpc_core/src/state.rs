@@ -7,12 +7,11 @@ use crate::events::{
     CountInClickIntent, DiskOperation, HardwareEvent, IMPORTED_SAMPLE_LENGTH_FRAMES, MachineOutput,
     MidiOutputIntent, MidiOutputIntentKind, MidiSettingsField, Mode, PadAssignment,
     PadAssignmentChange, PadBank, PanelControl, PlaybackMissReason, Program, ProgramEditField,
-    ProgramPad,
-    RECORDED_SAMPLE_LENGTH_FRAMES, SampleCatalogEntry, SamplePlaybackIntent, SamplePlaybackMiss,
-    SamplePlaybackResolution, SampleReleaseIntent, SampleSourceKind, SampleTrim, SequenceEvent,
-    SetupField, SetupPreferences, SongEditField, SongStep, SyntheticSample, TimingCorrectField,
-    TimingCorrectSettings, TrimEditField, generated_sample_length_frames,
-    sample_window_length_frames,
+    ProgramPad, RECORDED_SAMPLE_LENGTH_FRAMES, SampleCatalogEntry, SamplePlaybackIntent,
+    SamplePlaybackMiss, SamplePlaybackResolution, SampleReleaseIntent, SampleSourceKind,
+    SampleTrim, SequenceEvent, SetupField, SetupPreferences, SongEditField, SongStep,
+    SyntheticSample, TimingCorrectField, TimingCorrectSettings, TrimEditField,
+    generated_sample_length_frames, sample_window_length_frames,
 };
 use crate::lcd::LcdFrame;
 

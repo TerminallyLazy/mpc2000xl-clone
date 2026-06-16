@@ -5608,6 +5608,26 @@ fn midi_output_intent_serializes_stably() {
 }
 
 #[test]
+fn midi_output_intent_missing_kind_deserializes_as_note_on() {
+    let intent: mpc_core::MidiOutputIntent = serde_json::from_value(serde_json::json!({
+        "selected_track": 2,
+        "program_index": 1,
+        "program_name": "Program01",
+        "bank": "b",
+        "pad_number": 4,
+        "source_sample_id": "synthetic_b_04",
+        "source_sample_name": "SYN-B04",
+        "channel": 2,
+        "note": 55,
+        "velocity": 84
+    }))
+    .expect("old MIDI output intent JSON should deserialize");
+
+    assert_eq!(intent.kind, mpc_core::MidiOutputIntentKind::NoteOn);
+    assert_eq!(intent.window_length_frames, 0);
+}
+
+#[test]
 fn midi_note_on_uses_bank_a_even_when_another_bank_is_active() {
     let mut core = MpcCore::new();
 

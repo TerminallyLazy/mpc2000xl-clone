@@ -48,7 +48,8 @@
         "source_sample_name": "SYN-B04",
         "channel": 1,
         "note": 55,
-        "velocity": 84
+        "velocity": 84,
+        "window_length_frames": 70800
       }
     }
   ],
