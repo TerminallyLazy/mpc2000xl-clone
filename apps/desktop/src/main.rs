@@ -172,6 +172,13 @@ enum DesktopMidiBackend {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+enum DesktopMidiSendResult {
+    Queued,
+    Ignored { message: String },
+    Failed { message: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum RuntimeSampleStatus {
     Loaded {
         path: String,
@@ -310,7 +317,9 @@ impl eframe::App for MpcDesktopApp {
             ui.add_space(16.0);
             ui.label(format!("Status: {}", self.last_status));
         });
-        if self.host_midi_input.is_some() || self.outbound_midi_notes.has_pending() {
+        if self.host_midi_input.is_some()
+            || (self.host_midi.is_enabled() && self.outbound_midi_notes.has_pending())
+        {
             ui.ctx()
                 .request_repaint_after(std::time::Duration::from_millis(10));
         }
@@ -343,51 +352,139 @@ impl MpcDesktopApp {
             )
     }
 
-    fn send_midi_intent(&mut self, intent: &mpc_core::MidiOutputIntent) -> Option<String> {
+    fn send_midi_intent(&mut self, intent: &mpc_core::MidiOutputIntent) -> DesktopMidiSendResult {
         let report = self.host_midi.send_intent(intent);
-        let note_off_queued = intent.kind == mpc_core::MidiOutputIntentKind::NoteOff
-            && matches!(&report.event, HostMidiEvent::Queued { .. });
-        let error = self.record_midi_report(report);
+        let result = match &report.event {
+            HostMidiEvent::Queued { .. } => DesktopMidiSendResult::Queued,
+            HostMidiEvent::Ignored { reason, intent } => DesktopMidiSendResult::Ignored {
+                message: format!(
+                    "Host MIDI ignored {:?} ch {} note {}: {}",
+                    intent.kind, intent.channel, intent.note, reason
+                ),
+            },
+            HostMidiEvent::Failed { error, intent } => DesktopMidiSendResult::Failed {
+                message: format!(
+                    "Host MIDI failed {:?} ch {} note {}: {}",
+                    intent.kind, intent.channel, intent.note, error
+                ),
+            },
+        };
+        let _ = self.record_midi_report(report);
 
-        if error.is_none() && note_off_queued {
-            self.last_midi_note_off_status = format!(
-                "MIDI note-off sent ch {} note {} {:?}{:02}",
-                intent.channel, intent.note, intent.bank, intent.pad_number
-            );
+        if intent.kind == mpc_core::MidiOutputIntentKind::NoteOff {
+            self.last_midi_note_off_status = match &result {
+                DesktopMidiSendResult::Queued => format!(
+                    "MIDI note-off sent ch {} note {} {:?}{:02}",
+                    intent.channel, intent.note, intent.bank, intent.pad_number
+                ),
+                DesktopMidiSendResult::Ignored { message }
+                | DesktopMidiSendResult::Failed { message } => {
+                    format!("MIDI note-off not sent; {message}")
+                }
+            };
         }
 
-        error
-    }
-
-    fn midi_intent_was_queued(&self, intent: &mpc_core::MidiOutputIntent) -> bool {
-        let state = self.host_midi.state();
-        matches!(
-            state.last_event.as_ref(),
-            Some(HostMidiEvent::Queued { receipt }) if receipt.intent == *intent
-        )
+        result
     }
 
     fn flush_due_midi_note_offs(&mut self) -> Option<String> {
         let now = self.runtime_millis();
-        let due = self.outbound_midi_notes.drain_due_note_offs(now);
+        if !self.host_midi.is_enabled() {
+            return None;
+        }
+
+        self.flush_midi_note_offs_due_by(now, now, "due")
+    }
+
+    fn flush_all_pending_midi_note_offs(&mut self, reason: &str) -> Option<String> {
+        if !self.host_midi.is_enabled() {
+            return None;
+        }
+
+        let now = self.runtime_millis();
+        self.flush_midi_note_offs_due_by(u64::MAX, now, reason)
+    }
+
+    fn flush_midi_note_offs_due_by(
+        &mut self,
+        due_by_millis: u64,
+        retry_base_millis: u64,
+        reason: &str,
+    ) -> Option<String> {
+        let due = self.outbound_midi_notes.drain_due_note_offs(due_by_millis);
         if due.is_empty() {
             return None;
         }
 
         let due_count = due.len();
-        let mut last_error = None;
+        let mut queued_count = 0usize;
+        let mut ignored_count = 0usize;
+        let mut failed_count = 0usize;
+        let mut last_failure = None;
         for intent in due {
-            if let Some(error) = self.send_midi_intent(&intent) {
-                last_error = Some(error);
+            match self.send_midi_intent(&intent) {
+                DesktopMidiSendResult::Queued => {
+                    queued_count += 1;
+                }
+                DesktopMidiSendResult::Ignored { .. } => {
+                    ignored_count += 1;
+                    self.requeue_note_off_retry(&intent, retry_base_millis);
+                }
+                DesktopMidiSendResult::Failed { message } => {
+                    failed_count += 1;
+                    last_failure = Some(message);
+                    self.requeue_note_off_retry(&intent, retry_base_millis);
+                }
             }
         }
 
-        if last_error.is_none() {
+        if ignored_count == 0 && failed_count == 0 {
             self.last_midi_note_off_status =
-                format!("MIDI note-off sent {due_count} due note-off(s)");
+                format!("MIDI note-off sent {queued_count} {reason} note-off(s)");
+            return None;
         }
 
-        last_error
+        self.last_midi_note_off_status = format!(
+            "MIDI note-off pending: sent {queued_count}/{due_count} {reason} note-off(s); {ignored_count} ignored, {failed_count} failed"
+        );
+        last_failure.or_else(|| Some(self.last_midi_note_off_status.clone()))
+    }
+
+    fn requeue_note_off_retry(&mut self, intent: &mpc_core::MidiOutputIntent, now_millis: u64) {
+        let mut retry_intent = intent.clone();
+        retry_intent.kind = mpc_core::MidiOutputIntentKind::NoteOn;
+        let _ = self.outbound_midi_notes.register_note_on(
+            &retry_intent,
+            now_millis,
+            MIN_OUTBOUND_NOTE_DURATION_MILLIS,
+        );
+    }
+
+    fn flush_pending_before_midi_backend_change(&mut self) -> Result<(), String> {
+        if !self.outbound_midi_notes.has_pending() {
+            return Ok(());
+        }
+
+        if !self.host_midi.is_enabled() {
+            let message =
+                "MIDI output switch blocked: pending note-offs remain while Host MIDI is disabled"
+                    .to_string();
+            self.last_midi_note_off_status = message.clone();
+            return Err(message);
+        }
+
+        if let Some(message) = self.flush_all_pending_midi_note_offs("before switching MIDI output")
+        {
+            return Err(message);
+        }
+
+        if self.outbound_midi_notes.has_pending() {
+            let message = "MIDI output switch blocked: pending note-offs were not sent".to_string();
+            self.last_midi_note_off_status = message.clone();
+            return Err(message);
+        }
+
+        Ok(())
     }
 
     fn draw_lcd(&mut self, ui: &mut egui::Ui) {
@@ -785,6 +882,11 @@ impl MpcDesktopApp {
     }
 
     fn replace_host_midi_backend(&mut self, backend: DesktopMidiBackend, status: String) {
+        if let Err(message) = self.flush_pending_before_midi_backend_change() {
+            self.last_status = message;
+            return;
+        }
+
         let enabled = self.host_midi.is_enabled();
         let mut host_midi = HostMidiEngine::new(backend);
         host_midi.set_enabled(enabled);
@@ -906,38 +1008,64 @@ impl MpcDesktopApp {
 
         for output in outputs {
             if let MachineOutput::MidiOutputIntent { intent } = output {
-                if let Some(message) = self.send_midi_intent(intent) {
-                    midi_error = Some(message);
-                    continue;
-                }
-
-                if intent.kind == mpc_core::MidiOutputIntentKind::NoteOn
-                    && self.midi_intent_was_queued(intent)
-                {
-                    let duration = self.outbound_note_duration_millis(intent);
-                    let displaced_note_offs = self.outbound_midi_notes.register_note_on(
-                        intent,
-                        self.runtime_millis(),
-                        duration,
-                    );
-                    let displaced_count = displaced_note_offs.len();
-                    for note_off in displaced_note_offs {
-                        if let Some(message) = self.send_midi_intent(&note_off) {
-                            midi_error = Some(message);
+                match self.send_midi_intent(intent) {
+                    DesktopMidiSendResult::Queued
+                        if intent.kind == mpc_core::MidiOutputIntentKind::NoteOn =>
+                    {
+                        let duration = self.outbound_note_duration_millis(intent);
+                        let displaced_note_offs = self.outbound_midi_notes.register_note_on(
+                            intent,
+                            self.runtime_millis(),
+                            duration,
+                        );
+                        let displaced_count = displaced_note_offs.len();
+                        let mut displaced_queued_count = 0usize;
+                        let mut displaced_ignored_count = 0usize;
+                        let mut displaced_failed_count = 0usize;
+                        for note_off in displaced_note_offs {
+                            match self.send_midi_intent(&note_off) {
+                                DesktopMidiSendResult::Queued => {
+                                    displaced_queued_count += 1;
+                                }
+                                DesktopMidiSendResult::Ignored { .. } => {
+                                    displaced_ignored_count += 1;
+                                }
+                                DesktopMidiSendResult::Failed { message } => {
+                                    displaced_failed_count += 1;
+                                    midi_error = Some(message);
+                                }
+                            }
                         }
-                    }
 
-                    self.last_midi_note_off_status = if displaced_count == 0 {
-                        format!(
-                            "MIDI note-off scheduled ch {} note {} in {} ms",
-                            intent.channel, intent.note, duration
-                        )
-                    } else {
-                        format!(
-                            "MIDI note-off scheduled ch {} note {} in {} ms; sent {} displaced note-off(s)",
-                            intent.channel, intent.note, duration, displaced_count
-                        )
-                    };
+                        self.last_midi_note_off_status = match (
+                            displaced_count,
+                            displaced_ignored_count,
+                            displaced_failed_count,
+                        ) {
+                            (0, _, _) => format!(
+                                "MIDI note-off scheduled ch {} note {} in {} ms",
+                                intent.channel, intent.note, duration
+                            ),
+                            (_, 0, 0) => format!(
+                                "MIDI note-off scheduled ch {} note {} in {} ms; sent {} displaced note-off(s)",
+                                intent.channel, intent.note, duration, displaced_queued_count
+                            ),
+                            _ => format!(
+                                "MIDI note-off scheduled ch {} note {} in {} ms; sent {}/{} displaced note-off(s); {} ignored, {} failed",
+                                intent.channel,
+                                intent.note,
+                                duration,
+                                displaced_queued_count,
+                                displaced_count,
+                                displaced_ignored_count,
+                                displaced_failed_count
+                            ),
+                        };
+                    }
+                    DesktopMidiSendResult::Failed { message } => {
+                        midi_error = Some(message);
+                    }
+                    DesktopMidiSendResult::Queued | DesktopMidiSendResult::Ignored { .. } => {}
                 }
             }
         }
@@ -2050,7 +2178,20 @@ impl MpcDesktopApp {
         ui.horizontal_wrapped(|ui| {
             let mut enabled = self.host_midi.is_enabled();
             if ui.checkbox(&mut enabled, "Host MIDI").changed() {
+                if self.host_midi.is_enabled() && !enabled && self.outbound_midi_notes.has_pending()
+                {
+                    if let Some(message) =
+                        self.flush_all_pending_midi_note_offs("before disabling Host MIDI")
+                    {
+                        self.last_status = message;
+                    }
+                }
                 self.host_midi.set_enabled(enabled);
+                if !enabled && self.outbound_midi_notes.has_pending() {
+                    self.last_midi_note_off_status =
+                        "MIDI note-off pending: Host MIDI disabled before all note-offs were sent"
+                            .to_string();
+                }
             }
 
             ui.separator();
@@ -2735,7 +2876,10 @@ fn host_audio_error_message(event: &HostAudioEvent) -> Option<String> {
 
 fn host_midi_error_message(event: &HostMidiEvent) -> Option<String> {
     match event {
-        HostMidiEvent::Failed { error, .. } => Some(format!("Host MIDI failed: {error}")),
+        HostMidiEvent::Failed { error, intent } => Some(format!(
+            "Host MIDI failed {:?} ch {} note {}: {error}",
+            intent.kind, intent.channel, intent.note
+        )),
         HostMidiEvent::Ignored { .. } | HostMidiEvent::Queued { .. } => None,
     }
 }
