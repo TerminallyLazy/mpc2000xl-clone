@@ -375,10 +375,12 @@ impl eframe::App for MpcDesktopApp {
             ui.add_space(16.0);
             ui.label(format!("Status: {}", self.last_status));
         });
-        if self.host_midi_input.is_some()
-            || self.outbound_midi_notes.has_pending()
-            || self.pad_lights.has_active_memory(self.runtime_millis())
-        {
+        if should_request_runtime_repaint(
+            self.host_midi_input.is_some(),
+            self.host_midi.is_enabled(),
+            self.outbound_midi_notes.has_pending(),
+            self.pad_lights.has_active_memory(self.runtime_millis()),
+        ) {
             ui.ctx()
                 .request_repaint_after(std::time::Duration::from_millis(10));
         }
@@ -1333,18 +1335,28 @@ impl MpcDesktopApp {
     }
 
     fn pad_has_missing_runtime_sample(&self, pad: ProgramPad) -> bool {
-        self.core
+        let Some(assignment) = self
+            .core
             .state()
             .current_program
             .pad_assignments
             .iter()
             .find(|assignment| assignment.pad == pad)
-            .and_then(|assignment| {
-                self.runtime_sample_statuses
-                    .get(&assignment.sample.id)
-                    .map(|status| !matches!(status, RuntimeSampleStatus::Loaded { .. }))
-            })
-            .unwrap_or(false)
+        else {
+            return false;
+        };
+
+        if assignment.sample.source_kind != mpc_core::SampleSourceKind::Imported {
+            return false;
+        }
+
+        if self.runtime_samples.get(&assignment.sample.id).is_none() {
+            return true;
+        }
+
+        self.runtime_sample_statuses
+            .get(&assignment.sample.id)
+            .is_some_and(|status| !matches!(status, RuntimeSampleStatus::Loaded { .. }))
     }
 
     fn status_from_outputs(outputs: &[MachineOutput], state: &MpcState) -> String {
@@ -2409,8 +2421,11 @@ impl MpcDesktopApp {
                         &self.pad_lights,
                         now,
                     );
-                    let mut button = egui::Button::new(program_pad_label(pad_address))
-                        .fill(pad_color_for_visual_state(visual))
+                    let fill = pad_color_for_visual_state(visual);
+                    let label = egui::RichText::new(program_pad_label(pad_address))
+                        .color(pad_label_text_color_for_fill(fill));
+                    let mut button = egui::Button::new(label)
+                        .fill(fill)
                         .min_size(egui::vec2(72.0, 48.0));
                     if selected {
                         button = button.stroke(egui::Stroke::new(2.0, egui::Color32::WHITE));
@@ -2703,6 +2718,50 @@ fn pad_color_for_visual_state(visual: PadVisualState) -> egui::Color32 {
     let blue = (44.0 + 112.0 * visual.hit_memory) as u8;
     let red = if visual.selected { 92 } else { 36 };
     egui::Color32::from_rgb(red, green, blue)
+}
+
+fn pad_label_text_color_for_fill(fill: egui::Color32) -> egui::Color32 {
+    let black_contrast = color_contrast_ratio(egui::Color32::BLACK, fill);
+    let white_contrast = color_contrast_ratio(egui::Color32::WHITE, fill);
+    if black_contrast >= white_contrast {
+        egui::Color32::BLACK
+    } else {
+        egui::Color32::WHITE
+    }
+}
+
+fn should_request_runtime_repaint(
+    host_midi_input_connected: bool,
+    host_midi_enabled: bool,
+    has_pending_midi_note_offs: bool,
+    has_active_pad_light_memory: bool,
+) -> bool {
+    host_midi_input_connected
+        || (host_midi_enabled && has_pending_midi_note_offs)
+        || has_active_pad_light_memory
+}
+
+fn color_contrast_ratio(foreground: egui::Color32, background: egui::Color32) -> f32 {
+    let foreground_luminance = color_relative_luminance(foreground);
+    let background_luminance = color_relative_luminance(background);
+    let lighter = foreground_luminance.max(background_luminance);
+    let darker = foreground_luminance.min(background_luminance);
+    (lighter + 0.05) / (darker + 0.05)
+}
+
+fn color_relative_luminance(color: egui::Color32) -> f32 {
+    0.2126 * linear_color_channel(color.r())
+        + 0.7152 * linear_color_channel(color.g())
+        + 0.0722 * linear_color_channel(color.b())
+}
+
+fn linear_color_channel(value: u8) -> f32 {
+    let value = f32::from(value) / 255.0;
+    if value <= 0.04045 {
+        value / 12.92
+    } else {
+        ((value + 0.055) / 1.055).powf(2.4)
+    }
 }
 
 fn selected_assignment_text(state: &MpcState) -> String {
@@ -3354,5 +3413,40 @@ mod tests {
 
         assert_eq!(visual.hit_memory, 0.0);
         assert_eq!(visual.intensity, 0.0);
+    }
+
+    #[test]
+    fn pad_light_marks_imported_assignment_missing_without_runtime_payload() {
+        let mut app = MpcDesktopApp::default();
+        let pad = app.core.state().selected_program_pad;
+
+        assert!(!app.pad_has_missing_runtime_sample(pad));
+
+        app.core
+            .import_sample_metadata_for_selected_pad("KICK", 44_100);
+
+        assert!(app.pad_has_missing_runtime_sample(pad));
+    }
+
+    #[test]
+    fn pad_light_label_color_uses_dark_text_on_bright_active_fill() {
+        let pad = ProgramPad {
+            bank: PadBank::A,
+            pad_number: 1,
+        };
+        let memory = PadLightMemory::default();
+        let visual = pad_visual_state(pad, true, false, false, Some(127), &memory, 0);
+        let fill = pad_color_for_visual_state(visual);
+        let label_color = pad_label_text_color_for_fill(fill);
+
+        assert_eq!(label_color, egui::Color32::BLACK);
+        assert!(color_contrast_ratio(label_color, fill) >= 4.5);
+    }
+
+    #[test]
+    fn pad_light_repaint_ignores_pending_midi_note_offs_when_host_midi_disabled() {
+        assert!(!should_request_runtime_repaint(false, false, true, false));
+        assert!(should_request_runtime_repaint(false, true, true, false));
+        assert!(should_request_runtime_repaint(false, false, false, true));
     }
 }
