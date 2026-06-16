@@ -1,10 +1,10 @@
 use eframe::egui;
 use mpc_audio::{
-    list_output_devices, AudioOutputDeviceDescriptor, AudioRenderKind, AudioRenderSettings,
-    AudioRenderSummary, CaptureAudioBackend, DeviceAudioBackend, DeviceAudioBackendConfig,
-    DeviceAudioBackendStatus, HostAudioBackend, HostAudioBackendError, HostAudioEngine,
-    HostAudioError, HostAudioEvent, HostAudioPlaybackReport, HostAudioState,
-    RuntimeSampleLibrary, WavSamplePayload, load_wav_sample_payload,
+    AudioOutputDeviceDescriptor, AudioRenderKind, AudioRenderSettings, AudioRenderSummary,
+    CaptureAudioBackend, DeviceAudioBackend, DeviceAudioBackendConfig, DeviceAudioBackendStatus,
+    HostAudioBackend, HostAudioBackendError, HostAudioEngine, HostAudioError, HostAudioEvent,
+    HostAudioPlaybackReport, HostAudioState, RuntimeSampleLibrary, WavSampleLoadError,
+    WavSamplePayload, list_output_devices, load_wav_sample_payload,
 };
 use mpc_core::{
     DiskOperation, HardwareEvent, MachineOutput, MidiSettingsField, Mode, MpcCore, MpcState,
@@ -808,6 +808,7 @@ impl MpcDesktopApp {
         reference: &mpc_core::ProjectImportedMediaReference,
     ) -> Result<(), ()> {
         let mut attempted_paths = Vec::new();
+        let mut load_failed_status = None;
         for path in media_reference_candidate_paths(reference) {
             attempted_paths.push(path.clone());
             match load_wav_sample_payload(&path) {
@@ -842,21 +843,19 @@ impl MpcDesktopApp {
                     return Err(());
                 }
                 Err(error) => {
-                    self.runtime_sample_statuses.insert(
-                        reference.sample_id.clone(),
-                        RuntimeSampleStatus::LoadFailed {
+                    if !wav_sample_load_error_is_not_found(&error) {
+                        load_failed_status = Some(RuntimeSampleStatus::LoadFailed {
                             path,
                             message: error.to_string(),
-                        },
-                    );
+                        });
+                    }
                 }
             }
         }
 
-        self.runtime_sample_statuses.insert(
-            reference.sample_id.clone(),
-            RuntimeSampleStatus::Missing { attempted_paths },
-        );
+        let status = load_failed_status.unwrap_or(RuntimeSampleStatus::Missing { attempted_paths });
+        self.runtime_sample_statuses
+            .insert(reference.sample_id.clone(), status);
         Err(())
     }
 
@@ -2430,8 +2429,7 @@ fn media_reference_candidate_paths(
     if let Some(path) = &reference.managed_copy_path {
         paths.push(path.clone());
     }
-    if !reference.source_path.is_empty()
-        && !paths.iter().any(|path| path == &reference.source_path)
+    if !reference.source_path.is_empty() && !paths.iter().any(|path| path == &reference.source_path)
     {
         paths.push(reference.source_path.clone());
     }
@@ -2444,6 +2442,19 @@ fn runtime_payload_matches_reference(
 ) -> bool {
     payload.sample_rate_hz == reference.sample_rate_hz
         && payload.frame_count == reference.frame_count as usize
+}
+
+fn wav_sample_load_error_is_not_found(error: &WavSampleLoadError) -> bool {
+    let message = match error {
+        WavSampleLoadError::Metadata { message, .. } | WavSampleLoadError::Open { message, .. } => {
+            message
+        }
+        _ => return false,
+    };
+    let message = message.to_ascii_lowercase();
+    message.contains("os error 2")
+        || message.contains("no such file")
+        || message.contains("not found")
 }
 
 fn project_snapshot_status_text(
