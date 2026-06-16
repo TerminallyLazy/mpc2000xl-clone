@@ -110,9 +110,10 @@ impl MainScreenField {
 /// Versioned, rights-safe project persistence model.
 ///
 /// The snapshot intentionally contains metadata only: sequence settings,
-/// program assignments, recorded event metadata, synthetic sample identifiers,
-/// song-chain metadata, and current UI/playhead position. It does not contain
-/// audio bytes, copied assets, firmware data, manuals, service scans, or
+/// program assignments, imported media path/length references, recorded event
+/// metadata, synthetic sample identifiers, song-chain metadata, and current
+/// UI/playhead position. It does not contain audio bytes, copied asset bytes,
+/// firmware data, manuals, service scans, or
 /// transport armed/playing state. Restoring a snapshot always leaves transport
 /// stopped and disarmed. Version 1 remains additive for foundation metadata:
 /// omitted newer objects restore deterministic defaults, while malformed
@@ -3263,6 +3264,24 @@ fn validate_imported_media_reference(
         return Err(invalid_value(
             &format!("{field}.sample_id"),
             "referenced sample must be imported",
+        ));
+    }
+    if reference.sample_name != assignment.sample.name {
+        return Err(invalid_value(
+            &format!("{field}.sample_name"),
+            "must match referenced sample name",
+        ));
+    }
+    let Some(length_frames) = assignment.sample.length_frames else {
+        return Err(invalid_value(
+            &format!("{field}.frame_count"),
+            "referenced imported sample must define length_frames",
+        ));
+    };
+    if reference.frame_count != length_frames {
+        return Err(invalid_value(
+            &format!("{field}.frame_count"),
+            "must match referenced sample length_frames",
         ));
     }
     Ok(())

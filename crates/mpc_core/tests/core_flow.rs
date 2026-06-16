@@ -1473,29 +1473,7 @@ fn trim_project_snapshot_defaults_round_trips_and_validates_entries() {
 
 #[test]
 fn imported_media_reference_round_trips_without_audio_bytes() {
-    let mut core = MpcCore::new();
-    core.dispatch(HardwareEvent::Press {
-        control: PanelControl::Sample,
-    });
-    let outputs = core.import_sample_metadata_for_selected_pad("KICK".to_string(), 44_100);
-    let sample_id = outputs
-        .iter()
-        .find_map(|output| match output {
-            MachineOutput::SampleMetadataCreated { sample, .. } => Some(sample.id.clone()),
-            _ => None,
-        })
-        .expect("import should create sample metadata");
-
-    let reference = ProjectImportedMediaReference {
-        sample_id: sample_id.clone(),
-        source_path: "local-assets/samples/kick.wav".to_string(),
-        managed_copy_path: Some("local-assets/projects/media/kick.wav".to_string()),
-        sample_name: "KICK".to_string(),
-        sample_rate_hz: 44_100,
-        frame_count: 44_100,
-        byte_count: 88_244,
-        source_kind: SampleSourceKind::Imported,
-    };
+    let (mut core, reference) = core_with_imported_media_reference();
     core.upsert_imported_media_reference(reference.clone())
         .expect("imported sample reference should attach");
 
@@ -1507,6 +1485,33 @@ fn imported_media_reference_round_trips_without_audio_bytes() {
 
     let snapshot = MpcCore::from_project_json(&json).expect("project should decode");
     assert_eq!(snapshot.program.imported_media_references, vec![reference]);
+}
+
+#[test]
+fn imported_media_reference_rejects_metadata_drift() {
+    let (mut core, reference) = core_with_imported_media_reference();
+
+    let mut renamed = reference.clone();
+    renamed.sample_name = "SNARE".to_string();
+    let error = core
+        .upsert_imported_media_reference(renamed)
+        .expect_err("reference sample name should match assignment metadata");
+    assert_invalid_project_field(
+        error,
+        "program.imported_media_references[].sample_name",
+        "match referenced sample name",
+    );
+
+    let mut resized = reference;
+    resized.frame_count = 44_101;
+    let error = core
+        .upsert_imported_media_reference(resized)
+        .expect_err("reference frame count should match assignment metadata");
+    assert_invalid_project_field(
+        error,
+        "program.imported_media_references[].frame_count",
+        "match referenced sample length_frames",
+    );
 }
 
 #[test]
@@ -1535,6 +1540,58 @@ fn imported_media_reference_rejects_unknown_or_generated_samples() {
         source_kind: SampleSourceKind::Generated,
     };
     assert!(core.upsert_imported_media_reference(generated).is_err());
+
+    let generated_assignment_with_imported_reference = ProjectImportedMediaReference {
+        sample_id: "synthetic_a_01".to_string(),
+        source_path: "local-assets/samples/a01.wav".to_string(),
+        managed_copy_path: None,
+        sample_name: "A01".to_string(),
+        sample_rate_hz: 44_100,
+        frame_count: 1,
+        byte_count: 44,
+        source_kind: SampleSourceKind::Imported,
+    };
+    let error = core
+        .upsert_imported_media_reference(generated_assignment_with_imported_reference)
+        .expect_err("generated assignment should not accept imported media reference");
+    assert_invalid_project_field(
+        error,
+        "program.imported_media_references[].sample_id",
+        "referenced sample must be imported",
+    );
+}
+
+#[test]
+fn imported_media_reference_snapshot_rejects_duplicates_and_unknown_fields() {
+    let (mut core, reference) = core_with_imported_media_reference();
+    let mut duplicate = core.export_project_snapshot();
+    duplicate.program.imported_media_references = vec![reference.clone(), reference.clone()];
+    let error = MpcCore::new()
+        .restore_project_snapshot(duplicate)
+        .expect_err("duplicate imported media references should be rejected");
+    assert_invalid_project_field(
+        error,
+        "program.imported_media_references[1].sample_id",
+        "duplicate imported media reference",
+    );
+
+    core.upsert_imported_media_reference(reference)
+        .expect("reference should attach");
+    let mut value = serde_json::to_value(core.export_project_snapshot())
+        .expect("media reference snapshot should encode as value");
+    insert_extra_json_field(
+        &mut value,
+        "/program/imported_media_references/0",
+        "audio_bytes",
+    );
+    let json = serde_json::to_string(&value).expect("mutated media reference JSON should encode");
+    let error = MpcCore::from_project_json(&json)
+        .expect_err("unknown nested imported media reference field should be rejected");
+    assert_invalid_project_field(
+        error,
+        "program.imported_media_references[0].audio_bytes",
+        "unknown field",
+    );
 }
 
 #[test]
@@ -7211,6 +7268,35 @@ fn assignment_for_pad(core: &MpcCore, pad: ProgramPad) -> Option<&mpc_core::PadA
         .pad_assignments
         .iter()
         .find(|assignment| assignment.pad == pad)
+}
+
+fn core_with_imported_media_reference() -> (MpcCore, ProjectImportedMediaReference) {
+    let mut core = MpcCore::new();
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::Sample,
+    });
+    let outputs = core.import_sample_metadata_for_selected_pad("KICK".to_string(), 44_100);
+    let sample_id = outputs
+        .iter()
+        .find_map(|output| match output {
+            MachineOutput::SampleMetadataCreated { sample, .. } => Some(sample.id.clone()),
+            _ => None,
+        })
+        .expect("import should create sample metadata");
+
+    (
+        core,
+        ProjectImportedMediaReference {
+            sample_id,
+            source_path: "local-assets/samples/kick.wav".to_string(),
+            managed_copy_path: Some("local-assets/projects/media/kick.wav".to_string()),
+            sample_name: "KICK".to_string(),
+            sample_rate_hz: 44_100,
+            frame_count: 44_100,
+            byte_count: 88_244,
+            source_kind: SampleSourceKind::Imported,
+        },
+    )
 }
 
 fn recorded_project_snapshot() -> ProjectSnapshot {
