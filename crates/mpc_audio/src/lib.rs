@@ -983,35 +983,58 @@ pub fn list_output_devices() -> Result<Vec<AudioOutputDeviceDescriptor>, HostAud
         device_audio_backend_error(format!("output device list failed: {error}"))
     })?;
 
-    devices
+    Ok(devices
         .enumerate()
-        .map(|(index, device)| {
+        .filter_map(|(index, device)| {
             audio_output_device_descriptor(index, &device, default_id.as_deref())
         })
-        .collect()
+        .collect())
 }
 
 fn audio_output_device_descriptor(
     index: usize,
     device: &cpal::Device,
     default_id: Option<&str>,
-) -> Result<AudioOutputDeviceDescriptor, HostAudioBackendError> {
-    let id = device_audio_device_id(device)?;
+) -> Option<AudioOutputDeviceDescriptor> {
     let name = device
         .description()
         .map(|description| description.name().to_string())
         .unwrap_or_else(|error| format!("unknown output device ({error})"));
     let config = device.default_output_config().ok();
-    Ok(AudioOutputDeviceDescriptor {
+    audio_output_device_descriptor_from_metadata(
+        index,
+        device
+            .id()
+            .map(|id| id.to_string())
+            .map_err(|error| error.to_string()),
+        name,
+        default_id,
+        config.as_ref().map(|config| config.config().sample_rate),
+        config.as_ref().map(|config| config.config().channels),
+        config
+            .as_ref()
+            .map(|config| format!("{:?}", config.sample_format())),
+    )
+}
+
+fn audio_output_device_descriptor_from_metadata(
+    index: usize,
+    id: Result<String, String>,
+    name: String,
+    default_id: Option<&str>,
+    sample_rate_hz: Option<u32>,
+    channels: Option<u16>,
+    sample_format: Option<String>,
+) -> Option<AudioOutputDeviceDescriptor> {
+    let id = id.ok()?;
+    Some(AudioOutputDeviceDescriptor {
         index,
         is_default: default_id == Some(id.as_str()),
         id,
         name,
-        sample_rate_hz: config.as_ref().map(|config| config.config().sample_rate),
-        channels: config.as_ref().map(|config| config.config().channels),
-        sample_format: config
-            .as_ref()
-            .map(|config| format!("{:?}", config.sample_format())),
+        sample_rate_hz,
+        channels,
+        sample_format,
     })
 }
 
@@ -2309,6 +2332,22 @@ mod tests {
         };
 
         assert_eq!(descriptor.display_label(), "External Interface");
+    }
+
+    #[test]
+    fn audio_output_descriptor_label_skips_unreadable_device_id() {
+        assert_eq!(
+            audio_output_device_descriptor_from_metadata(
+                1,
+                Err("device unavailable".to_string()),
+                "Transient Device".to_string(),
+                Some("built-in-output"),
+                Some(48_000),
+                Some(2),
+                Some("F32".to_string()),
+            ),
+            None
+        );
     }
 
     #[test]
