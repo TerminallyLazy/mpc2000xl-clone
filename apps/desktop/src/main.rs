@@ -34,8 +34,8 @@ fn main() -> eframe::Result<()> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("MPC2000XL Clone Foundation")
-            .with_inner_size([1180.0, 760.0])
-            .with_min_inner_size([920.0, 620.0]),
+            .with_inner_size([1240.0, 860.0])
+            .with_min_inner_size([980.0, 680.0]),
         ..Default::default()
     };
 
@@ -351,34 +351,26 @@ impl eframe::App for MpcDesktopApp {
         if let Some(error) = self.flush_due_midi_note_offs() {
             self.last_status = error;
         }
-        egui::Frame::central_panel(ui.style()).show(ui, |ui| {
-            ui.heading("MPC2000XL Clone Foundation");
-            ui.label("Rights-safe desktop shell wired to deterministic machine core.");
-            ui.separator();
-
-            self.draw_lcd(ui);
-            ui.add_space(16.0);
-            self.draw_mode_buttons(ui);
-            ui.add_space(16.0);
-            self.draw_edit_controls(ui);
-            ui.add_space(16.0);
-            self.draw_project_snapshot_controls(ui);
-            ui.add_space(16.0);
-            self.draw_transport(ui);
-            self.draw_midi_controls(ui);
-            self.draw_timing_correct_controls(ui);
-            self.draw_setup_status(ui);
-            self.draw_sequence_status(ui);
-            self.draw_program_status(ui);
-            self.draw_sample_status(ui);
-            self.draw_audio_render_status(ui);
-            self.draw_host_audio_status(ui);
-            self.draw_host_midi_status(ui);
-            ui.add_space(16.0);
-            self.draw_pads(ui);
-            ui.add_space(16.0);
-            ui.label(format!("Status: {}", self.last_status));
-        });
+        apply_mpc_style(ui);
+        egui::Frame::central_panel(ui.style())
+            .fill(app_background())
+            .inner_margin(egui::Margin::same(18))
+            .show(ui, |ui| {
+                ui.spacing_mut().item_spacing = egui::vec2(10.0, 10.0);
+                egui::ScrollArea::vertical()
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        self.draw_brand_header(ui);
+                        ui.add_space(8.0);
+                        self.draw_front_panel(ui);
+                        ui.add_space(10.0);
+                        self.draw_session_io_panel(ui);
+                        ui.add_space(10.0);
+                        self.draw_status_bar(ui);
+                        ui.add_space(6.0);
+                        self.draw_service_panel(ui);
+                    });
+            });
         if should_request_runtime_repaint(
             self.host_midi_input.is_some(),
             self.host_midi.is_enabled(),
@@ -392,6 +384,334 @@ impl eframe::App for MpcDesktopApp {
 }
 
 impl MpcDesktopApp {
+    fn draw_brand_header(&self, ui: &mut egui::Ui) {
+        ui.horizontal_wrapped(|ui| {
+            ui.label(
+                egui::RichText::new("MPC2000XL")
+                    .size(24.0)
+                    .strong()
+                    .color(brand_red()),
+            );
+            ui.label(
+                egui::RichText::new("Clone")
+                    .size(18.0)
+                    .strong()
+                    .color(primary_text()),
+            );
+            ui.label(
+                egui::RichText::new("rights-safe desktop instrument")
+                    .size(12.0)
+                    .color(muted_text()),
+            );
+            ui.separator();
+            status_chip(
+                ui,
+                "MODE",
+                format!("{:?}", self.core.state().mode).to_uppercase(),
+                accent_blue(),
+            );
+            status_chip(
+                ui,
+                "AUDIO",
+                if self.host_audio.is_enabled() {
+                    "ON"
+                } else {
+                    "OFF"
+                },
+                if self.host_audio.is_enabled() {
+                    ok_green()
+                } else {
+                    warning_amber()
+                },
+            );
+            status_chip(
+                ui,
+                "MIDI",
+                if self.host_midi.is_enabled() {
+                    "ON"
+                } else {
+                    "OFF"
+                },
+                if self.host_midi.is_enabled() {
+                    ok_green()
+                } else {
+                    warning_amber()
+                },
+            );
+        });
+    }
+
+    fn draw_front_panel(&mut self, ui: &mut egui::Ui) {
+        front_panel_frame().show(ui, |ui| {
+            self.draw_overview_strip(ui);
+            ui.add_space(8.0);
+            ui.columns(2, |columns| {
+                columns[0].vertical(|ui| {
+                    ui.set_min_width(500.0);
+                    self.draw_lcd(ui);
+                    ui.add_space(10.0);
+                    self.draw_mode_buttons(ui);
+                    ui.add_space(10.0);
+                    self.draw_transport(ui);
+                    ui.add_space(10.0);
+                    self.draw_edit_controls(ui);
+                });
+                columns[1].vertical(|ui| {
+                    ui.set_min_width(330.0);
+                    self.draw_pads(ui);
+                    ui.add_space(10.0);
+                    self.draw_performance_input_panel(ui);
+                });
+            });
+        });
+    }
+
+    fn draw_overview_strip(&self, ui: &mut egui::Ui) {
+        let state = self.core.state();
+        ui.horizontal_wrapped(|ui| {
+            meter_tile(
+                ui,
+                "SEQ",
+                format!("{:02} {}", state.sequence_index, state.sequence_name),
+            );
+            meter_tile(
+                ui,
+                "TRACK",
+                format!(
+                    "{:02} {}",
+                    state.selected_track,
+                    if state.is_track_muted(state.selected_track) {
+                        "MUTE"
+                    } else {
+                        "ACTIVE"
+                    }
+                ),
+            );
+            meter_tile(ui, "TEMPO", tempo_text(state.tempo_bpm_x100));
+            meter_tile(
+                ui,
+                "TRANSPORT",
+                transport_summary_text(state.playing, state.recording, state.loop_enabled),
+            );
+            meter_tile(
+                ui,
+                "PAD",
+                format!(
+                    "{} {}",
+                    state.pad_bank.label(),
+                    program_pad_label(state.selected_program_pad)
+                ),
+            );
+            meter_tile(
+                ui,
+                "PROGRAM",
+                format!(
+                    "{:02} {}",
+                    state.current_program.index, state.current_program.name
+                ),
+            );
+        });
+    }
+
+    fn draw_session_io_panel(&mut self, ui: &mut egui::Ui) {
+        section_frame().show(ui, |ui| {
+            ui.horizontal_wrapped(|ui| {
+                section_label(ui, "PROJECT");
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.project_file_path).desired_width(360.0),
+                );
+                if ui.button("Save").clicked() {
+                    self.save_project_file();
+                }
+                if ui.button("Load").clicked() {
+                    self.load_project_file();
+                }
+                ui.label(
+                    egui::RichText::new(project_file_status_text(
+                        &self.last_project_file_status,
+                        self.last_project_file_version,
+                        self.last_project_file_bytes,
+                    ))
+                    .color(muted_text()),
+                );
+            });
+
+            ui.horizontal_wrapped(|ui| {
+                section_label(ui, "SAMPLE");
+                ui.label(
+                    egui::RichText::new(selected_sample_text(
+                        self.core.state().selected_sample().as_ref(),
+                    ))
+                    .color(primary_text()),
+                );
+                ui.separator();
+                ui.label(egui::RichText::new(&self.last_runtime_sample_status).color(muted_text()));
+                if self.core.state().mode == Mode::Sample {
+                    ui.separator();
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.sample_import_path)
+                            .desired_width(280.0),
+                    );
+                    if ui.button("Load WAV to pad").clicked() {
+                        self.load_wav_to_selected_pad();
+                    }
+                }
+            });
+
+            ui.horizontal_wrapped(|ui| {
+                section_label(ui, "I/O");
+                let mut audio_enabled = self.host_audio.is_enabled();
+                if ui.checkbox(&mut audio_enabled, "Audio").changed() {
+                    self.host_audio.set_enabled(audio_enabled);
+                }
+                let capture_selected = !self.host_audio.backend().is_device();
+                if ui.selectable_label(capture_selected, "Capture").clicked() {
+                    self.switch_host_audio_to_capture();
+                }
+                if ui
+                    .selectable_label(
+                        self.host_audio.backend().is_default_device(),
+                        "Default device",
+                    )
+                    .clicked()
+                {
+                    self.switch_host_audio_to_default_device();
+                }
+                if ui.button("Refresh audio").clicked() {
+                    self.refresh_audio_output_devices();
+                }
+                audio_output_device_combo(
+                    ui,
+                    &self.audio_output_devices,
+                    &mut self.selected_audio_output_device,
+                );
+                ui.add_enabled_ui(!self.audio_output_devices.is_empty(), |ui| {
+                    if ui
+                        .selectable_label(
+                            self.host_audio.backend().is_selected_device(),
+                            "Use selected",
+                        )
+                        .clicked()
+                    {
+                        self.switch_host_audio_to_selected_device();
+                    }
+                });
+                ui.separator();
+                let mut midi_enabled = self.host_midi.is_enabled();
+                if ui.checkbox(&mut midi_enabled, "MIDI out").changed() {
+                    if self.host_midi.is_enabled()
+                        && !midi_enabled
+                        && self.has_unsent_midi_note_offs()
+                    {
+                        if let Some(message) =
+                            self.flush_all_pending_midi_note_offs("before disabling Host MIDI")
+                        {
+                            self.last_status = message;
+                        }
+                        if self.has_unsent_midi_note_offs() {
+                            midi_enabled = true;
+                            let message =
+                                "Host MIDI disable blocked: pending note-offs were not sent"
+                                    .to_string();
+                            self.last_midi_note_off_status = message.clone();
+                            self.last_status = message;
+                        }
+                    }
+                    self.host_midi.set_enabled(midi_enabled);
+                }
+                if ui.button("Refresh MIDI").clicked() {
+                    self.refresh_midi_device_ports();
+                }
+                if ui.button("MIDI panic").clicked() {
+                    self.handle_midi_panic();
+                }
+                ui.label(egui::RichText::new(&self.last_midi_note_off_status).color(muted_text()));
+            });
+        });
+    }
+
+    fn draw_status_bar(&self, ui: &mut egui::Ui) {
+        egui::Frame::new()
+            .fill(status_bar_bg())
+            .stroke(egui::Stroke::new(1.0, panel_stroke()))
+            .corner_radius(egui::CornerRadius::same(3))
+            .inner_margin(egui::Margin::symmetric(10, 7))
+            .show(ui, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(
+                        egui::RichText::new("STATUS")
+                            .strong()
+                            .color(accent_blue())
+                            .monospace(),
+                    );
+                    ui.label(
+                        egui::RichText::new(&self.last_status)
+                            .color(primary_text())
+                            .monospace(),
+                    );
+                });
+            });
+    }
+
+    fn draw_service_panel(&mut self, ui: &mut egui::Ui) {
+        egui::CollapsingHeader::new(
+            egui::RichText::new("Service / Diagnostics")
+                .strong()
+                .color(muted_text()),
+        )
+        .default_open(false)
+        .show(ui, |ui| {
+            section_frame().show(ui, |ui| {
+                self.draw_project_snapshot_controls(ui);
+                ui.separator();
+                self.draw_midi_controls(ui);
+                self.draw_timing_correct_controls(ui);
+                self.draw_setup_status(ui);
+                self.draw_sequence_status(ui);
+                self.draw_program_status(ui);
+                self.draw_sample_status(ui);
+                self.draw_audio_render_status(ui);
+                self.draw_host_audio_status(ui);
+                self.draw_host_midi_status(ui);
+            });
+        });
+    }
+
+    fn draw_performance_input_panel(&mut self, ui: &mut egui::Ui) {
+        control_bay_frame().show(ui, |ui| {
+            ui.set_min_width(ui.available_width());
+            section_label(ui, "PERFORMANCE INPUT");
+            ui.horizontal_wrapped(|ui| {
+                ui.add_sized(
+                    [86.0, 24.0],
+                    egui::Slider::new(&mut self.midi_channel, 1..=16).text("Ch"),
+                );
+                ui.add_sized(
+                    [112.0, 24.0],
+                    egui::Slider::new(&mut self.midi_note, 0..=127).text("Note"),
+                );
+                ui.add_sized(
+                    [112.0, 24.0],
+                    egui::Slider::new(&mut self.midi_velocity, 1..=127).text("Vel"),
+                );
+                if panel_button(ui, "NOTE ON", 76.0).clicked() {
+                    self.dispatch_event(HardwareEvent::MidiNoteOn {
+                        channel: self.midi_channel,
+                        note: self.midi_note,
+                        velocity: self.midi_velocity,
+                    });
+                }
+                if panel_button(ui, "NOTE OFF", 82.0).clicked() {
+                    self.dispatch_event(HardwareEvent::MidiNoteOff {
+                        channel: self.midi_channel,
+                        note: self.midi_note,
+                        velocity: 64,
+                    });
+                }
+            });
+        });
+    }
+
     fn runtime_millis(&self) -> u64 {
         self.runtime_started_at
             .elapsed()
@@ -620,83 +940,144 @@ impl MpcDesktopApp {
 
     fn draw_lcd(&mut self, ui: &mut egui::Ui) {
         let lcd = self.core.state().lcd.clone();
-        egui::Frame::group(ui.style()).show(ui, |ui| {
-            ui.set_min_width(720.0);
-            ui.heading(lcd.title);
-            for line in &lcd.lines {
-                ui.monospace(line);
-            }
-            ui.horizontal_wrapped(|ui| {
-                for (index, soft_key) in lcd.soft_keys.iter().enumerate() {
-                    let soft_key_number = index as u8 + 1;
-                    if ui
-                        .button(format!("F{soft_key_number} {soft_key}"))
-                        .clicked()
-                    {
-                        self.dispatch_event(HardwareEvent::Press {
-                            control: PanelControl::SoftKey(soft_key_number),
-                        });
-                    }
+        egui::Frame::new()
+            .fill(lcd_background())
+            .stroke(egui::Stroke::new(2.0, lcd_bezel()))
+            .corner_radius(egui::CornerRadius::same(4))
+            .inner_margin(egui::Margin::symmetric(14, 12))
+            .show(ui, |ui| {
+                ui.set_min_width(470.0);
+                ui.set_min_height(150.0);
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new(lcd.title)
+                            .size(20.0)
+                            .strong()
+                            .monospace()
+                            .color(lcd_text()),
+                    );
+                    ui.separator();
+                    ui.label(
+                        egui::RichText::new("LCD")
+                            .size(11.0)
+                            .monospace()
+                            .color(lcd_dim_text()),
+                    );
+                });
+                ui.add_space(4.0);
+                for line in &lcd.lines {
+                    ui.label(
+                        egui::RichText::new(line)
+                            .size(15.0)
+                            .monospace()
+                            .color(lcd_text()),
+                    );
                 }
+                ui.add_space(8.0);
+                ui.horizontal_wrapped(|ui| {
+                    for (index, soft_key) in lcd.soft_keys.iter().enumerate() {
+                        let soft_key_number = index as u8 + 1;
+                        if ui
+                            .add(
+                                egui::Button::new(
+                                    egui::RichText::new(format!("F{soft_key_number} {soft_key}"))
+                                        .size(11.0)
+                                        .monospace(),
+                                )
+                                .fill(lcd_key_fill())
+                                .stroke(egui::Stroke::new(1.0, lcd_bezel()))
+                                .min_size(egui::vec2(64.0, 24.0)),
+                            )
+                            .clicked()
+                        {
+                            self.dispatch_event(HardwareEvent::Press {
+                                control: PanelControl::SoftKey(soft_key_number),
+                            });
+                        }
+                    }
+                });
             });
-        });
     }
 
     fn draw_mode_buttons(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal_wrapped(|ui| {
-            self.mode_button(ui, "MAIN", PanelControl::MainScreen, Mode::Main);
-            self.mode_button(ui, "PROGRAM", PanelControl::Program, Mode::Program);
-            self.mode_button(ui, "SAMPLE", PanelControl::Sample, Mode::Sample);
-            self.mode_button(ui, "TRIM", PanelControl::Trim, Mode::Trim);
-            self.mode_button(ui, "SONG", PanelControl::Song, Mode::Song);
-            self.mode_button(ui, "MIDI", PanelControl::Midi, Mode::Midi);
-            self.mode_button(
-                ui,
-                "TIMING",
-                PanelControl::TimingCorrect,
-                Mode::TimingCorrect,
-            );
-            self.mode_button(ui, "DISK", PanelControl::Disk, Mode::Disk);
-            self.mode_button(ui, "SETUP", PanelControl::Setup, Mode::Setup);
+        control_bay_frame().show(ui, |ui| {
+            section_label(ui, "MODES");
+            ui.horizontal_wrapped(|ui| {
+                self.mode_button(ui, "MAIN", PanelControl::MainScreen, Mode::Main);
+                self.mode_button(ui, "PROGRAM", PanelControl::Program, Mode::Program);
+                self.mode_button(ui, "SAMPLE", PanelControl::Sample, Mode::Sample);
+                self.mode_button(ui, "TRIM", PanelControl::Trim, Mode::Trim);
+                self.mode_button(ui, "SONG", PanelControl::Song, Mode::Song);
+                self.mode_button(ui, "MIDI", PanelControl::Midi, Mode::Midi);
+                self.mode_button(
+                    ui,
+                    "TIMING",
+                    PanelControl::TimingCorrect,
+                    Mode::TimingCorrect,
+                );
+                self.mode_button(ui, "DISK", PanelControl::Disk, Mode::Disk);
+                self.mode_button(ui, "SETUP", PanelControl::Setup, Mode::Setup);
+            });
         });
     }
 
     fn mode_button(&mut self, ui: &mut egui::Ui, label: &str, control: PanelControl, mode: Mode) {
         let selected = self.core.state().mode == mode;
-        if ui.selectable_label(selected, label).clicked() {
+        let fill = if selected {
+            accent_blue()
+        } else {
+            control_fill()
+        };
+        let text = if selected {
+            egui::Color32::WHITE
+        } else {
+            primary_text()
+        };
+        if ui
+            .add(
+                egui::Button::new(egui::RichText::new(label).size(11.0).strong().color(text))
+                    .fill(fill)
+                    .stroke(egui::Stroke::new(1.0, control_stroke()))
+                    .min_size(egui::vec2(76.0, 28.0)),
+            )
+            .clicked()
+        {
             self.dispatch_event(HardwareEvent::Press { control });
         }
     }
 
     fn draw_edit_controls(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal(|ui| {
-            if ui.button("Cursor ^").clicked() {
-                self.dispatch_event(HardwareEvent::Press {
-                    control: PanelControl::CursorUp,
-                });
-            }
-            if ui.button("Cursor v").clicked() {
-                self.dispatch_event(HardwareEvent::Press {
-                    control: PanelControl::CursorDown,
-                });
-            }
-            if ui.button("Cursor <").clicked() {
-                self.dispatch_event(HardwareEvent::Press {
-                    control: PanelControl::CursorLeft,
-                });
-            }
-            if ui.button("Cursor >").clicked() {
-                self.dispatch_event(HardwareEvent::Press {
-                    control: PanelControl::CursorRight,
-                });
-            }
-            ui.separator();
-            if ui.button("Wheel -").clicked() {
-                self.dispatch_event(HardwareEvent::TurnDataWheel { delta: -1 });
-            }
-            if ui.button("Wheel +").clicked() {
-                self.dispatch_event(HardwareEvent::TurnDataWheel { delta: 1 });
-            }
+        control_bay_frame().show(ui, |ui| {
+            section_label(ui, "NAVIGATION");
+            ui.horizontal_wrapped(|ui| {
+                if panel_button(ui, "UP", 46.0).clicked() {
+                    self.dispatch_event(HardwareEvent::Press {
+                        control: PanelControl::CursorUp,
+                    });
+                }
+                if panel_button(ui, "DOWN", 58.0).clicked() {
+                    self.dispatch_event(HardwareEvent::Press {
+                        control: PanelControl::CursorDown,
+                    });
+                }
+                if panel_button(ui, "LEFT", 54.0).clicked() {
+                    self.dispatch_event(HardwareEvent::Press {
+                        control: PanelControl::CursorLeft,
+                    });
+                }
+                if panel_button(ui, "RIGHT", 58.0).clicked() {
+                    self.dispatch_event(HardwareEvent::Press {
+                        control: PanelControl::CursorRight,
+                    });
+                }
+                ui.separator();
+                if panel_button(ui, "DATA -", 70.0).clicked() {
+                    self.dispatch_event(HardwareEvent::TurnDataWheel { delta: -1 });
+                }
+                if panel_button(ui, "DATA +", 70.0).clicked() {
+                    self.dispatch_event(HardwareEvent::TurnDataWheel { delta: 1 });
+                }
+            });
         });
     }
 
@@ -1907,45 +2288,48 @@ impl MpcDesktopApp {
     }
 
     fn draw_transport(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal(|ui| {
-            if ui.button("STOP").clicked() {
-                self.dispatch_event(HardwareEvent::Press {
-                    control: PanelControl::Stop,
-                });
-            }
-            if ui.button("PLAY").clicked() {
-                self.dispatch_event(HardwareEvent::Press {
-                    control: PanelControl::Play,
-                });
-            }
-            if ui.button("REC").clicked() {
-                self.dispatch_event(HardwareEvent::Press {
-                    control: PanelControl::Rec,
-                });
-            }
-            if ui.button("OVERDUB").clicked() {
-                self.dispatch_event(HardwareEvent::Press {
-                    control: PanelControl::Overdub,
-                });
-            }
-            if ui.button("LOCATE START").clicked() {
-                self.dispatch_event(HardwareEvent::Press {
-                    control: PanelControl::LocateStart,
-                });
-            }
-            let loop_label = if self.core.state().loop_enabled {
-                "LOOP ON"
-            } else {
-                "LOOP OFF"
-            };
-            if ui.button(loop_label).clicked() {
-                self.dispatch_event(HardwareEvent::Press {
-                    control: PanelControl::ToggleLoop,
-                });
-            }
-            if ui.button("TICK +100ms").clicked() {
-                self.dispatch_event(HardwareEvent::Tick { micros: 100_000 });
-            }
+        control_bay_frame().show(ui, |ui| {
+            section_label(ui, "TRANSPORT");
+            ui.horizontal_wrapped(|ui| {
+                if transport_button(ui, "STOP", stop_red()).clicked() {
+                    self.dispatch_event(HardwareEvent::Press {
+                        control: PanelControl::Stop,
+                    });
+                }
+                if transport_button(ui, "PLAY", ok_green()).clicked() {
+                    self.dispatch_event(HardwareEvent::Press {
+                        control: PanelControl::Play,
+                    });
+                }
+                if transport_button(ui, "REC", record_red()).clicked() {
+                    self.dispatch_event(HardwareEvent::Press {
+                        control: PanelControl::Rec,
+                    });
+                }
+                if transport_button(ui, "OVERDUB", warning_amber()).clicked() {
+                    self.dispatch_event(HardwareEvent::Press {
+                        control: PanelControl::Overdub,
+                    });
+                }
+                if panel_button(ui, "LOCATE", 82.0).clicked() {
+                    self.dispatch_event(HardwareEvent::Press {
+                        control: PanelControl::LocateStart,
+                    });
+                }
+                let loop_label = if self.core.state().loop_enabled {
+                    "LOOP ON"
+                } else {
+                    "LOOP OFF"
+                };
+                if panel_button(ui, loop_label, 82.0).clicked() {
+                    self.dispatch_event(HardwareEvent::Press {
+                        control: PanelControl::ToggleLoop,
+                    });
+                }
+                if panel_button(ui, "TICK", 62.0).clicked() {
+                    self.dispatch_event(HardwareEvent::Tick { micros: 100_000 });
+                }
+            });
         });
     }
 
@@ -2454,23 +2838,7 @@ impl MpcDesktopApp {
             ui.label(host_midi_state_text(&state));
             ui.separator();
             if ui.button("MIDI panic").clicked() {
-                let had_unsent_note_offs = self.has_unsent_midi_note_offs();
-                if !had_unsent_note_offs {
-                    self.last_midi_note_off_status = "MIDI panic: no pending notes".to_string();
-                } else if !self.host_midi.is_enabled() {
-                    self.last_midi_note_off_status =
-                        "MIDI panic blocked: Host MIDI disabled with pending note-offs".to_string();
-                } else if let Some(message) = self.flush_all_pending_midi_note_offs("panic") {
-                    self.last_status = message;
-                }
-
-                if had_unsent_note_offs && !self.has_unsent_midi_note_offs() {
-                    self.outbound_midi_notes.clear();
-                    self.blocked_midi_note_offs.clear();
-                    self.last_midi_note_off_status =
-                        "MIDI panic: pending note-offs sent".to_string();
-                }
-                self.last_status = self.last_midi_note_off_status.clone();
+                self.handle_midi_panic();
             }
             ui.separator();
             ui.label(&self.last_midi_note_off_status);
@@ -2483,66 +2851,96 @@ impl MpcDesktopApp {
         });
     }
 
+    fn handle_midi_panic(&mut self) {
+        let had_unsent_note_offs = self.has_unsent_midi_note_offs();
+        if !had_unsent_note_offs {
+            self.last_midi_note_off_status = "MIDI panic: no pending notes".to_string();
+        } else if !self.host_midi.is_enabled() {
+            self.last_midi_note_off_status =
+                "MIDI panic blocked: Host MIDI disabled with pending note-offs".to_string();
+        } else if let Some(message) = self.flush_all_pending_midi_note_offs("panic") {
+            self.last_status = message;
+        }
+
+        if had_unsent_note_offs && !self.has_unsent_midi_note_offs() {
+            self.outbound_midi_notes.clear();
+            self.blocked_midi_note_offs.clear();
+            self.last_midi_note_off_status = "MIDI panic: pending note-offs sent".to_string();
+        }
+        self.last_status = self.last_midi_note_off_status.clone();
+    }
+
     fn draw_pads(&mut self, ui: &mut egui::Ui) {
         let active_bank = self.core.state().pad_bank;
         let selected_program_pad = self.core.state().selected_program_pad;
         let program_mode = self.core.state().mode == Mode::Program;
         let now = self.runtime_millis();
-        ui.horizontal(|ui| {
-            self.bank_button(ui, "A", PadBank::A, PanelControl::PadBankA);
-            self.bank_button(ui, "B", PadBank::B, PanelControl::PadBankB);
-            self.bank_button(ui, "C", PadBank::C, PanelControl::PadBankC);
-            self.bank_button(ui, "D", PadBank::D, PanelControl::PadBankD);
-        });
-        ui.add_space(8.0);
-        egui::Grid::new("pads")
-            .num_columns(4)
-            .spacing([10.0, 10.0])
-            .show(ui, |ui| {
-                for pad in 1..=16 {
-                    let pad_address = ProgramPad {
-                        bank: active_bank,
-                        pad_number: pad,
-                    };
-                    let selected = program_mode && selected_program_pad == pad_address;
-                    let assigned = self
-                        .core
-                        .state()
-                        .current_program
-                        .pad_assignments
-                        .iter()
-                        .any(|assignment| assignment.pad == pad_address);
-                    let missing_runtime_sample = self.pad_has_missing_runtime_sample(pad_address);
-                    let visual = pad_visual_state(
-                        pad_address,
-                        assigned,
-                        missing_runtime_sample,
-                        selected,
-                        None,
-                        &self.pad_lights,
-                        now,
-                    );
-                    let fill = pad_color_for_visual_state(visual);
-                    let label = egui::RichText::new(program_pad_label(pad_address))
-                        .color(pad_label_text_color_for_fill(fill));
-                    let mut button = egui::Button::new(label)
-                        .fill(fill)
-                        .min_size(egui::vec2(72.0, 48.0));
-                    if selected {
-                        button = button.stroke(egui::Stroke::new(2.0, egui::Color32::WHITE));
-                    }
-                    if ui.add(button).clicked() {
-                        self.dispatch_event(HardwareEvent::StrikePad {
-                            bank: active_bank,
-                            pad,
-                            velocity: 100,
-                        });
-                    }
-                    if pad % 4 == 0 {
-                        ui.end_row();
-                    }
-                }
+        pad_bay_frame().show(ui, |ui| {
+            ui.set_min_width(ui.available_width());
+            ui.horizontal_wrapped(|ui| {
+                section_label(ui, "PAD BANK");
+                self.bank_button(ui, "A", PadBank::A, PanelControl::PadBankA);
+                self.bank_button(ui, "B", PadBank::B, PanelControl::PadBankB);
+                self.bank_button(ui, "C", PadBank::C, PanelControl::PadBankC);
+                self.bank_button(ui, "D", PadBank::D, PanelControl::PadBankD);
             });
+            ui.add_space(10.0);
+            egui::Grid::new("pads")
+                .num_columns(4)
+                .spacing([12.0, 12.0])
+                .show(ui, |ui| {
+                    for pad in 1..=16 {
+                        let pad_address = ProgramPad {
+                            bank: active_bank,
+                            pad_number: pad,
+                        };
+                        let selected = program_mode && selected_program_pad == pad_address;
+                        let assigned = self
+                            .core
+                            .state()
+                            .current_program
+                            .pad_assignments
+                            .iter()
+                            .any(|assignment| assignment.pad == pad_address);
+                        let missing_runtime_sample =
+                            self.pad_has_missing_runtime_sample(pad_address);
+                        let visual = pad_visual_state(
+                            pad_address,
+                            assigned,
+                            missing_runtime_sample,
+                            selected,
+                            None,
+                            &self.pad_lights,
+                            now,
+                        );
+                        let fill = pad_color_for_visual_state(visual);
+                        let label = egui::RichText::new(program_pad_label(pad_address))
+                            .size(14.0)
+                            .strong()
+                            .color(pad_label_text_color_for_fill(fill));
+                        let stroke = if selected {
+                            egui::Stroke::new(2.0, egui::Color32::WHITE)
+                        } else {
+                            egui::Stroke::new(1.0, pad_stroke())
+                        };
+                        let button = egui::Button::new(label)
+                            .fill(fill)
+                            .stroke(stroke)
+                            .corner_radius(egui::CornerRadius::same(4))
+                            .min_size(egui::vec2(74.0, 58.0));
+                        if ui.add(button).clicked() {
+                            self.dispatch_event(HardwareEvent::StrikePad {
+                                bank: active_bank,
+                                pad,
+                                velocity: 100,
+                            });
+                        }
+                        if pad % 4 == 0 {
+                            ui.end_row();
+                        }
+                    }
+                });
+        });
     }
 
     fn bank_button(
@@ -2553,7 +2951,25 @@ impl MpcDesktopApp {
         control: PanelControl,
     ) {
         let selected = self.core.state().pad_bank == bank;
-        if ui.selectable_label(selected, label).clicked() {
+        let fill = if selected {
+            accent_blue()
+        } else {
+            control_fill()
+        };
+        let text = if selected {
+            egui::Color32::WHITE
+        } else {
+            primary_text()
+        };
+        if ui
+            .add(
+                egui::Button::new(egui::RichText::new(label).strong().size(13.0).color(text))
+                    .fill(fill)
+                    .stroke(egui::Stroke::new(1.0, control_stroke()))
+                    .min_size(egui::vec2(42.0, 28.0)),
+            )
+            .clicked()
+        {
             self.dispatch_event(HardwareEvent::Press { control });
         }
     }
@@ -2673,6 +3089,231 @@ impl MpcDesktopApp {
         self.host_audio = host_audio;
         self.last_status = status;
     }
+}
+
+fn apply_mpc_style(ui: &mut egui::Ui) {
+    ui.visuals_mut().override_text_color = Some(primary_text());
+    ui.visuals_mut().hyperlink_color = accent_blue();
+    ui.spacing_mut().button_padding = egui::vec2(8.0, 5.0);
+}
+
+fn app_background() -> egui::Color32 {
+    egui::Color32::from_rgb(20, 21, 21)
+}
+
+fn front_panel_bg() -> egui::Color32 {
+    egui::Color32::from_rgb(66, 68, 65)
+}
+
+fn section_bg() -> egui::Color32 {
+    egui::Color32::from_rgb(37, 39, 38)
+}
+
+fn control_bay_bg() -> egui::Color32 {
+    egui::Color32::from_rgb(48, 50, 48)
+}
+
+fn pad_bay_bg() -> egui::Color32 {
+    egui::Color32::from_rgb(43, 45, 43)
+}
+
+fn status_bar_bg() -> egui::Color32 {
+    egui::Color32::from_rgb(18, 19, 18)
+}
+
+fn panel_stroke() -> egui::Color32 {
+    egui::Color32::from_rgb(104, 108, 102)
+}
+
+fn primary_text() -> egui::Color32 {
+    egui::Color32::from_rgb(235, 235, 226)
+}
+
+fn muted_text() -> egui::Color32 {
+    egui::Color32::from_rgb(169, 172, 164)
+}
+
+fn brand_red() -> egui::Color32 {
+    egui::Color32::from_rgb(222, 58, 52)
+}
+
+fn accent_blue() -> egui::Color32 {
+    egui::Color32::from_rgb(34, 132, 170)
+}
+
+fn ok_green() -> egui::Color32 {
+    egui::Color32::from_rgb(67, 151, 91)
+}
+
+fn warning_amber() -> egui::Color32 {
+    egui::Color32::from_rgb(190, 132, 49)
+}
+
+fn stop_red() -> egui::Color32 {
+    egui::Color32::from_rgb(128, 45, 41)
+}
+
+fn record_red() -> egui::Color32 {
+    egui::Color32::from_rgb(176, 42, 42)
+}
+
+fn control_fill() -> egui::Color32 {
+    egui::Color32::from_rgb(78, 80, 76)
+}
+
+fn control_stroke() -> egui::Color32 {
+    egui::Color32::from_rgb(120, 124, 116)
+}
+
+fn pad_stroke() -> egui::Color32 {
+    egui::Color32::from_rgb(24, 26, 24)
+}
+
+fn lcd_background() -> egui::Color32 {
+    egui::Color32::from_rgb(69, 93, 67)
+}
+
+fn lcd_bezel() -> egui::Color32 {
+    egui::Color32::from_rgb(20, 25, 20)
+}
+
+fn lcd_text() -> egui::Color32 {
+    egui::Color32::from_rgb(211, 235, 176)
+}
+
+fn lcd_dim_text() -> egui::Color32 {
+    egui::Color32::from_rgb(147, 176, 125)
+}
+
+fn lcd_key_fill() -> egui::Color32 {
+    egui::Color32::from_rgb(41, 58, 40)
+}
+
+fn front_panel_frame() -> egui::Frame {
+    egui::Frame::new()
+        .fill(front_panel_bg())
+        .stroke(egui::Stroke::new(1.0, panel_stroke()))
+        .corner_radius(egui::CornerRadius::same(6))
+        .inner_margin(egui::Margin::same(14))
+}
+
+fn section_frame() -> egui::Frame {
+    egui::Frame::new()
+        .fill(section_bg())
+        .stroke(egui::Stroke::new(1.0, panel_stroke()))
+        .corner_radius(egui::CornerRadius::same(4))
+        .inner_margin(egui::Margin::same(10))
+}
+
+fn control_bay_frame() -> egui::Frame {
+    egui::Frame::new()
+        .fill(control_bay_bg())
+        .stroke(egui::Stroke::new(1.0, panel_stroke()))
+        .corner_radius(egui::CornerRadius::same(4))
+        .inner_margin(egui::Margin::same(10))
+}
+
+fn pad_bay_frame() -> egui::Frame {
+    egui::Frame::new()
+        .fill(pad_bay_bg())
+        .stroke(egui::Stroke::new(1.0, panel_stroke()))
+        .corner_radius(egui::CornerRadius::same(5))
+        .inner_margin(egui::Margin::same(12))
+}
+
+fn section_label(ui: &mut egui::Ui, label: &str) {
+    ui.label(
+        egui::RichText::new(label)
+            .size(11.0)
+            .strong()
+            .color(muted_text()),
+    );
+}
+
+fn status_chip(ui: &mut egui::Ui, label: &str, value: impl Into<String>, accent: egui::Color32) {
+    egui::Frame::new()
+        .fill(section_bg())
+        .stroke(egui::Stroke::new(1.0, accent))
+        .corner_radius(egui::CornerRadius::same(3))
+        .inner_margin(egui::Margin::symmetric(8, 4))
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(
+                    egui::RichText::new(label)
+                        .size(10.0)
+                        .strong()
+                        .color(muted_text()),
+                );
+                ui.label(
+                    egui::RichText::new(value.into())
+                        .size(11.0)
+                        .strong()
+                        .color(accent),
+                );
+            });
+        });
+}
+
+fn meter_tile(ui: &mut egui::Ui, label: &str, value: impl Into<String>) {
+    egui::Frame::new()
+        .fill(section_bg())
+        .stroke(egui::Stroke::new(1.0, panel_stroke()))
+        .corner_radius(egui::CornerRadius::same(3))
+        .inner_margin(egui::Margin::symmetric(9, 6))
+        .show(ui, |ui| {
+            ui.set_min_width(104.0);
+            ui.vertical(|ui| {
+                ui.label(
+                    egui::RichText::new(label)
+                        .size(10.0)
+                        .strong()
+                        .color(muted_text()),
+                );
+                ui.label(
+                    egui::RichText::new(value.into())
+                        .size(13.0)
+                        .strong()
+                        .color(primary_text()),
+                );
+            });
+        });
+}
+
+fn transport_summary_text(playing: bool, recording: bool, loop_enabled: bool) -> String {
+    let play = if playing { "PLAY" } else { "STOP" };
+    let rec = if recording { "REC" } else { "SAFE" };
+    let loop_text = if loop_enabled { "LOOP" } else { "NO LOOP" };
+    format!("{play} / {rec} / {loop_text}")
+}
+
+fn panel_button(ui: &mut egui::Ui, label: &str, width: f32) -> egui::Response {
+    ui.add(
+        egui::Button::new(
+            egui::RichText::new(label)
+                .size(11.0)
+                .strong()
+                .color(primary_text()),
+        )
+        .fill(control_fill())
+        .stroke(egui::Stroke::new(1.0, control_stroke()))
+        .corner_radius(egui::CornerRadius::same(3))
+        .min_size(egui::vec2(width, 30.0)),
+    )
+}
+
+fn transport_button(ui: &mut egui::Ui, label: &str, fill: egui::Color32) -> egui::Response {
+    ui.add(
+        egui::Button::new(
+            egui::RichText::new(label)
+                .size(11.0)
+                .strong()
+                .color(egui::Color32::WHITE),
+        )
+        .fill(fill)
+        .stroke(egui::Stroke::new(1.0, control_stroke()))
+        .corner_radius(egui::CornerRadius::same(3))
+        .min_size(egui::vec2(74.0, 32.0)),
+    )
 }
 
 fn main_screen_status(state: &MpcState) -> String {
