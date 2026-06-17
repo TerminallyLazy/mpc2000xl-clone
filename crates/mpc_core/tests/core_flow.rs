@@ -2525,6 +2525,27 @@ fn sequence_playback_schedules_recorded_assigned_event_on_crossing_tick() {
 }
 
 #[test]
+fn sequence_playback_schedules_tick_zero_event_when_starting_from_zero() {
+    let snapshot = snapshot_with_recorded_assigned_events(&[(0, 1, 81)]);
+    let recorded_event = snapshot.sequence.recorded_events[0].clone();
+    let mut core = restore_snapshot(snapshot);
+
+    core.dispatch(HardwareEvent::Press {
+        control: PanelControl::Play,
+    });
+    let outputs = core.dispatch(HardwareEvent::Tick { micros: 500_000 });
+    let intents = playback_intents(&outputs);
+
+    assert!(outputs.iter().any(|output| matches!(
+        output,
+        MachineOutput::SequenceEventPlayed { event } if event == &recorded_event
+    )));
+    assert_eq!(intents.len(), 1);
+    assert_eq!(intents[0].sample_id, "synthetic_a_01");
+    assert_eq!(intents[0].velocity, 81);
+}
+
+#[test]
 fn sequence_playback_schedules_multiple_recorded_events_in_recorded_order() {
     let snapshot = snapshot_with_recorded_assigned_events_at_tick(&[(2, 70), (5, 88)]);
     let mut core = restore_snapshot(snapshot);

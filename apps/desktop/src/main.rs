@@ -190,6 +190,7 @@ struct MpcDesktopApp {
     outbound_midi_notes: OutboundMidiNoteScheduler,
     blocked_midi_note_offs: Vec<mpc_core::MidiOutputIntent>,
     runtime_started_at: std::time::Instant,
+    last_transport_tick: std::time::Instant,
     host_midi_input: Option<DeviceMidiInputConnection>,
     midi_input_ports: Vec<MidiPortDescriptor>,
     midi_output_ports: Vec<MidiPortDescriptor>,
@@ -448,6 +449,7 @@ impl Default for MpcDesktopApp {
             outbound_midi_notes: OutboundMidiNoteScheduler::default(),
             blocked_midi_note_offs: Vec::new(),
             runtime_started_at: std::time::Instant::now(),
+            last_transport_tick: std::time::Instant::now(),
             host_midi_input: None,
             midi_input_ports: Vec::new(),
             midi_output_ports: Vec::new(),
@@ -558,6 +560,7 @@ fn enabled_capture_host_audio(reason: &str) -> HostAudioEngine<DesktopAudioBacke
 
 impl eframe::App for MpcDesktopApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        self.tick_transport_clock();
         self.poll_host_midi_input();
         if let Some(error) = self.flush_due_midi_note_offs() {
             self.last_status = error;
@@ -580,12 +583,14 @@ impl eframe::App for MpcDesktopApp {
                         self.draw_service_panel(ui);
                     });
             });
-        if should_request_runtime_repaint(
-            self.host_midi_input.is_some(),
-            self.host_midi.is_enabled(),
-            self.outbound_midi_notes.has_pending(),
-            self.pad_lights.has_active_memory(self.runtime_millis()),
-        ) {
+        if self.core.state().playing
+            || should_request_runtime_repaint(
+                self.host_midi_input.is_some(),
+                self.host_midi.is_enabled(),
+                self.outbound_midi_notes.has_pending(),
+                self.pad_lights.has_active_memory(self.runtime_millis()),
+            )
+        {
             ui.ctx()
                 .request_repaint_after(std::time::Duration::from_millis(10));
         }
@@ -1748,16 +1753,124 @@ impl MpcDesktopApp {
     }
 
     fn dispatch_event(&mut self, event: HardwareEvent) {
+        let resets_transport_clock = matches!(
+            &event,
+            HardwareEvent::Press {
+                control: PanelControl::Play
+                    | PanelControl::Overdub
+                    | PanelControl::Stop
+                    | PanelControl::LocateStart
+            }
+        );
         let outputs = self.core.dispatch(event);
-        self.record_pad_lights_from_outputs(&outputs);
-        let render_or_host_error = self.handle_audio_outputs(&outputs);
-        let midi_host_error = self.handle_midi_outputs(&outputs);
-        let disk_operation_status = self.handle_disk_operation_request(&outputs);
+        self.handle_machine_outputs(&outputs, false);
+        if resets_transport_clock {
+            self.last_transport_tick = std::time::Instant::now();
+        }
+    }
+
+    fn dispatch_transport_tick(&mut self, micros: u64) {
+        let outputs = self.core.dispatch(HardwareEvent::Tick { micros });
+        self.handle_machine_outputs(&outputs, true);
+    }
+
+    fn handle_machine_outputs(
+        &mut self,
+        outputs: &[MachineOutput],
+        preserve_status_when_empty: bool,
+    ) {
+        if preserve_status_when_empty
+            && (outputs.is_empty()
+                || outputs
+                    .iter()
+                    .all(|output| matches!(output, MachineOutput::LcdChanged)))
+        {
+            return;
+        }
+
+        self.record_pad_lights_from_outputs(outputs);
+        let render_or_host_error = self.handle_audio_outputs(outputs);
+        let midi_host_error = self.handle_midi_outputs(outputs);
+        let disk_operation_status = self.handle_disk_operation_request(outputs);
         self.prune_runtime_samples_to_project_metadata();
         self.last_status = disk_operation_status
             .or(midi_host_error)
             .or(render_or_host_error)
-            .unwrap_or_else(|| Self::status_from_outputs(&outputs, self.core.state()));
+            .unwrap_or_else(|| Self::status_from_outputs(outputs, self.core.state()));
+    }
+
+    fn tick_transport_clock(&mut self) {
+        let now = std::time::Instant::now();
+        if !self.core.state().playing {
+            self.last_transport_tick = now;
+            return;
+        }
+
+        let elapsed = now.saturating_duration_since(self.last_transport_tick);
+        self.last_transport_tick = now;
+        let micros = elapsed.as_micros().min(50_000) as u64;
+        if micros > 0 {
+            self.dispatch_transport_tick(micros);
+        }
+    }
+
+    fn record_start(&mut self) {
+        if !self.core.state().playing {
+            self.dispatch_event(HardwareEvent::Press {
+                control: PanelControl::LocateStart,
+            });
+        }
+        self.dispatch_event(HardwareEvent::Press {
+            control: PanelControl::Rec,
+        });
+        if !self.core.state().playing {
+            self.dispatch_event(HardwareEvent::Press {
+                control: PanelControl::Play,
+            });
+        }
+    }
+
+    fn play(&mut self) {
+        if self.should_restart_playback_from_start() {
+            self.dispatch_event(HardwareEvent::Press {
+                control: PanelControl::LocateStart,
+            });
+        }
+        self.dispatch_event(HardwareEvent::Press {
+            control: PanelControl::Play,
+        });
+    }
+
+    fn play_start(&mut self) {
+        self.dispatch_event(HardwareEvent::Press {
+            control: PanelControl::LocateStart,
+        });
+        self.dispatch_event(HardwareEvent::Press {
+            control: PanelControl::Play,
+        });
+    }
+
+    fn overdub_start(&mut self) {
+        if self.should_restart_playback_from_start() {
+            self.dispatch_event(HardwareEvent::Press {
+                control: PanelControl::LocateStart,
+            });
+        }
+        self.dispatch_event(HardwareEvent::Press {
+            control: PanelControl::Overdub,
+        });
+    }
+
+    fn should_restart_playback_from_start(&self) -> bool {
+        let state = self.core.state();
+        if state.playing || state.recorded_events.is_empty() {
+            return false;
+        }
+
+        !state
+            .recorded_events
+            .iter()
+            .any(|event| event.tick > state.playhead_ticks)
     }
 
     fn poll_host_midi_input(&mut self) {
@@ -2767,6 +2880,15 @@ impl MpcDesktopApp {
             .iter()
             .find(|output| matches!(output, MachineOutput::TransportChanged { .. }))
         {
+            if *playing && *recording {
+                return "Recording: transport running".to_string();
+            }
+            if !*playing && *recording {
+                return "REC armed: press PLAY START or OVERDUB to record".to_string();
+            }
+            if *playing {
+                return "Playback running".to_string();
+            }
             return format!("Transport playing={playing} recording={recording}");
         }
 
@@ -2792,14 +2914,10 @@ impl MpcDesktopApp {
             section_label(ui, "TRANSPORT");
             ui.horizontal_wrapped(|ui| {
                 if transport_button(ui, "REC", record_red()).clicked() {
-                    self.dispatch_event(HardwareEvent::Press {
-                        control: PanelControl::Rec,
-                    });
+                    self.record_start();
                 }
                 if transport_button(ui, "OVERDUB", warning_amber()).clicked() {
-                    self.dispatch_event(HardwareEvent::Press {
-                        control: PanelControl::Overdub,
-                    });
+                    self.overdub_start();
                 }
                 if transport_button(ui, "STOP", cream_button_fill()).clicked() {
                     self.dispatch_event(HardwareEvent::Press {
@@ -2807,14 +2925,10 @@ impl MpcDesktopApp {
                     });
                 }
                 if transport_button(ui, "PLAY", cream_button_fill()).clicked() {
-                    self.dispatch_event(HardwareEvent::Press {
-                        control: PanelControl::Play,
-                    });
+                    self.play();
                 }
                 if panel_button(ui, "PLAY START", 84.0).clicked() {
-                    self.dispatch_event(HardwareEvent::Press {
-                        control: PanelControl::LocateStart,
-                    });
+                    self.play_start();
                 }
                 let loop_label = if self.core.state().loop_enabled {
                     "LOOP ON"
@@ -2827,7 +2941,7 @@ impl MpcDesktopApp {
                     });
                 }
                 if panel_button(ui, "TAP TEMPO", 84.0).clicked() {
-                    self.dispatch_event(HardwareEvent::Tick { micros: 100_000 });
+                    self.dispatch_transport_tick(100_000);
                 }
             });
         });
@@ -4804,6 +4918,79 @@ mod tests {
     }
 
     #[test]
+    fn desktop_transport_clock_advances_playback_without_manual_tick_button() {
+        let mut app = MpcDesktopApp::default();
+
+        app.play_start();
+        app.last_transport_tick = std::time::Instant::now()
+            .checked_sub(std::time::Duration::from_millis(250))
+            .expect("test instant should be representable");
+        app.tick_transport_clock();
+
+        assert!(app.core.state().playing);
+        assert!(app.core.state().playhead_ticks > 0);
+    }
+
+    #[test]
+    fn desktop_record_start_stop_and_play_start_reaches_host_audio() {
+        let mut app = MpcDesktopApp::default();
+
+        app.record_start();
+        app.dispatch_event(HardwareEvent::StrikePad {
+            bank: PadBank::A,
+            pad: 1,
+            velocity: 100,
+        });
+
+        assert!(app.core.state().playing);
+        assert!(app.core.state().recording);
+        assert_eq!(app.core.state().recorded_events.len(), 1);
+
+        let live_sample_renders = captured_sample_render_summaries(&app);
+        assert_eq!(live_sample_renders.len(), 1);
+
+        app.dispatch_event(HardwareEvent::Press {
+            control: PanelControl::Stop,
+        });
+        assert!(!app.core.state().playing);
+        assert!(!app.core.state().recording);
+
+        app.play_start();
+        app.dispatch_transport_tick(250_000);
+
+        let sample_renders = captured_sample_render_summaries(&app);
+        assert_eq!(sample_renders.len(), 2);
+        assert_eq!(sample_renders[1].source_sample_id, "synthetic_a_01");
+    }
+
+    #[test]
+    fn desktop_overdub_start_records_and_replays_host_audio() {
+        let mut app = MpcDesktopApp::default();
+
+        app.overdub_start();
+        app.dispatch_event(HardwareEvent::StrikePad {
+            bank: PadBank::A,
+            pad: 2,
+            velocity: 96,
+        });
+
+        assert!(app.core.state().playing);
+        assert!(app.core.state().recording);
+        assert_eq!(app.core.state().recorded_events.len(), 1);
+
+        app.dispatch_event(HardwareEvent::Press {
+            control: PanelControl::Stop,
+        });
+        app.play_start();
+        app.dispatch_transport_tick(250_000);
+
+        let sample_renders = captured_sample_render_summaries(&app);
+        assert_eq!(sample_renders.len(), 2);
+        assert_eq!(sample_renders[0].source_sample_id, "synthetic_a_02");
+        assert_eq!(sample_renders[1].source_sample_id, "synthetic_a_02");
+    }
+
+    #[test]
     fn factory_808_909_kit_loads_when_local_assets_are_available() {
         if !factory_808_909_assets_are_available() {
             return;
@@ -5032,6 +5219,18 @@ mod tests {
             note: 36,
             velocity: 100,
             window_length_frames: 11_025,
+        }
+    }
+
+    fn captured_sample_render_summaries(app: &MpcDesktopApp) -> Vec<AudioRenderSummary> {
+        match app.host_audio.backend() {
+            DesktopAudioBackend::Capture(backend) => backend
+                .captured_renders()
+                .iter()
+                .map(|capture| capture.summary.clone())
+                .filter(|summary| summary.render_kind == AudioRenderKind::SamplePlayback)
+                .collect(),
+            DesktopAudioBackend::Device { .. } => panic!("test app should use capture audio"),
         }
     }
 

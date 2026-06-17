@@ -2008,7 +2008,7 @@ impl MpcCore {
                 previous_playhead_ticks,
                 next_playhead_ticks,
                 sequence_length_ticks,
-                false,
+                previous_playhead_ticks == 0,
             );
 
             if target_playhead_ticks >= sequence_length_ticks {
