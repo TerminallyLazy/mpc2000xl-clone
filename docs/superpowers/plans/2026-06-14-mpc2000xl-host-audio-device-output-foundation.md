@@ -29,7 +29,7 @@ Implemented behavior:
 
 ## Source And Evidence Status
 
-- Status: unit-backed internal spec plus desktop compile coverage.
+- Status: fixture-backed internal spec plus unit and desktop compile coverage.
 - CPAL version: `0.18.1`, used only for host output-device plumbing.
 - Rights boundary: no proprietary manuals, service scans, firmware bytes, JJ-OS assets, hardware captures, MIDI files, copied third-party code, audio files, factory samples, or native device traces are stored in the repo.
 - Evidence gap: exact MPC2000XL DAC, output levels, analog routing, latency, scheduler timing, interpolation, filters, effects, and JJ-OS behavior remain unmapped.
@@ -47,6 +47,7 @@ Implemented behavior:
 
 Focused checks added:
 
+- Conformance fixture coverage validates deterministic device-output queue semantics without opening CPAL devices.
 - Device queue capacity clamps to a bounded maximum.
 - Device queue enqueues complete rendered buffers and drains stereo `f32` frames deterministically.
 - Mono output mixes left/right and counts underrun silence.

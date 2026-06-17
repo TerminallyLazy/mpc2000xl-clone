@@ -1,0 +1,217 @@
+{
+  "id": "audio.host.device-output-foundation",
+  "name": "Deterministic host device-output probe validates bounded queue and callback semantics without opening CPAL devices",
+  "source_refs": [
+    "docs/superpowers/plans/2026-06-14-mpc2000xl-host-audio-device-output-foundation.md#deterministic-contract",
+    "docs/evidence/behavior-matrix.json#audio.host.device-output-foundation"
+  ],
+  "events": [],
+  "device_audio_output_probe": {
+    "cases": [
+      {
+        "type": "capacity_clamp",
+        "sample_rate_hz": 44100,
+        "max_queued_frames": 999999999,
+        "expect_status": {
+          "queued_frame_count": 0,
+          "max_queued_frame_count": 1920000,
+          "total_enqueued_frame_count": 0,
+          "total_callback_frame_count": 0,
+          "underrun_frame_count": 0,
+          "recent_stream_errors": []
+        }
+      },
+      {
+        "type": "enqueue_and_write",
+        "sample_rate_hz": 44100,
+        "max_queued_frames": 8,
+        "render": {
+          "sample_rate_hz": 44100,
+          "frames": [
+            {
+              "left": 32767,
+              "right": 0
+            },
+            {
+              "left": 0,
+              "right": -32768
+            },
+            {
+              "left": -32768,
+              "right": 32767
+            },
+            {
+              "left": 0,
+              "right": 0
+            }
+          ]
+        },
+        "expect_receipt": {
+          "frame_count": 4,
+          "queued": true,
+          "played": false
+        },
+        "expect_status_after_enqueue": {
+          "queued_frame_count": 4,
+          "max_queued_frame_count": 8,
+          "total_enqueued_frame_count": 4,
+          "total_callback_frame_count": 0,
+          "underrun_frame_count": 0,
+          "recent_stream_errors": []
+        },
+        "write_frame_count": 4,
+        "write_channels": 2,
+        "expect_output_f32_bits": [
+          1065353216,
+          0,
+          0,
+          3212836864,
+          3212836864,
+          1065353216,
+          0,
+          0
+        ],
+        "expect_status_after_write": {
+          "queued_frame_count": 0,
+          "max_queued_frame_count": 8,
+          "total_enqueued_frame_count": 4,
+          "total_callback_frame_count": 4,
+          "underrun_frame_count": 0,
+          "recent_stream_errors": []
+        }
+      },
+      {
+        "type": "enqueue_and_write",
+        "sample_rate_hz": 44100,
+        "max_queued_frames": 4,
+        "render": {
+          "sample_rate_hz": 44100,
+          "frames": [
+            {
+              "left": 32767,
+              "right": 0
+            }
+          ]
+        },
+        "expect_receipt": {
+          "frame_count": 1,
+          "queued": true,
+          "played": false
+        },
+        "expect_status_after_enqueue": {
+          "queued_frame_count": 1,
+          "max_queued_frame_count": 4,
+          "total_enqueued_frame_count": 1,
+          "total_callback_frame_count": 0,
+          "underrun_frame_count": 0,
+          "recent_stream_errors": []
+        },
+        "write_frame_count": 2,
+        "write_channels": 1,
+        "expect_output_f32_bits": [
+          1056964608,
+          0
+        ],
+        "expect_status_after_write": {
+          "queued_frame_count": 0,
+          "max_queued_frame_count": 4,
+          "total_enqueued_frame_count": 1,
+          "total_callback_frame_count": 2,
+          "underrun_frame_count": 1,
+          "recent_stream_errors": []
+        }
+      },
+      {
+        "type": "enqueue_error",
+        "sample_rate_hz": 44100,
+        "max_queued_frames": 1,
+        "render": {
+          "sample_rate_hz": 44100,
+          "frames": [
+            {
+              "left": 1,
+              "right": 1
+            },
+            {
+              "left": 2,
+              "right": 2
+            }
+          ]
+        },
+        "expect_error_contains": "device output queue full",
+        "expect_status_after_error": {
+          "queued_frame_count": 0,
+          "max_queued_frame_count": 1,
+          "total_enqueued_frame_count": 0,
+          "total_callback_frame_count": 0,
+          "underrun_frame_count": 0,
+          "recent_stream_errors": []
+        }
+      },
+      {
+        "type": "enqueue_error",
+        "sample_rate_hz": 48000,
+        "max_queued_frames": 4,
+        "render": {
+          "sample_rate_hz": 44100,
+          "frames": [
+            {
+              "left": 1,
+              "right": 1
+            }
+          ]
+        },
+        "expect_error_contains": "sample-rate mismatch",
+        "expect_status_after_error": {
+          "queued_frame_count": 0,
+          "max_queued_frame_count": 4,
+          "total_enqueued_frame_count": 0,
+          "total_callback_frame_count": 0,
+          "underrun_frame_count": 0,
+          "recent_stream_errors": []
+        }
+      },
+      {
+        "type": "record_stream_errors",
+        "sample_rate_hz": 44100,
+        "max_queued_frames": 4,
+        "stream_errors": [
+          "stream-error-0",
+          "stream-error-1",
+          "stream-error-2",
+          "stream-error-3",
+          "stream-error-4",
+          "stream-error-5",
+          "stream-error-6",
+          "stream-error-7",
+          "stream-error-8",
+          "stream-error-9"
+        ],
+        "expect_status": {
+          "queued_frame_count": 0,
+          "max_queued_frame_count": 4,
+          "total_enqueued_frame_count": 0,
+          "total_callback_frame_count": 0,
+          "underrun_frame_count": 0,
+          "recent_stream_errors": [
+            "stream-error-2",
+            "stream-error-3",
+            "stream-error-4",
+            "stream-error-5",
+            "stream-error-6",
+            "stream-error-7",
+            "stream-error-8",
+            "stream-error-9"
+          ]
+        }
+      }
+    ]
+  },
+  "expect": {
+    "mode": "main",
+    "lcd_title": "MAIN",
+    "playing": false,
+    "recording": false,
+    "event_count": 0
+  }
+}

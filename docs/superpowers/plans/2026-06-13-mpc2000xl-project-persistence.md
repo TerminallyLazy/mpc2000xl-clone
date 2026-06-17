@@ -17,6 +17,7 @@ Implemented behavior:
 - Restore intentionally leaves transport stopped and disarmed because transport persistence is not safely modeled in this slice.
 - Snapshot JSON import rejects unknown fields at root, machine, sequence, program, assignment, sample, recorded-event, and playback boundaries before typed restore.
 - Conformance fixtures can optionally export/restore a project snapshot and then assert restored state after optional post-restore events.
+- Conformance fixtures now also cover restore-validation errors through generated current-snapshot mutations instead of storing raw invalid snapshots.
 - Desktop exposes in-memory `Save Snapshot` and `Load Last Snapshot` controls that retain only the latest JSON string in app state and display snapshot status, size, and version.
 
 ## Snapshot Schema Boundary
@@ -55,7 +56,7 @@ The current range choices are internal guardrails matching the foundation model.
 
 ## Source And Evidence Status
 
-This slice is backed by repo-owned internal specs, unit tests, and conformance fixtures. Exact owner-manual evidence for project save/load UX, firmware traces, storage naming, native file formats, and invalid-file behavior is still pending.
+This slice is backed by repo-owned internal specs, unit tests, and conformance fixtures, including restore-validation mutation coverage. Exact owner-manual evidence for project save/load UX, firmware traces, storage naming, native file formats, and invalid-file behavior is still pending.
 
 No proprietary samples, firmware, manuals, service scans, screenshots, binary project files, or copied media are added. Behavior-matrix entries for project persistence are marked as internal-spec/manual-investigation pending exact MPC2000XL storage and file-format evidence.
 
@@ -95,6 +96,7 @@ Focused checks added or extended:
 - Restore refreshes LCD.
 - Restored projects can still emit sample playback intents.
 - Conformance fixture records an assigned pad, exports/restores the snapshot, then confirms recorded metadata and post-restore playback intent survive.
+- Conformance fixture mutates current exported snapshot JSON to verify unsupported version, invalid rights boundary, duplicate pad assignment, unknown root `audio_bytes`, event-count, and last-playback validation errors.
 
 ## Next Boundaries
 

@@ -1,16 +1,32 @@
 use anyhow::{Context, Result, bail};
-use mpc_audio::{AudioRenderSettings, AudioSourceKind, ChannelBalance, render_intent};
+use mpc_audio::{
+    AudioFrame, AudioRenderKind, AudioRenderSettings, AudioRenderSummary, AudioSourceKind,
+    CaptureAudioBackend, ChannelBalance, DeterministicDeviceAudioOutputProbe,
+    DeviceAudioOutputProbeStatus, HostAudioBackendReceipt, HostAudioEngine, HostAudioEvent,
+    HostAudioMode, HostAudioState, HostAudioVoiceSummary, RenderedAudio, RuntimeSampleLibrary,
+    load_wav_sample_payload, render_intent_with_runtime_samples,
+};
 use mpc_core::{
     DiskOperation, HardwareEvent, MachineOutput, MainScreenField, MidiSettingsField, Mode, MpcCore,
     MpcState, PROJECT_SNAPSHOT_VERSION, PadBank, ProgramEditField, ProgramPad,
     SamplePlaybackResolution, SampleSourceKind, SequenceEvent, SetupField, SongEditField, SongStep,
     TimingCorrectDivision, TimingCorrectField, TrimEditField,
 };
+use mpc_midi::{
+    CaptureMidiBackend, HostMidiEngine, HostMidiEvent, HostMidiMode, HostMidiState, MidiInputEvent,
+    MidiMessage, decode_midi_input_event, encode_note_on_message,
+};
+use mpc_storage::{PROJECT_FILE_SUFFIX, load_project_file_with_report, save_project_file};
 use serde::de::{self, Visitor};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::fmt;
 use std::fs;
-use std::path::Path;
+use std::io::Write;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static PROJECT_ROUND_TRIP_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+const PROJECT_FILE_RIGHTS_BOUNDARY: &str = "metadata_only_no_audio_bytes";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Fixture {
@@ -18,6 +34,16 @@ pub struct Fixture {
     pub name: String,
     pub source_refs: Vec<String>,
     pub events: Vec<HardwareEvent>,
+    #[serde(default)]
+    pub runtime_wav_imports: Vec<RuntimeWavImport>,
+    #[serde(default)]
+    pub post_runtime_wav_import_events: Vec<HardwareEvent>,
+    #[serde(default)]
+    pub host_audio: Option<HostAudioFixture>,
+    #[serde(default)]
+    pub device_audio_output_probe: Option<DeviceAudioOutputProbeFixture>,
+    #[serde(default)]
+    pub host_midi: Option<HostMidiFixture>,
     #[serde(default)]
     pub expect_output_sequence: Vec<MachineOutput>,
     #[serde(default)]
@@ -37,11 +63,237 @@ pub struct ExpectedSampleMetadataCreated {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuntimeWavImport {
+    pub sample_name: String,
+    pub channels: u16,
+    pub sample_rate_hz: u32,
+    pub samples: Vec<i16>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HostAudioFixture {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub settings: AudioRenderSettings,
+    #[serde(default = "default_capture_history")]
+    pub capture_history: usize,
+    #[serde(default = "default_host_audio_fixture_voice_limit")]
+    pub voice_limit: usize,
+    #[serde(default)]
+    pub advance_voice_frames: Vec<usize>,
+    pub expect: ExpectedHostAudioState,
+}
+
+fn default_capture_history() -> usize {
+    16
+}
+
+fn default_host_audio_fixture_voice_limit() -> usize {
+    32
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExpectedHostAudioState {
+    #[serde(default)]
+    pub mode: Option<HostAudioMode>,
+    #[serde(default)]
+    pub backend_name: Option<String>,
+    #[serde(default)]
+    pub render_settings: Option<AudioRenderSettings>,
+    #[serde(default)]
+    pub queued_render_count: Option<u64>,
+    #[serde(default)]
+    pub played_render_count: Option<u64>,
+    #[serde(default)]
+    pub voice_limit: Option<usize>,
+    #[serde(default)]
+    pub active_voice_count: Option<usize>,
+    #[serde(default)]
+    pub completed_voice_count: Option<u64>,
+    #[serde(default)]
+    pub stolen_voice_count: Option<u64>,
+    #[serde(default)]
+    pub released_voice_count: Option<u64>,
+    #[serde(default)]
+    pub choked_voice_count: Option<u64>,
+    #[serde(default)]
+    pub active_voices: Option<Vec<HostAudioVoiceSummary>>,
+    #[serde(default)]
+    pub capture_count: Option<usize>,
+    #[serde(default)]
+    pub capture_frame_counts: Option<Vec<usize>>,
+    #[serde(default)]
+    pub capture_render_kinds: Option<Vec<AudioRenderKind>>,
+    #[serde(default)]
+    pub capture_source_kinds: Option<Vec<AudioSourceKind>>,
+    #[serde(default)]
+    pub capture_source_sample_names: Option<Vec<String>>,
+    #[serde(default)]
+    pub capture_count_in_ticks: Option<Vec<Option<u64>>>,
+    #[serde(default)]
+    pub capture_accents: Option<Vec<Option<bool>>>,
+    #[serde(default)]
+    pub last_event_type: Option<ExpectedHostAudioEventType>,
+    #[serde(default)]
+    pub last_event_backend_name: Option<String>,
+    #[serde(default)]
+    pub last_event_render_kind: Option<AudioRenderKind>,
+    #[serde(default)]
+    pub last_event_source_kind: Option<AudioSourceKind>,
+    #[serde(default)]
+    pub last_event_frame_count: Option<usize>,
+    #[serde(default)]
+    pub last_event_voice_id: Option<u64>,
+    #[serde(default)]
+    pub last_event_stolen_voice_id: Option<u64>,
+    #[serde(default)]
+    pub last_event_choked_voice_count: Option<usize>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExpectedHostAudioEventType {
+    Ignored,
+    Enqueued,
+    Released,
+    Failed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeviceAudioOutputProbeFixture {
+    #[serde(default)]
+    pub cases: Vec<DeviceAudioOutputProbeCase>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum DeviceAudioOutputProbeCase {
+    CapacityClamp {
+        sample_rate_hz: u32,
+        max_queued_frames: usize,
+        expect_status: DeviceAudioOutputProbeStatus,
+    },
+    EnqueueAndWrite {
+        sample_rate_hz: u32,
+        max_queued_frames: usize,
+        render: DeviceAudioOutputProbeRender,
+        expect_receipt: ExpectedDeviceAudioOutputProbeReceipt,
+        expect_status_after_enqueue: DeviceAudioOutputProbeStatus,
+        write_frame_count: usize,
+        write_channels: usize,
+        expect_output_f32_bits: Vec<u32>,
+        expect_status_after_write: DeviceAudioOutputProbeStatus,
+    },
+    EnqueueError {
+        sample_rate_hz: u32,
+        max_queued_frames: usize,
+        render: DeviceAudioOutputProbeRender,
+        expect_error_contains: String,
+        expect_status_after_error: DeviceAudioOutputProbeStatus,
+    },
+    RecordStreamErrors {
+        sample_rate_hz: u32,
+        max_queued_frames: usize,
+        stream_errors: Vec<String>,
+        expect_status: DeviceAudioOutputProbeStatus,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeviceAudioOutputProbeRender {
+    pub sample_rate_hz: u32,
+    pub frames: Vec<AudioFrame>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExpectedDeviceAudioOutputProbeReceipt {
+    pub frame_count: usize,
+    pub queued: bool,
+    pub played: bool,
+}
+
+struct HostAudioFixtureRunner {
+    engine: HostAudioEngine<CaptureAudioBackend>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HostMidiFixture {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_host_midi_retained_message_capacity")]
+    pub retained_message_capacity: usize,
+    #[serde(default)]
+    pub input_decode_cases: Vec<MidiInputDecodeCase>,
+    pub expect: ExpectedHostMidiState,
+}
+
+fn default_host_midi_retained_message_capacity() -> usize {
+    16
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExpectedHostMidiState {
+    #[serde(default)]
+    pub mode: Option<HostMidiMode>,
+    #[serde(default)]
+    pub backend_name: Option<String>,
+    #[serde(default)]
+    pub queued_message_count: Option<u64>,
+    #[serde(default)]
+    pub ignored_message_count: Option<u64>,
+    #[serde(default)]
+    pub failed_message_count: Option<u64>,
+    #[serde(default)]
+    pub backend_total_sent_count: Option<u64>,
+    #[serde(default)]
+    pub capture_count: Option<usize>,
+    #[serde(default)]
+    pub captured_messages: Option<Vec<MidiMessage>>,
+    #[serde(default)]
+    pub captured_encoded_note_on_bytes: Option<Vec<[u8; 3]>>,
+    #[serde(default)]
+    pub last_event_type: Option<ExpectedHostMidiEventType>,
+    #[serde(default)]
+    pub last_event_message: Option<MidiMessage>,
+    #[serde(default)]
+    pub last_event_backend_receipt_message_count: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExpectedHostMidiEventType {
+    Queued,
+    Ignored,
+    Failed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MidiInputDecodeCase {
+    pub name: String,
+    pub bytes: Vec<u8>,
+    #[serde(default)]
+    pub expect_event: Option<MidiInputEvent>,
+    #[serde(default)]
+    pub expect_ignored: bool,
+    #[serde(default)]
+    pub expect_error_contains: Option<String>,
+}
+
+struct HostMidiFixtureRunner {
+    engine: HostMidiEngine<CaptureMidiBackend>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProjectRoundTripExpectation {
     #[serde(default)]
     pub post_restore_events: Vec<HardwareEvent>,
     #[serde(default)]
     pub expect_post_restore_output_sequence: Vec<MachineOutput>,
+    #[serde(default)]
+    pub project_file_round_trip: bool,
+    #[serde(default)]
+    pub invalid_project_json_cases: Vec<InvalidProjectJsonCase>,
     #[serde(default)]
     pub restore_playhead_ticks: Option<u64>,
     #[serde(default)]
@@ -51,6 +303,24 @@ pub struct ProjectRoundTripExpectation {
     pub expect: ExpectedState,
     #[serde(default)]
     pub expect_snapshot_version: Option<u16>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InvalidProjectJsonCase {
+    pub name: String,
+    pub mutation: ProjectJsonMutation,
+    pub expect_error_contains: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ProjectJsonMutation {
+    UnsupportedVersion { version: u16 },
+    InvalidRightsBoundary { rights_boundary: String },
+    DuplicateFirstPadAssignment,
+    UnknownRootField { field: String },
+    EventCountLessThanRecordedEvents,
+    LastPlaybackWithZeroEventCount,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -372,19 +642,55 @@ pub fn load_fixture(path: impl AsRef<Path>) -> Result<Fixture> {
 
 pub fn run_fixture(fixture: &Fixture) -> FixtureReport {
     let mut core = MpcCore::new();
+    let mut runtime_samples = RuntimeSampleLibrary::default();
     let mut output_sequence = Vec::new();
+    let mut details = Vec::new();
+    let mut host_audio = build_host_audio_runner(&mut details, fixture);
+    let mut host_midi = build_host_midi_runner(fixture);
 
     for event in &fixture.events {
-        output_sequence.extend(core.dispatch(event.clone()));
+        let outputs = core.dispatch(event.clone());
+        route_host_audio_outputs(&mut details, &mut host_audio, &outputs, &runtime_samples);
+        route_host_midi_outputs(&mut host_midi, &outputs);
+        output_sequence.extend(outputs);
     }
 
-    let mut details = Vec::new();
+    process_runtime_wav_imports(
+        &mut details,
+        fixture,
+        &mut core,
+        &mut runtime_samples,
+        &mut output_sequence,
+    );
+
+    for event in &fixture.post_runtime_wav_import_events {
+        let outputs = core.dispatch(event.clone());
+        route_host_audio_outputs(&mut details, &mut host_audio, &outputs, &runtime_samples);
+        route_host_midi_outputs(&mut host_midi, &outputs);
+        output_sequence.extend(outputs);
+    }
+
+    if let (Some(config), Some(runner)) = (&fixture.host_audio, host_audio.as_mut()) {
+        for frame_count in &config.advance_voice_frames {
+            runner.engine.advance_voice_frames(*frame_count);
+        }
+    }
+
     validate_expected_output_sequence(&mut details, &output_sequence, fixture);
     validate_expected_sample_metadata_created(&mut details, &output_sequence, fixture);
-    validate_expected_state(&mut details, "", core.state(), &fixture.expect);
+    validate_expected_state(
+        &mut details,
+        "",
+        core.state(),
+        &fixture.expect,
+        &runtime_samples,
+    );
     if let Some(project_round_trip) = &fixture.project_round_trip {
         validate_project_round_trip(&mut details, &core, project_round_trip);
     }
+    validate_host_audio(&mut details, fixture, host_audio.as_ref());
+    validate_device_audio_output_probe(&mut details, fixture);
+    validate_host_midi(&mut details, fixture, host_midi.as_ref());
 
     FixtureReport {
         id: fixture.id.clone(),
@@ -400,6 +706,227 @@ pub fn run_fixture_path(path: impl AsRef<Path>) -> Result<FixtureReport> {
         bail!("fixture {} has no source references", fixture.id);
     }
     Ok(run_fixture(&fixture))
+}
+
+fn build_host_audio_runner(
+    details: &mut Vec<String>,
+    fixture: &Fixture,
+) -> Option<HostAudioFixtureRunner> {
+    let Some(config) = &fixture.host_audio else {
+        return None;
+    };
+
+    let backend = CaptureAudioBackend::new(config.capture_history);
+    let engine =
+        match HostAudioEngine::new_with_voice_limit(backend, config.settings, config.voice_limit) {
+            Ok(mut engine) => {
+                engine.set_enabled(config.enabled);
+                engine
+            }
+            Err(error) => {
+                details.push(format!("host_audio setup error: {error}"));
+                return None;
+            }
+        };
+
+    Some(HostAudioFixtureRunner { engine })
+}
+
+fn build_host_midi_runner(fixture: &Fixture) -> Option<HostMidiFixtureRunner> {
+    let Some(config) = &fixture.host_midi else {
+        return None;
+    };
+
+    let backend = CaptureMidiBackend::new(config.retained_message_capacity);
+    let mut engine = HostMidiEngine::new(backend);
+    engine.set_enabled(config.enabled);
+
+    Some(HostMidiFixtureRunner { engine })
+}
+
+fn route_host_audio_outputs(
+    _details: &mut Vec<String>,
+    host_audio: &mut Option<HostAudioFixtureRunner>,
+    outputs: &[MachineOutput],
+    runtime_samples: &RuntimeSampleLibrary,
+) {
+    let Some(runner) = host_audio.as_mut() else {
+        return;
+    };
+
+    for output in outputs {
+        match output {
+            MachineOutput::SamplePlaybackIntent { intent } => {
+                runner
+                    .engine
+                    .play_intent_with_runtime_samples_and_render_summary(intent, runtime_samples);
+            }
+            MachineOutput::MetronomeClick { intent } => {
+                runner
+                    .engine
+                    .play_count_in_click_with_render_summary(intent);
+            }
+            MachineOutput::SampleReleaseIntent { intent } => {
+                runner.engine.release_intent(intent);
+            }
+            _ => {}
+        }
+    }
+}
+
+fn route_host_midi_outputs(
+    host_midi: &mut Option<HostMidiFixtureRunner>,
+    outputs: &[MachineOutput],
+) {
+    let Some(runner) = host_midi.as_mut() else {
+        return;
+    };
+
+    for output in outputs {
+        if let MachineOutput::MidiOutputIntent { intent } = output {
+            runner.engine.send_intent(intent);
+        }
+    }
+}
+
+fn process_runtime_wav_imports(
+    details: &mut Vec<String>,
+    fixture: &Fixture,
+    core: &mut MpcCore,
+    runtime_samples: &mut RuntimeSampleLibrary,
+    output_sequence: &mut Vec<MachineOutput>,
+) {
+    for (index, import) in fixture.runtime_wav_imports.iter().enumerate() {
+        let path = runtime_wav_fixture_path(&fixture.id, index);
+        let result = process_runtime_wav_import(&path, import, core, runtime_samples);
+
+        if path.exists() {
+            if let Err(error) = fs::remove_file(&path) {
+                details.push(format!(
+                    "runtime_wav_imports[{index}] cleanup error for {}: {error}",
+                    path.display()
+                ));
+            }
+        }
+
+        match result {
+            Ok(outputs) => output_sequence.extend(outputs),
+            Err(error) => details.push(format!("runtime_wav_imports[{index}] error: {error:#}")),
+        }
+    }
+}
+
+fn process_runtime_wav_import(
+    path: &Path,
+    import: &RuntimeWavImport,
+    core: &mut MpcCore,
+    runtime_samples: &mut RuntimeSampleLibrary,
+) -> Result<Vec<MachineOutput>> {
+    write_runtime_wav_fixture(path, import)?;
+    let payload = load_wav_sample_payload(path)
+        .with_context(|| format!("failed to load generated WAV fixture {}", path.display()))?;
+    let length_frames = payload.length_frames_u32();
+    let outputs =
+        core.import_sample_metadata_for_selected_pad(import.sample_name.clone(), length_frames);
+    let Some((sample_id, sample_name)) = outputs.iter().find_map(|output| {
+        if let MachineOutput::SampleMetadataCreated { sample, .. } = output {
+            Some((sample.id.clone(), sample.name.clone()))
+        } else {
+            None
+        }
+    }) else {
+        bail!("runtime WAV import did not create sample metadata");
+    };
+
+    runtime_samples.insert(sample_id, sample_name, payload);
+    Ok(outputs)
+}
+
+fn runtime_wav_fixture_path(fixture_id: &str, index: usize) -> PathBuf {
+    let safe_fixture_id = fixture_id
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() {
+                character
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default();
+
+    std::env::temp_dir().join(format!(
+        "mpc_conformance_{safe_fixture_id}_{}_{}_{}.wav",
+        std::process::id(),
+        index,
+        nanos
+    ))
+}
+
+fn write_runtime_wav_fixture(path: &Path, import: &RuntimeWavImport) -> Result<()> {
+    if import.channels != 1 && import.channels != 2 {
+        bail!(
+            "runtime WAV fixture supports mono or stereo PCM16 only, got {} channels",
+            import.channels
+        );
+    }
+    if import.sample_rate_hz == 0 {
+        bail!("runtime WAV fixture sample_rate_hz must be non-zero");
+    }
+    if import.samples.is_empty() {
+        bail!("runtime WAV fixture samples must not be empty");
+    }
+    if import.samples.len() % usize::from(import.channels) != 0 {
+        bail!(
+            "runtime WAV fixture sample count {} is not divisible by channel count {}",
+            import.samples.len(),
+            import.channels
+        );
+    }
+
+    let data_byte_count = import
+        .samples
+        .len()
+        .checked_mul(std::mem::size_of::<i16>())
+        .context("runtime WAV fixture data size overflow")?;
+    let data_byte_count =
+        u32::try_from(data_byte_count).context("runtime WAV fixture data exceeds u32 WAV size")?;
+    let riff_chunk_size = 36u32
+        .checked_add(data_byte_count)
+        .context("runtime WAV fixture RIFF size overflow")?;
+    let byte_rate = import
+        .sample_rate_hz
+        .checked_mul(u32::from(import.channels))
+        .and_then(|value| value.checked_mul(2))
+        .context("runtime WAV fixture byte rate overflow")?;
+    let block_align = import
+        .channels
+        .checked_mul(2)
+        .context("runtime WAV fixture block align overflow")?;
+
+    let mut file = fs::File::create(path)
+        .with_context(|| format!("failed to create runtime WAV fixture {}", path.display()))?;
+    file.write_all(b"RIFF")?;
+    file.write_all(&riff_chunk_size.to_le_bytes())?;
+    file.write_all(b"WAVE")?;
+    file.write_all(b"fmt ")?;
+    file.write_all(&16u32.to_le_bytes())?;
+    file.write_all(&1u16.to_le_bytes())?;
+    file.write_all(&import.channels.to_le_bytes())?;
+    file.write_all(&import.sample_rate_hz.to_le_bytes())?;
+    file.write_all(&byte_rate.to_le_bytes())?;
+    file.write_all(&block_align.to_le_bytes())?;
+    file.write_all(&16u16.to_le_bytes())?;
+    file.write_all(b"data")?;
+    file.write_all(&data_byte_count.to_le_bytes())?;
+    for sample in &import.samples {
+        file.write_all(&sample.to_le_bytes())?;
+    }
+
+    Ok(())
 }
 
 fn validate_expected_output_sequence(
@@ -473,6 +1000,811 @@ fn validate_expected_sample_metadata_created(
     }
 }
 
+fn validate_host_audio(
+    details: &mut Vec<String>,
+    fixture: &Fixture,
+    runner: Option<&HostAudioFixtureRunner>,
+) {
+    let Some(config) = &fixture.host_audio else {
+        return;
+    };
+    let Some(runner) = runner else {
+        details.push("host_audio state mismatch: host audio runner was not created".to_string());
+        return;
+    };
+
+    let state = runner.engine.state();
+    let expected = &config.expect;
+
+    if let Some(mode) = expected.mode {
+        push_mismatch(details, "host_audio.mode", &mode, &state.mode);
+    }
+    if let Some(backend_name) = &expected.backend_name {
+        push_mismatch(
+            details,
+            "host_audio.backend_name",
+            backend_name,
+            &state.backend_name,
+        );
+    }
+    if let Some(render_settings) = expected.render_settings {
+        push_mismatch(
+            details,
+            "host_audio.render_settings",
+            &render_settings,
+            &state.render_settings,
+        );
+    }
+    if let Some(queued_render_count) = expected.queued_render_count {
+        push_mismatch(
+            details,
+            "host_audio.queued_render_count",
+            &queued_render_count,
+            &state.queued_render_count,
+        );
+    }
+    if let Some(played_render_count) = expected.played_render_count {
+        push_mismatch(
+            details,
+            "host_audio.played_render_count",
+            &played_render_count,
+            &state.played_render_count,
+        );
+    }
+    if let Some(voice_limit) = expected.voice_limit {
+        push_mismatch(
+            details,
+            "host_audio.voice_limit",
+            &voice_limit,
+            &state.voice_limit,
+        );
+    }
+    if let Some(active_voice_count) = expected.active_voice_count {
+        push_mismatch(
+            details,
+            "host_audio.active_voice_count",
+            &active_voice_count,
+            &state.active_voice_count,
+        );
+    }
+    if let Some(completed_voice_count) = expected.completed_voice_count {
+        push_mismatch(
+            details,
+            "host_audio.completed_voice_count",
+            &completed_voice_count,
+            &state.completed_voice_count,
+        );
+    }
+    if let Some(stolen_voice_count) = expected.stolen_voice_count {
+        push_mismatch(
+            details,
+            "host_audio.stolen_voice_count",
+            &stolen_voice_count,
+            &state.stolen_voice_count,
+        );
+    }
+    if let Some(released_voice_count) = expected.released_voice_count {
+        push_mismatch(
+            details,
+            "host_audio.released_voice_count",
+            &released_voice_count,
+            &state.released_voice_count,
+        );
+    }
+    if let Some(choked_voice_count) = expected.choked_voice_count {
+        push_mismatch(
+            details,
+            "host_audio.choked_voice_count",
+            &choked_voice_count,
+            &state.choked_voice_count,
+        );
+    }
+    if let Some(active_voices) = &expected.active_voices {
+        push_mismatch(
+            details,
+            "host_audio.active_voices",
+            active_voices,
+            &state.active_voices,
+        );
+    }
+    validate_expected_host_audio_captures(details, runner, expected);
+
+    validate_expected_host_audio_last_event(details, &state, expected);
+}
+
+fn validate_expected_host_audio_captures(
+    details: &mut Vec<String>,
+    runner: &HostAudioFixtureRunner,
+    expected: &ExpectedHostAudioState,
+) {
+    let captures = runner.engine.backend().captured_renders();
+
+    if let Some(capture_count) = expected.capture_count {
+        push_mismatch(
+            details,
+            "host_audio.capture_count",
+            &capture_count,
+            &captures.len(),
+        );
+    }
+    if let Some(capture_frame_counts) = &expected.capture_frame_counts {
+        let actual = captures
+            .iter()
+            .map(|capture| capture.frame_count)
+            .collect::<Vec<_>>();
+        push_mismatch(
+            details,
+            "host_audio.capture_frame_counts",
+            capture_frame_counts,
+            &actual,
+        );
+    }
+    if let Some(capture_render_kinds) = &expected.capture_render_kinds {
+        let actual = captures
+            .iter()
+            .map(|capture| capture.summary.render_kind)
+            .collect::<Vec<_>>();
+        push_mismatch(
+            details,
+            "host_audio.capture_render_kinds",
+            capture_render_kinds,
+            &actual,
+        );
+    }
+    if let Some(capture_source_kinds) = &expected.capture_source_kinds {
+        let actual = captures
+            .iter()
+            .map(|capture| capture.summary.source_kind)
+            .collect::<Vec<_>>();
+        push_mismatch(
+            details,
+            "host_audio.capture_source_kinds",
+            capture_source_kinds,
+            &actual,
+        );
+    }
+    if let Some(capture_source_sample_names) = &expected.capture_source_sample_names {
+        let actual = captures
+            .iter()
+            .map(|capture| capture.summary.source_sample_name.clone())
+            .collect::<Vec<_>>();
+        push_mismatch(
+            details,
+            "host_audio.capture_source_sample_names",
+            capture_source_sample_names,
+            &actual,
+        );
+    }
+    if let Some(capture_count_in_ticks) = &expected.capture_count_in_ticks {
+        let actual = captures
+            .iter()
+            .map(|capture| capture.summary.count_in_tick)
+            .collect::<Vec<_>>();
+        push_mismatch(
+            details,
+            "host_audio.capture_count_in_ticks",
+            capture_count_in_ticks,
+            &actual,
+        );
+    }
+    if let Some(capture_accents) = &expected.capture_accents {
+        let actual = captures
+            .iter()
+            .map(|capture| capture.summary.accent)
+            .collect::<Vec<_>>();
+        push_mismatch(
+            details,
+            "host_audio.capture_accents",
+            capture_accents,
+            &actual,
+        );
+    }
+}
+
+fn validate_expected_host_audio_last_event(
+    details: &mut Vec<String>,
+    state: &HostAudioState,
+    expected: &ExpectedHostAudioState,
+) {
+    let Some(event) = &state.last_event else {
+        if expected.last_event_type.is_some() {
+            details.push("host_audio.last_event mismatch: expected event, got None".to_string());
+        }
+        return;
+    };
+
+    if let Some(event_type) = expected.last_event_type {
+        push_mismatch(
+            details,
+            "host_audio.last_event_type",
+            &event_type,
+            &host_audio_event_type(event),
+        );
+    }
+    if let Some(backend_name) = &expected.last_event_backend_name {
+        push_mismatch(
+            details,
+            "host_audio.last_event_backend_name",
+            backend_name,
+            &host_audio_event_backend_name(event).to_string(),
+        );
+    }
+    if let Some(render_kind) = expected.last_event_render_kind {
+        let actual = host_audio_event_render_kind(event);
+        if actual != Some(render_kind) {
+            details.push(format!(
+                "host_audio.last_event_render_kind mismatch: expected {:?}, got {:?}",
+                render_kind, actual
+            ));
+        }
+    }
+    if let Some(source_kind) = expected.last_event_source_kind {
+        let actual = host_audio_event_source_kind(event);
+        if actual != Some(source_kind) {
+            details.push(format!(
+                "host_audio.last_event_source_kind mismatch: expected {:?}, got {:?}",
+                source_kind, actual
+            ));
+        }
+    }
+    if let Some(frame_count) = expected.last_event_frame_count {
+        let actual = host_audio_event_frame_count(event);
+        if actual != Some(frame_count) {
+            details.push(format!(
+                "host_audio.last_event_frame_count mismatch: expected {}, got {:?}",
+                frame_count, actual
+            ));
+        }
+    }
+    if let Some(voice_id) = expected.last_event_voice_id {
+        let actual = host_audio_event_voice_id(event);
+        if actual != Some(voice_id) {
+            details.push(format!(
+                "host_audio.last_event_voice_id mismatch: expected {}, got {:?}",
+                voice_id, actual
+            ));
+        }
+    }
+    if let Some(stolen_voice_id) = expected.last_event_stolen_voice_id {
+        let actual = host_audio_event_stolen_voice_id(event);
+        if actual != Some(stolen_voice_id) {
+            details.push(format!(
+                "host_audio.last_event_stolen_voice_id mismatch: expected {}, got {:?}",
+                stolen_voice_id, actual
+            ));
+        }
+    }
+    if let Some(choked_voice_count) = expected.last_event_choked_voice_count {
+        let actual = host_audio_event_choked_voice_count(event);
+        if actual != Some(choked_voice_count) {
+            details.push(format!(
+                "host_audio.last_event_choked_voice_count mismatch: expected {}, got {:?}",
+                choked_voice_count, actual
+            ));
+        }
+    }
+}
+
+fn validate_device_audio_output_probe(details: &mut Vec<String>, fixture: &Fixture) {
+    let Some(config) = &fixture.device_audio_output_probe else {
+        return;
+    };
+
+    for (index, case) in config.cases.iter().enumerate() {
+        let label = format!("device_audio_output_probe.cases[{index}]");
+        validate_device_audio_output_probe_case(details, &label, case);
+    }
+}
+
+fn validate_device_audio_output_probe_case(
+    details: &mut Vec<String>,
+    label: &str,
+    case: &DeviceAudioOutputProbeCase,
+) {
+    match case {
+        DeviceAudioOutputProbeCase::CapacityClamp {
+            sample_rate_hz,
+            max_queued_frames,
+            expect_status,
+        } => {
+            let probe =
+                DeterministicDeviceAudioOutputProbe::new(*sample_rate_hz, *max_queued_frames);
+            push_mismatch(
+                details,
+                &format!("{label}.status"),
+                expect_status,
+                &probe.status(),
+            );
+        }
+        DeviceAudioOutputProbeCase::EnqueueAndWrite {
+            sample_rate_hz,
+            max_queued_frames,
+            render,
+            expect_receipt,
+            expect_status_after_enqueue,
+            write_frame_count,
+            write_channels,
+            expect_output_f32_bits,
+            expect_status_after_write,
+        } => {
+            let mut probe =
+                DeterministicDeviceAudioOutputProbe::new(*sample_rate_hz, *max_queued_frames);
+            let rendered = device_audio_output_probe_rendered_audio(render);
+            let receipt = match probe.enqueue_render(&rendered) {
+                Ok(receipt) => receipt,
+                Err(error) => {
+                    details.push(format!("{label}.enqueue error: {error}"));
+                    return;
+                }
+            };
+            let actual_receipt = expected_device_audio_output_probe_receipt(receipt);
+            push_mismatch(
+                details,
+                &format!("{label}.receipt"),
+                expect_receipt,
+                &actual_receipt,
+            );
+            push_mismatch(
+                details,
+                &format!("{label}.status_after_enqueue"),
+                expect_status_after_enqueue,
+                &probe.status(),
+            );
+
+            let output = probe.write_f32_output(*write_frame_count, *write_channels);
+            let actual_output_f32_bits = output
+                .iter()
+                .map(|sample| sample.to_bits())
+                .collect::<Vec<_>>();
+            push_mismatch(
+                details,
+                &format!("{label}.output_f32_bits"),
+                expect_output_f32_bits,
+                &actual_output_f32_bits,
+            );
+            push_mismatch(
+                details,
+                &format!("{label}.status_after_write"),
+                expect_status_after_write,
+                &probe.status(),
+            );
+        }
+        DeviceAudioOutputProbeCase::EnqueueError {
+            sample_rate_hz,
+            max_queued_frames,
+            render,
+            expect_error_contains,
+            expect_status_after_error,
+        } => {
+            let mut probe =
+                DeterministicDeviceAudioOutputProbe::new(*sample_rate_hz, *max_queued_frames);
+            let rendered = device_audio_output_probe_rendered_audio(render);
+            match probe.enqueue_render(&rendered) {
+                Ok(receipt) => details.push(format!(
+                    "{label}.enqueue error mismatch: expected substring {:?}, got receipt {:?}",
+                    expect_error_contains,
+                    expected_device_audio_output_probe_receipt(receipt)
+                )),
+                Err(error) => {
+                    let message = error.to_string();
+                    if !message.contains(expect_error_contains) {
+                        details.push(format!(
+                            "{label}.enqueue error mismatch: expected substring {:?}, got {:?}",
+                            expect_error_contains, message
+                        ));
+                    }
+                }
+            }
+            push_mismatch(
+                details,
+                &format!("{label}.status_after_error"),
+                expect_status_after_error,
+                &probe.status(),
+            );
+        }
+        DeviceAudioOutputProbeCase::RecordStreamErrors {
+            sample_rate_hz,
+            max_queued_frames,
+            stream_errors,
+            expect_status,
+        } => {
+            let mut probe =
+                DeterministicDeviceAudioOutputProbe::new(*sample_rate_hz, *max_queued_frames);
+            for error in stream_errors {
+                probe.record_stream_error(error);
+            }
+            push_mismatch(
+                details,
+                &format!("{label}.status"),
+                expect_status,
+                &probe.status(),
+            );
+        }
+    }
+}
+
+fn device_audio_output_probe_rendered_audio(
+    render: &DeviceAudioOutputProbeRender,
+) -> RenderedAudio {
+    let frame_count = render.frames.len();
+    let peak_left = render
+        .frames
+        .iter()
+        .map(|frame| i16_peak_amplitude(frame.left))
+        .max()
+        .unwrap_or(0);
+    let peak_right = render
+        .frames
+        .iter()
+        .map(|frame| i16_peak_amplitude(frame.right))
+        .max()
+        .unwrap_or(0);
+    let end_frame = frame_count
+        .checked_sub(1)
+        .and_then(|frame| u32::try_from(frame).ok())
+        .unwrap_or(0);
+    let window_length_frames = u32::try_from(frame_count).unwrap_or(u32::MAX);
+
+    RenderedAudio {
+        settings: AudioRenderSettings {
+            sample_rate_hz: render.sample_rate_hz,
+            frame_count,
+        },
+        summary: AudioRenderSummary {
+            render_kind: AudioRenderKind::SamplePlayback,
+            sample_rate_hz: render.sample_rate_hz,
+            frame_count,
+            source_sample_id: "device_output_probe".to_string(),
+            source_sample_name: "DEVICE-PROBE".to_string(),
+            selected_track: 1,
+            program_index: 1,
+            program_name: "Program01".to_string(),
+            bank: PadBank::A,
+            pad_number: 1,
+            velocity: 100,
+            level: 100,
+            pan: 0,
+            tune_cents: 0,
+            mute_group: 0,
+            start_frame: 0,
+            end_frame,
+            window_length_frames,
+            peak_left,
+            peak_right,
+            peak_amplitude: peak_left.max(peak_right),
+            channel_balance: ChannelBalance::Center,
+            source_kind: AudioSourceKind::RightsSafeGenerated,
+            loaded_audio_byte_count: 0,
+            count_in_tick: None,
+            bar_index: None,
+            beat_index: None,
+            accent: None,
+        },
+        frames: render.frames.clone(),
+    }
+}
+
+fn i16_peak_amplitude(sample: i16) -> i16 {
+    let amplitude = i32::from(sample).abs().min(i32::from(i16::MAX));
+    i16::try_from(amplitude).unwrap_or(i16::MAX)
+}
+
+fn expected_device_audio_output_probe_receipt(
+    receipt: HostAudioBackendReceipt,
+) -> ExpectedDeviceAudioOutputProbeReceipt {
+    ExpectedDeviceAudioOutputProbeReceipt {
+        frame_count: receipt.frame_count(),
+        queued: receipt.is_queued(),
+        played: receipt.is_played(),
+    }
+}
+
+fn validate_host_midi(
+    details: &mut Vec<String>,
+    fixture: &Fixture,
+    runner: Option<&HostMidiFixtureRunner>,
+) {
+    let Some(config) = &fixture.host_midi else {
+        return;
+    };
+
+    validate_midi_input_decode_cases(details, &config.input_decode_cases);
+
+    let Some(runner) = runner else {
+        details.push("host_midi state mismatch: host MIDI runner was not created".to_string());
+        return;
+    };
+
+    let state = runner.engine.state();
+    let expected = &config.expect;
+
+    if let Some(mode) = expected.mode {
+        push_mismatch(details, "host_midi.mode", &mode, &state.mode);
+    }
+    if let Some(backend_name) = &expected.backend_name {
+        push_mismatch(
+            details,
+            "host_midi.backend_name",
+            backend_name,
+            &state.backend_name,
+        );
+    }
+    if let Some(queued_message_count) = expected.queued_message_count {
+        push_mismatch(
+            details,
+            "host_midi.queued_message_count",
+            &queued_message_count,
+            &state.queued_message_count,
+        );
+    }
+    if let Some(ignored_message_count) = expected.ignored_message_count {
+        push_mismatch(
+            details,
+            "host_midi.ignored_message_count",
+            &ignored_message_count,
+            &state.ignored_message_count,
+        );
+    }
+    if let Some(failed_message_count) = expected.failed_message_count {
+        push_mismatch(
+            details,
+            "host_midi.failed_message_count",
+            &failed_message_count,
+            &state.failed_message_count,
+        );
+    }
+
+    validate_expected_host_midi_captures(details, runner, expected);
+    validate_expected_host_midi_last_event(details, &state, expected);
+}
+
+fn validate_expected_host_midi_captures(
+    details: &mut Vec<String>,
+    runner: &HostMidiFixtureRunner,
+    expected: &ExpectedHostMidiState,
+) {
+    let backend = runner.engine.backend();
+    let messages = backend.messages();
+
+    if let Some(backend_total_sent_count) = expected.backend_total_sent_count {
+        push_mismatch(
+            details,
+            "host_midi.backend_total_sent_count",
+            &backend_total_sent_count,
+            &backend.total_sent_count(),
+        );
+    }
+    if let Some(capture_count) = expected.capture_count {
+        push_mismatch(
+            details,
+            "host_midi.capture_count",
+            &capture_count,
+            &messages.len(),
+        );
+    }
+    if let Some(captured_messages) = &expected.captured_messages {
+        push_mismatch(
+            details,
+            "host_midi.captured_messages",
+            captured_messages,
+            &messages.to_vec(),
+        );
+    }
+    if let Some(captured_encoded_note_on_bytes) = &expected.captured_encoded_note_on_bytes {
+        let mut encoded_messages = Vec::with_capacity(messages.len());
+        for (index, message) in messages.iter().enumerate() {
+            match encode_note_on_message(message) {
+                Ok(bytes) => encoded_messages.push(bytes),
+                Err(error) => details.push(format!(
+                    "host_midi.captured_encoded_note_on_bytes[{index}] encode error: {error}"
+                )),
+            }
+        }
+        push_mismatch(
+            details,
+            "host_midi.captured_encoded_note_on_bytes",
+            captured_encoded_note_on_bytes,
+            &encoded_messages,
+        );
+    }
+}
+
+fn validate_expected_host_midi_last_event(
+    details: &mut Vec<String>,
+    state: &HostMidiState,
+    expected: &ExpectedHostMidiState,
+) {
+    let Some(event) = &state.last_event else {
+        if expected.last_event_type.is_some()
+            || expected.last_event_message.is_some()
+            || expected.last_event_backend_receipt_message_count.is_some()
+        {
+            details.push("host_midi.last_event mismatch: expected event, got None".to_string());
+        }
+        return;
+    };
+
+    if let Some(event_type) = expected.last_event_type {
+        push_mismatch(
+            details,
+            "host_midi.last_event_type",
+            &event_type,
+            &host_midi_event_type(event),
+        );
+    }
+    if let Some(message) = &expected.last_event_message {
+        let actual = host_midi_event_message(event).cloned();
+        if actual.as_ref() != Some(message) {
+            details.push(format!(
+                "host_midi.last_event_message mismatch: expected {:?}, got {:?}",
+                message, actual
+            ));
+        }
+    }
+    if let Some(message_count) = expected.last_event_backend_receipt_message_count {
+        let actual = host_midi_event_backend_receipt_message_count(event);
+        if actual != Some(message_count) {
+            details.push(format!(
+                "host_midi.last_event_backend_receipt_message_count mismatch: expected {}, got {:?}",
+                message_count, actual
+            ));
+        }
+    }
+}
+
+fn host_midi_event_type(event: &HostMidiEvent) -> ExpectedHostMidiEventType {
+    match event {
+        HostMidiEvent::Queued { .. } => ExpectedHostMidiEventType::Queued,
+        HostMidiEvent::Ignored { .. } => ExpectedHostMidiEventType::Ignored,
+        HostMidiEvent::Failed { .. } => ExpectedHostMidiEventType::Failed,
+    }
+}
+
+fn host_midi_event_message(event: &HostMidiEvent) -> Option<&MidiMessage> {
+    match event {
+        HostMidiEvent::Queued { receipt } => Some(&receipt.message),
+        HostMidiEvent::Ignored { .. } | HostMidiEvent::Failed { .. } => None,
+    }
+}
+
+fn host_midi_event_backend_receipt_message_count(event: &HostMidiEvent) -> Option<u64> {
+    match event {
+        HostMidiEvent::Queued { receipt } => Some(receipt.backend_receipt.message_count),
+        HostMidiEvent::Ignored { .. } | HostMidiEvent::Failed { .. } => None,
+    }
+}
+
+fn validate_midi_input_decode_cases(details: &mut Vec<String>, cases: &[MidiInputDecodeCase]) {
+    for case in cases {
+        let result = decode_midi_input_event(&case.bytes);
+        let label = format!("host_midi.input_decode_cases.{}", case.name);
+
+        if let Some(expected_error) = &case.expect_error_contains {
+            match result {
+                Ok(actual) => details.push(format!(
+                    "{label} error mismatch: expected substring {:?}, got decoded {:?}",
+                    expected_error, actual
+                )),
+                Err(error) if !error.contains(expected_error) => details.push(format!(
+                    "{label} error mismatch: expected substring {:?}, got {:?}",
+                    expected_error, error
+                )),
+                Err(_) => {}
+            }
+            continue;
+        }
+
+        if case.expect_ignored {
+            match result {
+                Ok(None) => {}
+                Ok(Some(actual)) => details.push(format!(
+                    "{label} ignored mismatch: expected None, got {:?}",
+                    actual
+                )),
+                Err(error) => details.push(format!(
+                    "{label} ignored mismatch: expected None, got error {:?}",
+                    error
+                )),
+            }
+            continue;
+        }
+
+        if let Some(expected_event) = &case.expect_event {
+            match result {
+                Ok(Some(actual)) => push_mismatch(details, &label, expected_event, &actual),
+                Ok(None) => details.push(format!(
+                    "{label} event mismatch: expected {:?}, got None",
+                    expected_event
+                )),
+                Err(error) => details.push(format!(
+                    "{label} event mismatch: expected {:?}, got error {:?}",
+                    expected_event, error
+                )),
+            }
+            continue;
+        }
+
+        details.push(format!(
+            "{label} expectation missing: set expect_event, expect_ignored, or expect_error_contains"
+        ));
+    }
+}
+
+fn host_audio_event_type(event: &HostAudioEvent) -> ExpectedHostAudioEventType {
+    match event {
+        HostAudioEvent::Ignored { .. } => ExpectedHostAudioEventType::Ignored,
+        HostAudioEvent::Enqueued { .. } => ExpectedHostAudioEventType::Enqueued,
+        HostAudioEvent::Released { .. } => ExpectedHostAudioEventType::Released,
+        HostAudioEvent::Failed { .. } => ExpectedHostAudioEventType::Failed,
+    }
+}
+
+fn host_audio_event_backend_name(event: &HostAudioEvent) -> &str {
+    match event {
+        HostAudioEvent::Ignored { backend_name, .. }
+        | HostAudioEvent::Enqueued { backend_name, .. }
+        | HostAudioEvent::Released { backend_name, .. }
+        | HostAudioEvent::Failed { backend_name, .. } => backend_name,
+    }
+}
+
+fn host_audio_event_render_kind(event: &HostAudioEvent) -> Option<AudioRenderKind> {
+    match event {
+        HostAudioEvent::Enqueued { receipt, .. } => Some(receipt.summary.render_kind),
+        HostAudioEvent::Failed { summary, .. } => {
+            summary.as_ref().map(|summary| summary.render_kind)
+        }
+        _ => None,
+    }
+}
+
+fn host_audio_event_source_kind(event: &HostAudioEvent) -> Option<AudioSourceKind> {
+    match event {
+        HostAudioEvent::Enqueued { receipt, .. } => Some(receipt.summary.source_kind),
+        HostAudioEvent::Failed { summary, .. } => {
+            summary.as_ref().map(|summary| summary.source_kind)
+        }
+        _ => None,
+    }
+}
+
+fn host_audio_event_frame_count(event: &HostAudioEvent) -> Option<usize> {
+    match event {
+        HostAudioEvent::Enqueued { receipt, .. } => Some(receipt.frame_count),
+        _ => None,
+    }
+}
+
+fn host_audio_event_voice_id(event: &HostAudioEvent) -> Option<u64> {
+    match event {
+        HostAudioEvent::Enqueued { receipt, .. } => receipt
+            .voice_allocation
+            .as_ref()
+            .map(|allocation| allocation.voice_id),
+        _ => None,
+    }
+}
+
+fn host_audio_event_stolen_voice_id(event: &HostAudioEvent) -> Option<u64> {
+    match event {
+        HostAudioEvent::Enqueued { receipt, .. } => receipt
+            .voice_allocation
+            .as_ref()
+            .and_then(|allocation| allocation.stolen_voice_id),
+        _ => None,
+    }
+}
+
+fn host_audio_event_choked_voice_count(event: &HostAudioEvent) -> Option<usize> {
+    match event {
+        HostAudioEvent::Enqueued { receipt, .. } => receipt
+            .voice_allocation
+            .as_ref()
+            .map(|allocation| allocation.choked_voice_count),
+        _ => None,
+    }
+}
+
 fn validate_project_round_trip(
     details: &mut Vec<String>,
     core: &MpcCore,
@@ -529,7 +1861,370 @@ fn validate_project_round_trip(
         "project_round_trip.",
         restored.state(),
         &expected.expect,
+        &RuntimeSampleLibrary::default(),
     );
+
+    if expected.project_file_round_trip {
+        validate_project_file_round_trip(details, core, expected);
+    }
+
+    validate_invalid_project_json_cases(details, core, &expected.invalid_project_json_cases);
+}
+
+fn validate_project_file_round_trip(
+    details: &mut Vec<String>,
+    core: &MpcCore,
+    expected: &ProjectRoundTripExpectation,
+) {
+    let temp_dir = project_round_trip_temp_dir("project_file");
+    let nested_parent = temp_dir.join("nested").join("projects");
+    let project_path = nested_parent.join(format!("fixture{PROJECT_FILE_SUFFIX}"));
+
+    let save_report = match save_project_file(core, &project_path) {
+        Ok(report) => report,
+        Err(error) => {
+            details.push(format!("project_round_trip.file.save error: {error}"));
+            cleanup_project_round_trip_temp_dir(details, &temp_dir);
+            return;
+        }
+    };
+
+    if !nested_parent.is_dir() {
+        details.push(format!(
+            "project_round_trip.file.parent_dir missing after save: {}",
+            nested_parent.display()
+        ));
+    }
+    if save_report.byte_count == 0 {
+        details.push("project_round_trip.file.save byte_count is zero".to_string());
+    }
+
+    let saved_json = match fs::read_to_string(&project_path) {
+        Ok(json) => json,
+        Err(error) => {
+            details.push(format!(
+                "project_round_trip.file.read saved JSON error: {error}"
+            ));
+            cleanup_project_round_trip_temp_dir(details, &temp_dir);
+            return;
+        }
+    };
+    validate_project_file_json_boundary(details, &saved_json);
+
+    let load = match load_project_file_with_report(&project_path) {
+        Ok(load) => load,
+        Err(error) => {
+            details.push(format!("project_round_trip.file.load error: {error}"));
+            cleanup_project_round_trip_temp_dir(details, &temp_dir);
+            return;
+        }
+    };
+    let expected_report_path = match fs::canonicalize(&project_path) {
+        Ok(path) => Some(path),
+        Err(error) => {
+            details.push(format!(
+                "project_round_trip.file.canonicalize path error: {error}"
+            ));
+            None
+        }
+    };
+
+    if load.report.byte_count == 0 {
+        details.push("project_round_trip.file.load byte_count is zero".to_string());
+    }
+    if save_report.byte_count != load.report.byte_count {
+        details.push(format!(
+            "project_round_trip.file.byte_count mismatch: save {}, load {}",
+            save_report.byte_count, load.report.byte_count
+        ));
+    }
+    if save_report.snapshot_version != load.report.snapshot_version {
+        details.push(format!(
+            "project_round_trip.file.snapshot_version mismatch: save {}, load {}",
+            save_report.snapshot_version, load.report.snapshot_version
+        ));
+    }
+    if save_report.path != load.report.path {
+        details.push(format!(
+            "project_round_trip.file.report_path mismatch: save {}, load {}",
+            save_report.path.display(),
+            load.report.path.display()
+        ));
+    }
+    if let Some(expected_report_path) = expected_report_path {
+        if save_report.path != expected_report_path {
+            details.push(format!(
+                "project_round_trip.file.report_path expectation mismatch: expected {}, got {}",
+                expected_report_path.display(),
+                save_report.path.display()
+            ));
+        }
+        if !expected_report_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.ends_with(PROJECT_FILE_SUFFIX))
+        {
+            details.push(format!(
+                "project_round_trip.file.report_path suffix mismatch: {}",
+                expected_report_path.display()
+            ));
+        }
+    }
+
+    let expected_version = expected
+        .expect_snapshot_version
+        .unwrap_or(PROJECT_SNAPSHOT_VERSION);
+    if save_report.snapshot_version != expected_version {
+        details.push(format!(
+            "project_round_trip.file.snapshot_version expectation mismatch: expected {}, got {}",
+            expected_version, save_report.snapshot_version
+        ));
+    }
+
+    let mut restored = MpcCore::new();
+    if let Err(error) = restored.restore_project_snapshot(load.snapshot) {
+        details.push(format!("project_round_trip.file.restore error: {error}"));
+        cleanup_project_round_trip_temp_dir(details, &temp_dir);
+        return;
+    }
+
+    let mut post_load_output_sequence = Vec::new();
+    for event in &expected.post_restore_events {
+        post_load_output_sequence.extend(restored.dispatch(event.clone()));
+    }
+    validate_output_sequence(
+        details,
+        "project_round_trip.file.post_load_output_sequence",
+        &post_load_output_sequence,
+        &expected.expect_post_restore_output_sequence,
+    );
+
+    validate_expected_state(
+        details,
+        "project_round_trip.file.",
+        restored.state(),
+        &expected.expect,
+        &RuntimeSampleLibrary::default(),
+    );
+
+    cleanup_project_round_trip_temp_dir(details, &temp_dir);
+}
+
+fn validate_project_file_json_boundary(details: &mut Vec<String>, saved_json: &str) {
+    match serde_json::from_str::<serde_json::Value>(saved_json) {
+        Ok(value) => {
+            let rights_boundary = value
+                .get("rights_boundary")
+                .and_then(serde_json::Value::as_str);
+            if rights_boundary != Some(PROJECT_FILE_RIGHTS_BOUNDARY) {
+                details.push(format!(
+                    "project_round_trip.file.saved_json rights_boundary mismatch: expected {:?}, got {:?}",
+                    PROJECT_FILE_RIGHTS_BOUNDARY, rights_boundary
+                ));
+            }
+            let mut forbidden_paths = Vec::new();
+            collect_forbidden_project_json_keys(&value, "", &mut forbidden_paths);
+            if !forbidden_paths.is_empty() {
+                details.push(format!(
+                    "project_round_trip.file.saved_json contains rights-unsafe fields: {:?}",
+                    forbidden_paths
+                ));
+            }
+        }
+        Err(error) => {
+            details.push(format!(
+                "project_round_trip.file.saved_json parse error: {error}"
+            ));
+        }
+    }
+}
+
+fn collect_forbidden_project_json_keys(
+    value: &serde_json::Value,
+    path: &str,
+    forbidden_paths: &mut Vec<String>,
+) {
+    match value {
+        serde_json::Value::Object(object) => {
+            for (key, child) in object {
+                let child_path = if path.is_empty() {
+                    key.to_string()
+                } else {
+                    format!("{path}.{key}")
+                };
+                if matches!(
+                    key.as_str(),
+                    "audio_bytes" | "sample_file_contents" | "file_path" | "sample_file_path"
+                ) {
+                    forbidden_paths.push(child_path.clone());
+                }
+                collect_forbidden_project_json_keys(child, &child_path, forbidden_paths);
+            }
+        }
+        serde_json::Value::Array(values) => {
+            for (index, child) in values.iter().enumerate() {
+                collect_forbidden_project_json_keys(
+                    child,
+                    &format!("{path}[{index}]"),
+                    forbidden_paths,
+                );
+            }
+        }
+        _ => {}
+    }
+}
+
+fn validate_invalid_project_json_cases(
+    details: &mut Vec<String>,
+    core: &MpcCore,
+    cases: &[InvalidProjectJsonCase],
+) {
+    for case in cases {
+        let mut value = match serde_json::to_value(core.export_project_snapshot()) {
+            Ok(value) => value,
+            Err(error) => {
+                details.push(format!(
+                    "project_round_trip.invalid_project_json.{} encode error: {error}",
+                    case.name
+                ));
+                continue;
+            }
+        };
+
+        if let Err(error) = apply_project_json_mutation(&mut value, &case.mutation) {
+            details.push(format!(
+                "project_round_trip.invalid_project_json.{} mutation error: {error}",
+                case.name
+            ));
+            continue;
+        }
+
+        let json = match serde_json::to_string_pretty(&value) {
+            Ok(json) => json,
+            Err(error) => {
+                details.push(format!(
+                    "project_round_trip.invalid_project_json.{} encode mutated JSON error: {error}",
+                    case.name
+                ));
+                continue;
+            }
+        };
+
+        match MpcCore::from_project_json(&json) {
+            Ok(_) => details.push(format!(
+                "project_round_trip.invalid_project_json.{} unexpectedly passed",
+                case.name
+            )),
+            Err(error) => {
+                let error = error.to_string();
+                if !error.contains(&case.expect_error_contains) {
+                    details.push(format!(
+                        "project_round_trip.invalid_project_json.{} error mismatch: expected substring {:?}, got {:?}",
+                        case.name, case.expect_error_contains, error
+                    ));
+                }
+            }
+        }
+    }
+}
+
+fn apply_project_json_mutation(
+    value: &mut serde_json::Value,
+    mutation: &ProjectJsonMutation,
+) -> Result<()> {
+    match mutation {
+        ProjectJsonMutation::UnsupportedVersion { version } => {
+            set_project_json_pointer(value, "/version", serde_json::json!(version))?;
+        }
+        ProjectJsonMutation::InvalidRightsBoundary { rights_boundary } => {
+            set_project_json_pointer(
+                value,
+                "/rights_boundary",
+                serde_json::json!(rights_boundary),
+            )?;
+        }
+        ProjectJsonMutation::DuplicateFirstPadAssignment => {
+            let assignments = value
+                .pointer_mut("/program/pad_assignments")
+                .and_then(serde_json::Value::as_array_mut)
+                .context("program.pad_assignments must be an array")?;
+            let first = assignments
+                .first()
+                .cloned()
+                .context("program.pad_assignments must not be empty")?;
+            assignments.push(first);
+        }
+        ProjectJsonMutation::UnknownRootField { field } => {
+            let object = value
+                .as_object_mut()
+                .context("project snapshot root must be an object")?;
+            object.insert(
+                field.clone(),
+                serde_json::json!("rights-unsafe fixture mutation payload"),
+            );
+        }
+        ProjectJsonMutation::EventCountLessThanRecordedEvents => {
+            let recorded_event_count = value
+                .pointer("/sequence/recorded_events")
+                .and_then(serde_json::Value::as_array)
+                .context("sequence.recorded_events must be an array")?
+                .len();
+            if recorded_event_count == 0 {
+                bail!("sequence.recorded_events must not be empty for this mutation");
+            }
+            set_project_json_pointer(
+                value,
+                "/machine/event_count",
+                serde_json::json!(recorded_event_count - 1),
+            )?;
+        }
+        ProjectJsonMutation::LastPlaybackWithZeroEventCount => {
+            if value
+                .pointer("/machine/last_playback")
+                .is_none_or(|value| value.is_null())
+            {
+                bail!("machine.last_playback must be present for this mutation");
+            }
+            set_project_json_pointer(value, "/machine/event_count", serde_json::json!(0))?;
+            set_project_json_pointer(value, "/sequence/recorded_events", serde_json::json!([]))?;
+        }
+    }
+
+    Ok(())
+}
+
+fn set_project_json_pointer(
+    value: &mut serde_json::Value,
+    pointer: &str,
+    replacement: serde_json::Value,
+) -> Result<()> {
+    let target = value
+        .pointer_mut(pointer)
+        .with_context(|| format!("project snapshot JSON pointer {pointer} must exist"))?;
+    *target = replacement;
+    Ok(())
+}
+
+fn project_round_trip_temp_dir(prefix: &str) -> PathBuf {
+    let counter = PROJECT_ROUND_TRIP_TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    std::env::temp_dir().join(format!(
+        "mpc_conformance_{prefix}_{}_{}",
+        std::process::id(),
+        counter
+    ))
+}
+
+fn cleanup_project_round_trip_temp_dir(details: &mut Vec<String>, temp_dir: &Path) {
+    if !temp_dir.exists() {
+        return;
+    }
+
+    if let Err(error) = fs::remove_dir_all(temp_dir) {
+        details.push(format!(
+            "project_round_trip.file.cleanup error for {}: {error}",
+            temp_dir.display()
+        ));
+    }
 }
 
 fn validate_expected_state(
@@ -537,6 +2232,7 @@ fn validate_expected_state(
     prefix: &str,
     state: &MpcState,
     expected: &ExpectedState,
+    runtime_samples: &RuntimeSampleLibrary,
 ) {
     if state.mode != expected.mode {
         details.push(format!(
@@ -1087,6 +2783,7 @@ fn validate_expected_state(
             details,
             state.last_playback.as_ref(),
             expected_audio_render,
+            runtime_samples,
         );
     }
 }
@@ -1095,6 +2792,7 @@ fn validate_expected_audio_render(
     details: &mut Vec<String>,
     last_playback: Option<&SamplePlaybackResolution>,
     expected: &ExpectedAudioRender,
+    runtime_samples: &RuntimeSampleLibrary,
 ) {
     let Some(SamplePlaybackResolution::Intent { intent }) = last_playback else {
         details.push(format!(
@@ -1103,13 +2801,14 @@ fn validate_expected_audio_render(
         return;
     };
 
-    let rendered = match render_intent(intent, expected.settings) {
-        Ok(rendered) => rendered,
-        Err(error) => {
-            details.push(format!("last_audio_render render error: {error}"));
-            return;
-        }
-    };
+    let rendered =
+        match render_intent_with_runtime_samples(intent, expected.settings, runtime_samples) {
+            Ok(rendered) => rendered,
+            Err(error) => {
+                details.push(format!("last_audio_render render error: {error}"));
+                return;
+            }
+        };
     let summary = rendered.summary;
 
     push_mismatch(
@@ -1312,7 +3011,12 @@ mod tests {
         };
         let mut details = Vec::new();
 
-        validate_expected_audio_render(&mut details, Some(&playback), &expected);
+        validate_expected_audio_render(
+            &mut details,
+            Some(&playback),
+            &expected,
+            &RuntimeSampleLibrary::default(),
+        );
 
         assert_eq!(
             details,

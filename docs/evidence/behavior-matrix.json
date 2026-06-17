@@ -1591,7 +1591,7 @@
       "id": "host.midi.device-io-foundation",
       "name": "Optional native MIDI device input/output adapter routes note events through host MIDI",
       "area": "midi_host",
-      "state": "unit-backed-internal-spec",
+      "state": "fixture-backed-internal-spec",
       "evidence": [
         {
           "source_id": "midi-device-io-foundation-slice-plan",
@@ -1695,6 +1695,7 @@
       },
       "tolerance": "No native MIDI timing or latency tolerance is claimed; host OS device behavior is platform-dependent.",
       "fixture_refs": [
+        "crates/mpc_conformance/tests/fixtures/midi_output_capture_foundation.json",
         "crates/mpc_midi/src/lib.rs",
         "apps/desktop/src/main.rs",
         "docs/superpowers/plans/2026-06-14-mpc2000xl-midi-device-io-foundation.md"
@@ -1708,7 +1709,7 @@
       "id": "audio.host.disabled-ignore",
       "name": "Disabled host audio ignores playback without backend enqueue",
       "area": "audio_host",
-      "state": "unit-backed-internal-spec",
+      "state": "fixture-backed-internal-spec",
       "evidence": [
         {
           "source_id": "host-audio-plumbing-slice-plan",
@@ -1769,6 +1770,7 @@
       },
       "tolerance": null,
       "fixture_refs": [
+        "crates/mpc_conformance/tests/fixtures/host_audio_disabled_ignore.json",
         "crates/mpc_audio/src/lib.rs",
         "apps/desktop/src/main.rs"
       ],
@@ -1780,7 +1782,7 @@
       "id": "audio.host.capture-backend-enqueue",
       "name": "Enabled host audio enqueues deterministic rendered audio through capture backend",
       "area": "audio_host",
-      "state": "unit-backed-internal-spec",
+      "state": "fixture-backed-internal-spec",
       "evidence": [
         {
           "source_id": "host-audio-plumbing-slice-plan",
@@ -1864,6 +1866,8 @@
       },
       "tolerance": null,
       "fixture_refs": [
+        "crates/mpc_conformance/tests/fixtures/host_audio_capture_voice_lifecycle.json",
+        "crates/mpc_conformance/tests/fixtures/count_in_click_transport.json",
         "crates/mpc_audio/src/lib.rs",
         "apps/desktop/src/main.rs"
       ],
@@ -1875,7 +1879,7 @@
       "id": "audio.host.device-output-foundation",
       "name": "Optional host audio default output device backend",
       "area": "audio_host",
-      "state": "unit-backed-internal-spec",
+      "state": "fixture-backed-internal-spec",
       "evidence": [
         {
           "source_id": "host-audio-device-output-foundation-slice-plan",
@@ -1969,6 +1973,7 @@
       },
       "tolerance": "No MPC2000XL latency or DAC tolerance is claimed; host callback timing remains platform-dependent.",
       "fixture_refs": [
+        "crates/mpc_conformance/tests/fixtures/host_audio_device_output_probe.json",
         "crates/mpc_audio/src/lib.rs",
         "apps/desktop/src/main.rs",
         "docs/superpowers/plans/2026-06-14-mpc2000xl-host-audio-device-output-foundation.md"
@@ -1982,7 +1987,7 @@
       "id": "audio.metronome.count-in-click-render-routing",
       "name": "Count-in metronome click intents render deterministic PCM and route through host audio",
       "area": "audio_host",
-      "state": "unit-backed-internal-spec",
+      "state": "fixture-backed-internal-spec",
       "evidence": [
         {
           "source_id": "metronome-click-audio-foundation-slice-plan",
@@ -2084,6 +2089,7 @@
       },
       "tolerance": null,
       "fixture_refs": [
+        "crates/mpc_conformance/tests/fixtures/count_in_click_transport.json",
         "crates/mpc_audio/src/lib.rs",
         "apps/desktop/src/main.rs"
       ],
@@ -2096,7 +2102,7 @@
       "id": "audio.host.voice-lifecycle-foundation",
       "name": "Host audio tracks deterministic active voices and stealing",
       "area": "audio_host",
-      "state": "unit-backed-internal-spec",
+      "state": "fixture-backed-internal-spec",
       "evidence": [
         {
           "source_id": "host-audio-voice-lifecycle-foundation-slice-plan",
@@ -2221,6 +2227,8 @@
       },
       "tolerance": null,
       "fixture_refs": [
+        "crates/mpc_conformance/tests/fixtures/host_audio_capture_voice_lifecycle.json",
+        "crates/mpc_conformance/tests/fixtures/count_in_click_transport.json",
         "crates/mpc_audio/src/lib.rs",
         "apps/desktop/src/main.rs"
       ],
@@ -2308,7 +2316,7 @@
       "id": "storage.project.file-save-load",
       "name": "Project file save/load stores repo-owned metadata-only JSON snapshots",
       "area": "storage/project_persistence",
-      "state": "unit-backed-internal-spec",
+      "state": "fixture-backed-internal-spec",
       "evidence": [
         {
           "source_id": "project-file-storage-slice-plan",
@@ -2382,6 +2390,7 @@
       },
       "tolerance": null,
       "fixture_refs": [
+        "crates/mpc_conformance/tests/fixtures/project_file_storage_restore_validation.json",
         "crates/mpc_storage/src/lib.rs",
         "apps/desktop/src/main.rs"
       ],
@@ -2497,7 +2506,7 @@
       "id": "core.project.restore-validation",
       "name": "Project snapshot restore validates version, ranges, duplicate pads, and transport safety",
       "area": "project_persistence",
-      "state": "unit-backed-internal-spec",
+      "state": "fixture-backed-internal-spec",
       "evidence": [
         {
           "source_id": "project-persistence-slice-plan",
@@ -2554,6 +2563,7 @@
       },
       "tolerance": null,
       "fixture_refs": [
+        "crates/mpc_conformance/tests/fixtures/project_file_storage_restore_validation.json",
         "crates/mpc_core/tests/core_flow.rs"
       ],
       "conflict_notes": [
@@ -3726,7 +3736,7 @@
       "id": "audio.sample.runtime-wav-import-foundation",
       "name": "Runtime user WAV import loads pad payloads without persisting audio bytes",
       "area": "sample_audio_host",
-      "state": "unit-backed-internal-spec",
+      "state": "fixture-backed-internal-spec",
       "evidence": [
         {
           "source_id": "runtime-wav-import-foundation-slice-plan",
@@ -3815,6 +3825,7 @@
       },
       "tolerance": null,
       "fixture_refs": [
+        "crates/mpc_conformance/tests/fixtures/runtime_wav_import_foundation.json",
         "crates/mpc_audio/src/lib.rs",
         "crates/mpc_core/tests/core_flow.rs",
         "crates/mpc_storage/src/lib.rs",

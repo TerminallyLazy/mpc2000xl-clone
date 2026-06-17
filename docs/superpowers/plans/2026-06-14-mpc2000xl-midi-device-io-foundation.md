@@ -31,7 +31,7 @@ Implemented behavior:
 
 ## Source And Evidence Status
 
-- Status: unit-backed internal spec plus desktop compile coverage.
+- Status: fixture-backed internal spec plus unit and desktop compile coverage.
 - `midir` version: `0.11.0`, used only for host MIDI device discovery and I/O plumbing.
 - Rights boundary: no proprietary manuals, service scans, firmware bytes, JJ-OS assets, hardware captures, MIDI files, factory samples, copied third-party code, audio files, or native MIDI traces are stored in the repo.
 - Evidence gap: exact MPC2000XL MIDI timing, filtering, port naming, sync, clock, thru, running status, SysEx, CC, program change, pitch bend, note-off output, hotplug behavior, electrical behavior, and JJ-OS behavior remain unmapped.
@@ -53,6 +53,7 @@ Focused checks added:
 - Invalid output channels fail before bytes are sent.
 - Input decoder accepts note-on and note-off, including note-on velocity zero as note-off.
 - Input decoder ignores unsupported messages and rejects short note messages.
+- Conformance fixture coverage routes deterministic host-MIDI capture output and checks device-style note input decoding.
 - Device input queue clamps capacity, drains decoded events, counts ignored messages, and drops overflow without unbounded growth.
 
 ## Next Boundaries

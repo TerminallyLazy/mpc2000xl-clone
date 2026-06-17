@@ -30,7 +30,7 @@ Implemented behavior:
 
 ## Source And Evidence Status
 
-- Status: unit-backed internal spec plus desktop compile coverage.
+- Status: fixture-backed internal spec plus desktop compile coverage.
 - `hound` version: `3.5.1`, used only for decoding user-supplied WAV files at runtime.
 - Rights boundary: no proprietary manuals, service scans, firmware bytes, JJ-OS assets, hardware captures, factory samples, WAV files, other audio media, copied third-party code, or native project/sample files are stored in the repo.
 - Evidence gap: exact MPC2000XL and JJ-OS sample import UI, native disk formats, sample headers, truncation rules, name normalization, resampling, tuning/interpolation, envelopes, filters, effects, ADC/DAC behavior, and storage relinking remain unmapped.
@@ -56,6 +56,7 @@ Focused checks added:
 - Runtime renderer rejects sample-rate mismatches explicitly.
 - Core imported metadata assignment uses decoded name/length and rejects zero-length imports.
 - Storage tests keep project JSON metadata-only.
+- Conformance fixture `crates/mpc_conformance/tests/fixtures/runtime_wav_import_foundation.json` generates a temporary mono WAV at runtime, imports it through the same runtime loader, strikes A01, and validates `runtime_user_wav` render metadata without committing audio media.
 
 ## Next Boundaries
 

@@ -25,7 +25,7 @@ Implemented behavior:
 
 ## Source And Evidence Status
 
-This behavior is internal-spec/manual-investigation foundation. The 32-voice default and stealing policy are repo-owned scaffolding only. Exact MPC2000XL polyphony, release envelopes, mute/choke groups, output routing, DAC behavior, scheduler latency, and hardware timing tolerance remain pending accepted manual, firmware, service, or hardware evidence.
+This behavior is fixture-backed internal-spec/manual-investigation foundation. The 32-voice default and stealing policy are repo-owned scaffolding only. Exact MPC2000XL polyphony, release envelopes, mute/choke groups, output routing, DAC behavior, scheduler latency, and hardware timing tolerance remain pending accepted manual, firmware, service, or hardware evidence.
 
 No proprietary manuals, service scans, firmware bytes, recordings, factory samples, binary audio fixtures, copied media, or external sample files are added.
 
@@ -50,6 +50,8 @@ Focused tests added:
 - Count-in click audio allocates through the same host path.
 - Zero-frame queued receipts and non-queued backend receipts do not allocate a voice.
 - Configurable voice limits clamp to foundation bounds.
+- Conformance fixture `crates/mpc_conformance/tests/fixtures/host_audio_capture_voice_lifecycle.json` verifies enabled capture playback, voice allocation, deterministic frame advancement, and oldest-voice stealing through JSON fixture execution.
+- Conformance fixture `crates/mpc_conformance/tests/fixtures/count_in_click_transport.json` verifies count-in click renders allocate voices through the same host path as sample playback.
 
 ## Next Boundaries
 

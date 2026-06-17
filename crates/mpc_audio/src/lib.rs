@@ -920,6 +920,60 @@ pub struct DeviceAudioBackendStatus {
     pub recent_stream_errors: Vec<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeviceAudioOutputProbeStatus {
+    pub queued_frame_count: usize,
+    pub max_queued_frame_count: usize,
+    pub total_enqueued_frame_count: u64,
+    pub total_callback_frame_count: u64,
+    pub underrun_frame_count: u64,
+    pub recent_stream_errors: Vec<String>,
+}
+
+/// CPAL-free deterministic probe for host-device output queue semantics.
+///
+/// This exercises the same bounded queue, callback drain, underrun, overflow,
+/// sample-rate validation, and stream-error retention logic used by the live
+/// `DeviceAudioBackend` without opening native audio devices.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeterministicDeviceAudioOutputProbe {
+    sample_rate_hz: u32,
+    queue: DeviceAudioOutputQueue,
+}
+
+impl DeterministicDeviceAudioOutputProbe {
+    pub fn new(sample_rate_hz: u32, max_queued_frames: usize) -> Self {
+        Self {
+            sample_rate_hz,
+            queue: DeviceAudioOutputQueue::new(max_queued_frames),
+        }
+    }
+
+    pub fn enqueue_render(
+        &mut self,
+        rendered: &RenderedAudio,
+    ) -> Result<HostAudioBackendReceipt, HostAudioBackendError> {
+        validate_device_render_sample_rate(rendered, self.sample_rate_hz)?;
+        self.queue.enqueue_render(rendered)?;
+        Ok(HostAudioBackendReceipt::queued(rendered.frames.len()))
+    }
+
+    pub fn write_f32_output(&mut self, frame_count: usize, channels: usize) -> Vec<f32> {
+        let channels = channels.max(1);
+        let mut output = vec![0.0; frame_count.saturating_mul(channels)];
+        self.queue.write_output(&mut output, channels);
+        output
+    }
+
+    pub fn record_stream_error(&mut self, error: impl Into<String>) {
+        self.queue.record_stream_error(error.into());
+    }
+
+    pub fn status(&self) -> DeviceAudioOutputProbeStatus {
+        self.queue.status().into()
+    }
+}
+
 pub struct DeviceAudioBackend {
     backend_name: String,
     device_name: String,
@@ -1047,6 +1101,19 @@ impl DeviceAudioOutputQueueStatus {
             total_callback_frame_count: 0,
             underrun_frame_count: 0,
             recent_stream_errors: vec!["device output queue lock poisoned".to_string()],
+        }
+    }
+}
+
+impl From<DeviceAudioOutputQueueStatus> for DeviceAudioOutputProbeStatus {
+    fn from(status: DeviceAudioOutputQueueStatus) -> Self {
+        Self {
+            queued_frame_count: status.queued_frame_count,
+            max_queued_frame_count: status.max_queued_frame_count,
+            total_enqueued_frame_count: status.total_enqueued_frame_count,
+            total_callback_frame_count: status.total_callback_frame_count,
+            underrun_frame_count: status.underrun_frame_count,
+            recent_stream_errors: status.recent_stream_errors,
         }
     }
 }
