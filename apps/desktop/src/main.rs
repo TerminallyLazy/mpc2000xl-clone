@@ -8,8 +8,10 @@ use mpc_audio::{
 };
 use mpc_core::{
     DiskOperation, HardwareEvent, MachineOutput, MidiSettingsField, Mode, MpcCore, MpcState,
-    PadAssignmentChange, PadBank, PanelControl, ProgramPad, SampleCatalogEntry,
-    SamplePlaybackIntent, SamplePlaybackResolution, SetupPreferences, TimingCorrectSettings,
+    PadAssignment, PadAssignmentChange, PadBank, PanelControl, ProgramPad,
+    ProjectImportedMediaReference, SampleCatalogEntry, SamplePlaybackIntent,
+    SamplePlaybackResolution, SampleSourceKind, SetupPreferences, SyntheticSample,
+    TimingCorrectSettings,
 };
 use mpc_midi::{
     CaptureMidiBackend, DeviceMidiInputConfig, DeviceMidiInputConnection, DeviceMidiInputStatus,
@@ -29,6 +31,141 @@ const MAX_OUTBOUND_NOTE_DURATION_MILLIS: u64 = 4_000;
 const PAD_HIT_MEMORY_MILLIS: u64 = 700;
 const PAD_ASSIGNED_INTENSITY: f32 = 0.18;
 const PAD_MISSING_INTENSITY: f32 = 0.35;
+const MPC_FACEPLATE_WIDTH: f32 = 1_120.0;
+const MPC_FACEPLATE_HEIGHT: f32 = 650.0;
+const MPC_LEFT_PANEL_WIDTH: f32 = 560.0;
+const MPC_RIGHT_PANEL_WIDTH: f32 = 430.0;
+const MPC_FACEPLATE_GAP: f32 = 24.0;
+const FACTORY_808_909_PROGRAM_NAME: &str = "Factory 808/909";
+const FACTORY_808_909_LOAD_REASON: &str = "factory 808/909 kit load";
+const FACTORY_808_909_ASSET_ROOT: &str = "local-assets/samples/808s-909s/808s+909s";
+
+struct FactoryPadSpec {
+    pad_number: u8,
+    sample_name: &'static str,
+    source_path: &'static str,
+    mute_group: u8,
+}
+
+struct FactoryLoadedPad {
+    spec: &'static FactoryPadSpec,
+    payload: WavSamplePayload,
+    sample_id: String,
+    load_path: String,
+    level: u8,
+    pan: i8,
+    tune_cents: i16,
+}
+
+#[derive(Clone)]
+struct FactoryPlaybackMetadata {
+    sample_id: String,
+    sample_name: &'static str,
+    level: u8,
+    pan: i8,
+    tune_cents: i16,
+    mute_group: u8,
+    frame_count: u32,
+}
+
+const FACTORY_808_909_KIT: [FactoryPadSpec; 16] = [
+    FactoryPadSpec {
+        pad_number: 1,
+        sample_name: "808 KICK",
+        source_path: "local-assets/samples/808s-909s/808s+909s/Roland TR-808/Kit 01/BD/BD0000.WAV",
+        mute_group: 0,
+    },
+    FactoryPadSpec {
+        pad_number: 2,
+        sample_name: "808 SNARE",
+        source_path: "local-assets/samples/808s-909s/808s+909s/Roland TR-808/Kit 01/SD/SD0000.WAV",
+        mute_group: 0,
+    },
+    FactoryPadSpec {
+        pad_number: 3,
+        sample_name: "808 CLAP",
+        source_path: "local-assets/samples/808s-909s/808s+909s/Roland TR-808/Kit 01/CP/CP.WAV",
+        mute_group: 0,
+    },
+    FactoryPadSpec {
+        pad_number: 4,
+        sample_name: "808 RIM",
+        source_path: "local-assets/samples/808s-909s/808s+909s/Roland TR-808/Kit 01/RS/RS.WAV",
+        mute_group: 0,
+    },
+    FactoryPadSpec {
+        pad_number: 5,
+        sample_name: "808 CHH",
+        source_path: "local-assets/samples/808s-909s/808s+909s/Roland TR-808/Kit 01/CH/CH.WAV",
+        mute_group: 1,
+    },
+    FactoryPadSpec {
+        pad_number: 6,
+        sample_name: "808 OHH",
+        source_path: "local-assets/samples/808s-909s/808s+909s/Roland TR-808/Kit 01/OH/OH00.WAV",
+        mute_group: 1,
+    },
+    FactoryPadSpec {
+        pad_number: 7,
+        sample_name: "808 COWBELL",
+        source_path: "local-assets/samples/808s-909s/808s+909s/Roland TR-808/Kit 01/CB/CB.WAV",
+        mute_group: 0,
+    },
+    FactoryPadSpec {
+        pad_number: 8,
+        sample_name: "808 CYMBAL",
+        source_path: "local-assets/samples/808s-909s/808s+909s/Roland TR-808/Kit 01/CY/CY0000.WAV",
+        mute_group: 0,
+    },
+    FactoryPadSpec {
+        pad_number: 9,
+        sample_name: "909 KICK",
+        source_path: "local-assets/samples/808s-909s/808s+909s/Roland TR-909/Kit 02/Bassdrum-01.wav",
+        mute_group: 0,
+    },
+    FactoryPadSpec {
+        pad_number: 10,
+        sample_name: "909 SNARE",
+        source_path: "local-assets/samples/808s-909s/808s+909s/Roland TR-909/Kit 01/SN0.WAV",
+        mute_group: 0,
+    },
+    FactoryPadSpec {
+        pad_number: 11,
+        sample_name: "909 CLAP",
+        source_path: "local-assets/samples/808s-909s/808s+909s/Roland TR-909/Kit 02/Clap.wav",
+        mute_group: 0,
+    },
+    FactoryPadSpec {
+        pad_number: 12,
+        sample_name: "909 RIM",
+        source_path: "local-assets/samples/808s-909s/808s+909s/Roland TR-909/Kit 01/RS1.WAV",
+        mute_group: 0,
+    },
+    FactoryPadSpec {
+        pad_number: 13,
+        sample_name: "909 CHH",
+        source_path: "local-assets/samples/808s-909s/808s+909s/Roland TR-909/Kit 02/Hat Closed.wav",
+        mute_group: 2,
+    },
+    FactoryPadSpec {
+        pad_number: 14,
+        sample_name: "909 OHH",
+        source_path: "local-assets/samples/808s-909s/808s+909s/Roland TR-909/Kit 02/Hat Open.wav",
+        mute_group: 2,
+    },
+    FactoryPadSpec {
+        pad_number: 15,
+        sample_name: "909 RIDE",
+        source_path: "local-assets/samples/808s-909s/808s+909s/Roland TR-909/Kit 02/Ride.wav",
+        mute_group: 0,
+    },
+    FactoryPadSpec {
+        pad_number: 16,
+        sample_name: "909 CRASH",
+        source_path: "local-assets/samples/808s-909s/808s+909s/Roland TR-909/Kit 02/Crash.wav",
+        mute_group: 0,
+    },
+];
 
 fn main() -> eframe::Result<()> {
     let options = eframe::NativeOptions {
@@ -303,13 +440,10 @@ impl HostMidiBackend for DesktopMidiBackend {
 
 impl Default for MpcDesktopApp {
     fn default() -> Self {
-        Self {
+        let (host_audio, host_audio_status) = initial_host_audio();
+        let app = Self {
             core: MpcCore::new(),
-            host_audio: HostAudioEngine::new(
-                DesktopAudioBackend::capture(),
-                AudioRenderSettings::preview(),
-            )
-            .expect("desktop host audio preview settings should satisfy guardrails"),
+            host_audio,
             host_midi: HostMidiEngine::enabled(DesktopMidiBackend::capture()),
             outbound_midi_notes: OutboundMidiNoteScheduler::default(),
             blocked_midi_note_offs: Vec::new(),
@@ -321,7 +455,7 @@ impl Default for MpcDesktopApp {
             selected_midi_input_port: 0,
             selected_midi_output_port: 0,
             selected_audio_output_device: 0,
-            last_status: "Ready".to_string(),
+            last_status: host_audio_status.clone(),
             last_midi_note_off_status: "MIDI note-off: none pending".to_string(),
             last_audio_render: None,
             last_audio_render_error: None,
@@ -341,8 +475,85 @@ impl Default for MpcDesktopApp {
             midi_channel: 1,
             midi_note: 36,
             midi_velocity: 100,
+        };
+
+        #[cfg(not(test))]
+        {
+            let mut app = app;
+            app.load_startup_project_or_factory_kit(&host_audio_status);
+            app
         }
+
+        #[cfg(test)]
+        app
     }
+}
+
+#[cfg(not(test))]
+fn initial_host_audio() -> (HostAudioEngine<DesktopAudioBackend>, String) {
+    let preview_settings = AudioRenderSettings::preview();
+    match DeviceAudioBackend::open_default(DeviceAudioBackendConfig::default()) {
+        Ok(backend) => {
+            let status = backend.status();
+            let device_settings = match AudioRenderSettings::new(
+                status.sample_rate_hz,
+                preview_settings.frame_count,
+            ) {
+                Ok(settings) => settings,
+                Err(error) => {
+                    let fallback = enabled_capture_host_audio("unsupported device render settings");
+                    return (
+                        fallback,
+                        format!(
+                            "Host audio default device {} unavailable for render settings: {error}; capture fallback enabled",
+                            status.device_name
+                        ),
+                    );
+                }
+            };
+            let engine = HostAudioEngine::enabled(
+                DesktopAudioBackend::Device {
+                    backend,
+                    origin: DesktopAudioDeviceOrigin::Default,
+                },
+                device_settings,
+            )
+            .expect("desktop default host audio settings should satisfy guardrails");
+            (
+                engine,
+                format!(
+                    "Host audio enabled: default device {} {} Hz {} ch {}",
+                    status.device_name,
+                    status.sample_rate_hz,
+                    status.channels,
+                    status.sample_format
+                ),
+            )
+        }
+        Err(error) => (
+            enabled_capture_host_audio("default device unavailable"),
+            format!("Host audio default device unavailable: {error}; capture fallback enabled"),
+        ),
+    }
+}
+
+#[cfg(test)]
+fn initial_host_audio() -> (HostAudioEngine<DesktopAudioBackend>, String) {
+    (
+        enabled_capture_host_audio("unit test startup"),
+        "Host audio enabled: capture backend for tests".to_string(),
+    )
+}
+
+fn enabled_capture_host_audio(reason: &str) -> HostAudioEngine<DesktopAudioBackend> {
+    let engine = HostAudioEngine::enabled(
+        DesktopAudioBackend::capture(),
+        AudioRenderSettings::preview(),
+    )
+    .unwrap_or_else(|error| {
+        panic!("desktop capture host audio should satisfy guardrails after {reason}: {error}")
+    });
+    engine
 }
 
 impl eframe::App for MpcDesktopApp {
@@ -357,7 +568,7 @@ impl eframe::App for MpcDesktopApp {
             .inner_margin(egui::Margin::same(18))
             .show(ui, |ui| {
                 ui.spacing_mut().item_spacing = egui::vec2(10.0, 10.0);
-                egui::ScrollArea::vertical()
+                egui::ScrollArea::both()
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
                         self.draw_front_panel(ui);
@@ -383,25 +594,43 @@ impl eframe::App for MpcDesktopApp {
 
 impl MpcDesktopApp {
     fn draw_front_panel(&mut self, ui: &mut egui::Ui) {
-        front_panel_frame().show(ui, |ui| {
-            ui.columns(2, |columns| {
-                columns[0].vertical(|ui| {
-                    ui.set_min_width(560.0);
-                    self.draw_lcd(ui);
-                    ui.add_space(12.0);
-                    self.draw_left_control_field(ui);
-                });
-                columns[1].vertical(|ui| {
-                    ui.set_min_width(430.0);
-                    self.draw_faceplate_branding(ui);
-                    ui.add_space(8.0);
-                    self.draw_pad_mode_controls(ui);
-                    ui.add_space(10.0);
-                    self.draw_pads(ui);
-                });
-            });
-            ui.add_space(10.0);
-            self.draw_floppy_and_status_strip(ui);
+        let available_width = ui.available_width();
+        let side_margin = ((available_width - MPC_FACEPLATE_WIDTH) * 0.5).max(0.0);
+        ui.horizontal(|ui| {
+            ui.add_space(side_margin);
+            ui.allocate_ui_with_layout(
+                egui::vec2(MPC_FACEPLATE_WIDTH, MPC_FACEPLATE_HEIGHT),
+                egui::Layout::top_down(egui::Align::Min),
+                |ui| {
+                    ui.set_min_width(MPC_FACEPLATE_WIDTH);
+                    ui.set_max_width(MPC_FACEPLATE_WIDTH);
+                    front_panel_frame().show(ui, |ui| {
+                        ui.set_min_width(MPC_FACEPLATE_WIDTH);
+                        ui.set_max_width(MPC_FACEPLATE_WIDTH);
+                        ui.horizontal(|ui| {
+                            ui.vertical(|ui| {
+                                ui.set_min_width(MPC_LEFT_PANEL_WIDTH);
+                                ui.set_max_width(MPC_LEFT_PANEL_WIDTH);
+                                self.draw_lcd(ui);
+                                ui.add_space(12.0);
+                                self.draw_left_control_field(ui);
+                            });
+                            ui.add_space(MPC_FACEPLATE_GAP);
+                            ui.vertical(|ui| {
+                                ui.set_min_width(MPC_RIGHT_PANEL_WIDTH);
+                                ui.set_max_width(MPC_RIGHT_PANEL_WIDTH);
+                                self.draw_faceplate_branding(ui);
+                                ui.add_space(8.0);
+                                self.draw_pad_mode_controls(ui);
+                                ui.add_space(10.0);
+                                self.draw_pads(ui);
+                            });
+                        });
+                        ui.add_space(10.0);
+                        self.draw_floppy_and_status_strip(ui);
+                    });
+                },
+            );
         });
     }
 
@@ -1230,6 +1459,233 @@ impl MpcDesktopApp {
         }
     }
 
+    #[cfg(not(test))]
+    fn load_startup_project_or_factory_kit(&mut self, host_audio_status: &str) {
+        let mut startup_statuses = vec![host_audio_status.to_string()];
+        startup_statuses.push(self.load_default_project_file_at_startup());
+
+        if self.core.state().imported_media_references.is_empty() {
+            match self.load_factory_808_909_kit() {
+                Ok(message) => startup_statuses.push(message),
+                Err(message) => startup_statuses.push(message),
+            }
+        } else {
+            startup_statuses.push(self.last_runtime_sample_status.clone());
+        }
+
+        self.last_status = startup_statuses.join(" | ");
+    }
+
+    #[cfg(not(test))]
+    fn load_default_project_file_at_startup(&mut self) -> String {
+        let path = self.project_file_path.trim();
+        match load_project_file_with_report(path) {
+            Ok(loaded) => {
+                let report = loaded.report;
+                match self.core.restore_project_snapshot(loaded.snapshot) {
+                    Ok(()) => {
+                        self.relink_runtime_samples_from_project("startup project file load");
+                        self.last_project_file_version = Some(report.snapshot_version);
+                        self.last_project_file_bytes = Some(report.byte_count);
+                        self.last_project_file_status = format!(
+                            "loaded startup metadata JSON from {}; transport stopped",
+                            report.path.display()
+                        );
+                        format!(
+                            "Project file v{} loaded from {}",
+                            report.snapshot_version,
+                            report.path.display()
+                        )
+                    }
+                    Err(error) => {
+                        let message = format!("Startup project file restore failed: {error}");
+                        self.last_project_file_version = None;
+                        self.last_project_file_bytes = None;
+                        self.last_project_file_status = message.clone();
+                        message
+                    }
+                }
+            }
+            Err(error) => {
+                let message = format!("Startup project file skipped: {error}");
+                self.last_project_file_version = None;
+                self.last_project_file_bytes = None;
+                self.last_project_file_status = message.clone();
+                message
+            }
+        }
+    }
+
+    fn load_factory_808_909_kit(&mut self) -> Result<String, String> {
+        let mut snapshot = self.core.export_project_snapshot();
+        let original_assignments = snapshot.program.pad_assignments.clone();
+        let mut loaded_pads = Vec::new();
+
+        for spec in &FACTORY_808_909_KIT {
+            let (payload, load_path) =
+                load_factory_wav_sample_payload(spec).map_err(|message| {
+                    self.last_runtime_sample_status = message.clone();
+                    message
+                })?;
+            let pad = ProgramPad {
+                bank: PadBank::A,
+                pad_number: spec.pad_number,
+            };
+            let existing = original_assignments
+                .iter()
+                .find(|assignment| assignment.pad == pad);
+            let sample_id = existing
+                .map(|assignment| assignment.sample.id.clone())
+                .unwrap_or_else(|| format!("factory_808_909_a_{:02}", spec.pad_number));
+            loaded_pads.push(FactoryLoadedPad {
+                spec,
+                payload,
+                sample_id,
+                load_path,
+                level: existing.map(|assignment| assignment.level).unwrap_or(100),
+                pan: existing.map(|assignment| assignment.pan).unwrap_or(0),
+                tune_cents: existing
+                    .map(|assignment| assignment.tune_cents)
+                    .unwrap_or(0),
+            });
+        }
+
+        let mut metadata_by_pad = BTreeMap::new();
+        let mut factory_sample_ids = BTreeSet::new();
+        let mut factory_assignments = Vec::new();
+        let mut factory_references = Vec::new();
+
+        for loaded in &loaded_pads {
+            let frame_count = loaded.payload.length_frames_u32();
+            let pad = ProgramPad {
+                bank: PadBank::A,
+                pad_number: loaded.spec.pad_number,
+            };
+            factory_sample_ids.insert(loaded.sample_id.clone());
+            factory_assignments.push(PadAssignment {
+                pad,
+                sample: SyntheticSample {
+                    id: loaded.sample_id.clone(),
+                    name: loaded.spec.sample_name.to_string(),
+                    source_kind: SampleSourceKind::Imported,
+                    length_frames: Some(frame_count),
+                },
+                level: loaded.level,
+                pan: loaded.pan,
+                tune_cents: loaded.tune_cents,
+                mute_group: loaded.spec.mute_group,
+            });
+            factory_references.push(ProjectImportedMediaReference {
+                sample_id: loaded.sample_id.clone(),
+                source_path: loaded.load_path.clone(),
+                managed_copy_path: None,
+                sample_name: loaded.spec.sample_name.to_string(),
+                sample_rate_hz: loaded.payload.sample_rate_hz,
+                frame_count,
+                byte_count: loaded.payload.byte_count,
+                source_kind: SampleSourceKind::Imported,
+            });
+            metadata_by_pad.insert(
+                loaded.spec.pad_number,
+                FactoryPlaybackMetadata {
+                    sample_id: loaded.sample_id.clone(),
+                    sample_name: loaded.spec.sample_name,
+                    level: loaded.level,
+                    pan: loaded.pan,
+                    tune_cents: loaded.tune_cents,
+                    mute_group: loaded.spec.mute_group,
+                    frame_count,
+                },
+            );
+        }
+
+        snapshot.program.name = FACTORY_808_909_PROGRAM_NAME.to_string();
+        snapshot
+            .program
+            .pad_assignments
+            .retain(|assignment| assignment.pad.bank != PadBank::A);
+        snapshot.program.pad_assignments.extend(factory_assignments);
+        snapshot
+            .program
+            .pad_assignments
+            .sort_by_key(|assignment| assignment.pad);
+        snapshot
+            .program
+            .sample_trims
+            .retain(|trim| !factory_sample_ids.contains(&trim.sample_id));
+        snapshot
+            .program
+            .imported_media_references
+            .retain(|reference| !factory_sample_ids.contains(&reference.sample_id));
+        snapshot
+            .program
+            .imported_media_references
+            .extend(factory_references);
+        snapshot
+            .program
+            .imported_media_references
+            .sort_by(|left, right| left.sample_id.cmp(&right.sample_id));
+        snapshot.machine.pad_bank = PadBank::A;
+        snapshot.machine.mode = Mode::Main;
+        snapshot.machine.selected_program_pad = ProgramPad {
+            bank: PadBank::A,
+            pad_number: 1,
+        };
+        snapshot.machine.selected_sample_id = metadata_by_pad
+            .get(&1)
+            .map(|metadata| metadata.sample_id.clone());
+        rewrite_factory_playback_resolution(&mut snapshot.machine.last_playback, &metadata_by_pad);
+        for event in &mut snapshot.sequence.recorded_events {
+            if let Some(intent) = event.playback.as_mut() {
+                rewrite_factory_playback_intent(intent, &metadata_by_pad);
+            }
+        }
+
+        self.core
+            .restore_project_snapshot(snapshot)
+            .map_err(|error| {
+                let message = format!("Factory 808/909 metadata restore failed: {error}");
+                self.last_runtime_sample_status = message.clone();
+                message
+            })?;
+
+        self.clear_runtime_sample_payloads(FACTORY_808_909_LOAD_REASON);
+        for loaded in loaded_pads {
+            let frame_count = loaded.payload.frame_count;
+            let sample_rate_hz = loaded.payload.sample_rate_hz;
+            let byte_count = loaded.payload.byte_count;
+            self.runtime_samples.insert(
+                loaded.sample_id.clone(),
+                loaded.spec.sample_name.to_string(),
+                loaded.payload,
+            );
+            self.runtime_sample_statuses.insert(
+                loaded.sample_id,
+                RuntimeSampleStatus::Loaded {
+                    path: loaded.load_path,
+                    frame_count,
+                    sample_rate_hz,
+                    byte_count,
+                },
+            );
+        }
+        self.last_audio_render = None;
+        self.last_audio_render_error = None;
+        self.last_runtime_sample_status = runtime_sample_relink_status_text(
+            FACTORY_808_909_LOAD_REASON,
+            &self.runtime_sample_statuses,
+        );
+        self.last_project_file_status = format!(
+            "Factory 808/909 metadata loaded from {}; project file not modified",
+            FACTORY_808_909_ASSET_ROOT
+        );
+
+        Ok(format!(
+            "Factory 808/909 WAVs: {} loaded",
+            self.runtime_sample_statuses.len()
+        ))
+    }
+
     fn save_project_file(&mut self) {
         let path = self.project_file_path.trim();
         match save_project_file_to_path(&self.core, path) {
@@ -1938,6 +2394,18 @@ impl MpcDesktopApp {
             );
         }
 
+        if let Some(MachineOutput::SamplePlaybackIntent { intent }) = outputs
+            .iter()
+            .find(|output| matches!(output, MachineOutput::SamplePlaybackIntent { .. }))
+        {
+            return format!(
+                "Playback Trk {:02} Pgm {:02} {}",
+                intent.selected_track,
+                intent.program_index,
+                playback_intent_status_text(intent)
+            );
+        }
+
         if let Some(MachineOutput::MidiOutputIntent { intent }) = outputs
             .iter()
             .find(|output| matches!(output, MachineOutput::MidiOutputIntent { .. }))
@@ -2271,18 +2739,6 @@ impl MpcDesktopApp {
                 event.velocity,
                 event.tick,
                 sample
-            );
-        }
-
-        if let Some(MachineOutput::SamplePlaybackIntent { intent }) = outputs
-            .iter()
-            .find(|output| matches!(output, MachineOutput::SamplePlaybackIntent { .. }))
-        {
-            return format!(
-                "Playback intent Trk {:02} Pgm {:02} {}",
-                intent.selected_track,
-                intent.program_index,
-                playback_intent_status_text(intent)
             );
         }
 
@@ -3924,6 +4380,72 @@ fn runtime_sample_relink_status_text(
     text
 }
 
+fn load_factory_wav_sample_payload(
+    spec: &'static FactoryPadSpec,
+) -> Result<(WavSamplePayload, String), String> {
+    let mut failures = Vec::new();
+    for path in factory_asset_candidate_paths(spec.source_path) {
+        match load_wav_sample_payload(&path) {
+            Ok(payload) => return Ok((payload, path)),
+            Err(error) => failures.push(format!("{path}: {error}")),
+        }
+    }
+
+    Err(format!(
+        "Factory 808/909 unavailable: {} failed to load; {}",
+        spec.sample_name,
+        failures.join("; ")
+    ))
+}
+
+fn factory_asset_candidate_paths(path: &str) -> Vec<String> {
+    let mut paths = vec![path.to_string()];
+    let path_ref = std::path::Path::new(path);
+    if path_ref.is_absolute() {
+        return paths;
+    }
+
+    let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    if let Some(workspace_root) = manifest_dir.parent().and_then(|apps_dir| apps_dir.parent()) {
+        let candidate = workspace_root.join(path_ref).to_string_lossy().into_owned();
+        if !paths.iter().any(|existing| existing == &candidate) {
+            paths.push(candidate);
+        }
+    }
+    paths
+}
+
+fn rewrite_factory_playback_resolution(
+    playback: &mut Option<SamplePlaybackResolution>,
+    metadata_by_pad: &BTreeMap<u8, FactoryPlaybackMetadata>,
+) {
+    let Some(SamplePlaybackResolution::Intent { intent }) = playback.as_mut() else {
+        return;
+    };
+    rewrite_factory_playback_intent(intent, metadata_by_pad);
+}
+
+fn rewrite_factory_playback_intent(
+    intent: &mut SamplePlaybackIntent,
+    metadata_by_pad: &BTreeMap<u8, FactoryPlaybackMetadata>,
+) {
+    if intent.bank != PadBank::A {
+        return;
+    }
+    let Some(metadata) = metadata_by_pad.get(&intent.pad_number) else {
+        return;
+    };
+    intent.sample_id = metadata.sample_id.clone();
+    intent.sample_name = metadata.sample_name.to_string();
+    intent.level = metadata.level;
+    intent.pan = metadata.pan;
+    intent.tune_cents = metadata.tune_cents;
+    intent.mute_group = metadata.mute_group;
+    intent.start_frame = 0;
+    intent.end_frame = metadata.frame_count.saturating_sub(1);
+    intent.window_length_frames = metadata.frame_count;
+}
+
 fn runtime_sample_actionable_issue_text(
     sample_id: &str,
     status: &RuntimeSampleStatus,
@@ -4275,6 +4797,114 @@ mod tests {
     use super::*;
 
     #[test]
+    fn desktop_starts_with_host_audio_enabled() {
+        let app = MpcDesktopApp::default();
+
+        assert!(app.host_audio.is_enabled());
+    }
+
+    #[test]
+    fn factory_808_909_kit_loads_when_local_assets_are_available() {
+        if !factory_808_909_assets_are_available() {
+            return;
+        }
+
+        let mut app = MpcDesktopApp::default();
+        let status = app
+            .load_factory_808_909_kit()
+            .expect("local factory 808/909 kit should load");
+        let state = app.core.state();
+        let a01 = state
+            .current_program
+            .pad_assignments
+            .iter()
+            .find(|assignment| {
+                assignment.pad
+                    == ProgramPad {
+                        bank: PadBank::A,
+                        pad_number: 1,
+                    }
+            })
+            .expect("A01 should be assigned");
+        let a09 = state
+            .current_program
+            .pad_assignments
+            .iter()
+            .find(|assignment| {
+                assignment.pad
+                    == ProgramPad {
+                        bank: PadBank::A,
+                        pad_number: 9,
+                    }
+            })
+            .expect("A09 should be assigned");
+
+        assert!(status.contains("16 loaded"));
+        assert_eq!(state.current_program.name, FACTORY_808_909_PROGRAM_NAME);
+        assert_eq!(state.pad_bank, PadBank::A);
+        assert_eq!(a01.sample.name, "808 KICK");
+        assert_eq!(a09.sample.name, "909 KICK");
+        assert_eq!(state.imported_media_references.len(), 16);
+        assert_eq!(app.runtime_samples.len(), 16);
+    }
+
+    #[test]
+    fn factory_808_909_kit_loads_after_synthetic_startup_project() {
+        if !factory_808_909_assets_are_available()
+            || !factory_asset_candidate_paths(DEFAULT_PROJECT_FILE_PATH)
+                .iter()
+                .any(|path| std::path::Path::new(path).is_file())
+        {
+            return;
+        }
+
+        let mut app = MpcDesktopApp::default();
+        let project_path = factory_asset_candidate_paths(DEFAULT_PROJECT_FILE_PATH)
+            .into_iter()
+            .find(|path| std::path::Path::new(path).is_file())
+            .expect("local startup project path should exist");
+        let loaded =
+            load_project_file_with_report(project_path).expect("local startup project should load");
+        app.core
+            .restore_project_snapshot(loaded.snapshot)
+            .expect("local startup project should restore");
+
+        app.load_factory_808_909_kit()
+            .expect("factory kit should load after local startup project");
+
+        assert_eq!(app.core.state().pad_bank, PadBank::A);
+        assert_eq!(app.core.state().mode, Mode::Main);
+        assert_eq!(
+            app.core.state().current_program.name,
+            FACTORY_808_909_PROGRAM_NAME
+        );
+    }
+
+    fn factory_808_909_assets_are_available() -> bool {
+        FACTORY_808_909_KIT.iter().all(|spec| {
+            factory_asset_candidate_paths(spec.source_path)
+                .iter()
+                .any(|path| std::path::Path::new(path).is_file())
+        })
+    }
+
+    #[test]
+    fn pad_hit_status_prefers_audio_playback_over_midi_output() {
+        let outputs = [
+            MachineOutput::MidiOutputIntent {
+                intent: test_midi_output_intent(),
+            },
+            MachineOutput::SamplePlaybackIntent {
+                intent: test_sample_playback_intent(),
+            },
+        ];
+        let status = MpcDesktopApp::status_from_outputs(&outputs, &MpcState::default());
+
+        assert!(status.starts_with("Playback Trk 01"));
+        assert!(!status.starts_with("MIDI out"));
+    }
+
+    #[test]
     fn pad_light_layers_assignment_memory_and_pressure() {
         let mut memory = PadLightMemory::default();
         let pad = ProgramPad {
@@ -4402,6 +5032,26 @@ mod tests {
             note: 36,
             velocity: 100,
             window_length_frames: 11_025,
+        }
+    }
+
+    fn test_sample_playback_intent() -> SamplePlaybackIntent {
+        SamplePlaybackIntent {
+            selected_track: 1,
+            program_index: 0,
+            program_name: "Program 01".to_string(),
+            bank: PadBank::A,
+            pad_number: 1,
+            sample_id: "synthetic_a_01".to_string(),
+            sample_name: "SYN-A01".to_string(),
+            velocity: 100,
+            level: 100,
+            pan: 0,
+            tune_cents: 0,
+            mute_group: 0,
+            start_frame: 0,
+            end_frame: 47_999,
+            window_length_frames: 48_000,
         }
     }
 }
