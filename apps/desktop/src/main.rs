@@ -34,8 +34,8 @@ fn main() -> eframe::Result<()> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("MPC2000XL Clone Foundation")
-            .with_inner_size([1240.0, 860.0])
-            .with_min_inner_size([980.0, 680.0]),
+            .with_inner_size([1220.0, 760.0])
+            .with_min_inner_size([1040.0, 680.0]),
         ..Default::default()
     };
 
@@ -360,8 +360,6 @@ impl eframe::App for MpcDesktopApp {
                 egui::ScrollArea::vertical()
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
-                        self.draw_brand_header(ui);
-                        ui.add_space(8.0);
                         self.draw_front_panel(ui);
                         ui.add_space(10.0);
                         self.draw_session_io_panel(ui);
@@ -384,132 +382,100 @@ impl eframe::App for MpcDesktopApp {
 }
 
 impl MpcDesktopApp {
-    fn draw_brand_header(&self, ui: &mut egui::Ui) {
+    fn draw_front_panel(&mut self, ui: &mut egui::Ui) {
+        front_panel_frame().show(ui, |ui| {
+            ui.columns(2, |columns| {
+                columns[0].vertical(|ui| {
+                    ui.set_min_width(560.0);
+                    self.draw_lcd(ui);
+                    ui.add_space(12.0);
+                    self.draw_left_control_field(ui);
+                });
+                columns[1].vertical(|ui| {
+                    ui.set_min_width(430.0);
+                    self.draw_faceplate_branding(ui);
+                    ui.add_space(8.0);
+                    self.draw_pad_mode_controls(ui);
+                    ui.add_space(10.0);
+                    self.draw_pads(ui);
+                });
+            });
+            ui.add_space(10.0);
+            self.draw_floppy_and_status_strip(ui);
+        });
+    }
+
+    fn draw_faceplate_branding(&self, ui: &mut egui::Ui) {
         ui.horizontal_wrapped(|ui| {
             ui.label(
-                egui::RichText::new("MPC2000XL")
-                    .size(24.0)
+                egui::RichText::new("AKAI")
+                    .size(30.0)
                     .strong()
                     .color(brand_red()),
             );
             ui.label(
-                egui::RichText::new("Clone")
-                    .size(18.0)
+                egui::RichText::new("professional")
+                    .size(10.0)
+                    .color(faceplate_text()),
+            );
+            ui.add_space(20.0);
+            ui.label(
+                egui::RichText::new("MPC2000XL")
+                    .size(24.0)
                     .strong()
-                    .color(primary_text()),
+                    .color(model_text()),
             );
             ui.label(
-                egui::RichText::new("rights-safe desktop instrument")
-                    .size(12.0)
-                    .color(muted_text()),
+                egui::RichText::new("MIDI PRODUCTION CENTER")
+                    .size(10.0)
+                    .strong()
+                    .color(faceplate_text()),
             );
-            ui.separator();
+            ui.add_space(10.0);
             status_chip(
                 ui,
                 "MODE",
                 format!("{:?}", self.core.state().mode).to_uppercase(),
                 accent_blue(),
             );
-            status_chip(
-                ui,
-                "AUDIO",
-                if self.host_audio.is_enabled() {
-                    "ON"
-                } else {
-                    "OFF"
-                },
-                if self.host_audio.is_enabled() {
-                    ok_green()
-                } else {
-                    warning_amber()
-                },
-            );
-            status_chip(
-                ui,
-                "MIDI",
-                if self.host_midi.is_enabled() {
-                    "ON"
-                } else {
-                    "OFF"
-                },
-                if self.host_midi.is_enabled() {
-                    ok_green()
-                } else {
-                    warning_amber()
-                },
-            );
         });
     }
 
-    fn draw_front_panel(&mut self, ui: &mut egui::Ui) {
-        front_panel_frame().show(ui, |ui| {
-            self.draw_overview_strip(ui);
-            ui.add_space(8.0);
-            ui.columns(2, |columns| {
-                columns[0].vertical(|ui| {
-                    ui.set_min_width(500.0);
-                    self.draw_lcd(ui);
-                    ui.add_space(10.0);
-                    self.draw_mode_buttons(ui);
-                    ui.add_space(10.0);
-                    self.draw_transport(ui);
-                    ui.add_space(10.0);
-                    self.draw_edit_controls(ui);
-                });
-                columns[1].vertical(|ui| {
-                    ui.set_min_width(330.0);
-                    self.draw_pads(ui);
-                    ui.add_space(10.0);
-                    self.draw_performance_input_panel(ui);
-                });
+    fn draw_left_control_field(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            ui.vertical(|ui| {
+                self.draw_mode_buttons(ui);
+                ui.add_space(10.0);
+                self.draw_note_variation_controls(ui);
+            });
+            ui.add_space(18.0);
+            ui.vertical(|ui| {
+                self.draw_data_wheel(ui);
+                ui.add_space(8.0);
+                self.draw_edit_controls(ui);
             });
         });
+        ui.add_space(12.0);
+        self.draw_transport(ui);
     }
 
-    fn draw_overview_strip(&self, ui: &mut egui::Ui) {
+    fn draw_floppy_and_status_strip(&self, ui: &mut egui::Ui) {
         let state = self.core.state();
         ui.horizontal_wrapped(|ui| {
-            meter_tile(
-                ui,
-                "SEQ",
-                format!("{:02} {}", state.sequence_index, state.sequence_name),
-            );
-            meter_tile(
-                ui,
-                "TRACK",
-                format!(
-                    "{:02} {}",
-                    state.selected_track,
-                    if state.is_track_muted(state.selected_track) {
-                        "MUTE"
-                    } else {
-                        "ACTIVE"
-                    }
-                ),
-            );
-            meter_tile(ui, "TEMPO", tempo_text(state.tempo_bpm_x100));
-            meter_tile(
-                ui,
-                "TRANSPORT",
-                transport_summary_text(state.playing, state.recording, state.loop_enabled),
-            );
+            floppy_slot(ui);
+            meter_tile(ui, "SEQ", format!("{:02}", state.sequence_index));
+            meter_tile(ui, "TRK", format!("{:02}", state.selected_track));
+            meter_tile(ui, "BPM", tempo_text(state.tempo_bpm_x100));
             meter_tile(
                 ui,
                 "PAD",
                 format!(
-                    "{} {}",
+                    "{}{}",
                     state.pad_bank.label(),
-                    program_pad_label(state.selected_program_pad)
+                    state.selected_program_pad.pad_number
                 ),
             );
-            meter_tile(
-                ui,
-                "PROGRAM",
-                format!(
-                    "{:02} {}",
-                    state.current_program.index, state.current_program.name
-                ),
-            );
+            meter_tile(ui, "PGM", state.current_program.name.clone());
         });
     }
 
@@ -641,12 +607,12 @@ impl MpcDesktopApp {
                     ui.label(
                         egui::RichText::new("STATUS")
                             .strong()
-                            .color(accent_blue())
+                            .color(egui::Color32::from_rgb(158, 205, 226))
                             .monospace(),
                     );
                     ui.label(
                         egui::RichText::new(&self.last_status)
-                            .color(primary_text())
+                            .color(egui::Color32::from_rgb(238, 238, 224))
                             .monospace(),
                     );
                 });
@@ -677,37 +643,134 @@ impl MpcDesktopApp {
         });
     }
 
-    fn draw_performance_input_panel(&mut self, ui: &mut egui::Ui) {
+    fn draw_note_variation_controls(&mut self, ui: &mut egui::Ui) {
         control_bay_frame().show(ui, |ui| {
-            ui.set_min_width(ui.available_width());
-            section_label(ui, "PERFORMANCE INPUT");
+            ui.set_min_width(168.0);
+            section_label(ui, "NOTE VARIATION");
             ui.horizontal_wrapped(|ui| {
                 ui.add_sized(
-                    [86.0, 24.0],
-                    egui::Slider::new(&mut self.midi_channel, 1..=16).text("Ch"),
+                    [30.0, 126.0],
+                    egui::Slider::new(&mut self.midi_velocity, 1..=127)
+                        .vertical()
+                        .show_value(false),
                 );
-                ui.add_sized(
-                    [112.0, 24.0],
-                    egui::Slider::new(&mut self.midi_note, 0..=127).text("Note"),
-                );
-                ui.add_sized(
-                    [112.0, 24.0],
-                    egui::Slider::new(&mut self.midi_velocity, 1..=127).text("Vel"),
-                );
-                if panel_button(ui, "NOTE ON", 76.0).clicked() {
-                    self.dispatch_event(HardwareEvent::MidiNoteOn {
-                        channel: self.midi_channel,
-                        note: self.midi_note,
-                        velocity: self.midi_velocity,
+                ui.vertical(|ui| {
+                    if panel_button(ui, "AFTER", 62.0).clicked() {
+                        self.midi_velocity = 127;
+                    }
+                    if panel_button(ui, "NOTE REPEAT", 112.0).clicked() {
+                        self.dispatch_event(HardwareEvent::Tick { micros: 100_000 });
+                    }
+                    ui.add_space(18.0);
+                    ui.label(
+                        egui::RichText::new(format!("VEL {:03}", self.midi_velocity))
+                            .size(10.0)
+                            .strong()
+                            .color(faceplate_text()),
+                    );
+                });
+            });
+        });
+    }
+
+    fn draw_data_wheel(&mut self, ui: &mut egui::Ui) {
+        control_bay_frame().show(ui, |ui| {
+            ui.set_min_width(166.0);
+            section_label(ui, "DATA");
+            let (rect, response) =
+                ui.allocate_exact_size(egui::vec2(142.0, 126.0), egui::Sense::click());
+            let center = rect.center();
+            let painter = ui.painter();
+            painter.circle_filled(center, 56.0, data_wheel_outer());
+            painter.circle_stroke(center, 56.0, egui::Stroke::new(2.0, data_wheel_stroke()));
+            painter.circle_filled(center, 40.0, data_wheel_inner());
+            painter.circle_stroke(center, 20.0, egui::Stroke::new(2.0, data_wheel_stroke()));
+            painter.circle_filled(
+                egui::pos2(center.x - 17.0, center.y + 18.0),
+                9.0,
+                data_wheel_stroke(),
+            );
+            painter.text(
+                egui::pos2(center.x, rect.top() + 10.0),
+                egui::Align2::CENTER_CENTER,
+                "DATA",
+                egui::FontId::proportional(10.0),
+                muted_faceplate_text(),
+            );
+            if response.clicked() {
+                self.dispatch_event(HardwareEvent::TurnDataWheel { delta: 1 });
+            }
+            if response.secondary_clicked() {
+                self.dispatch_event(HardwareEvent::TurnDataWheel { delta: -1 });
+            }
+            ui.horizontal(|ui| {
+                if panel_button(ui, "DIGIT -", 66.0).clicked() {
+                    self.dispatch_event(HardwareEvent::TurnDataWheel { delta: -1 });
+                }
+                if panel_button(ui, "DIGIT +", 66.0).clicked() {
+                    self.dispatch_event(HardwareEvent::TurnDataWheel { delta: 1 });
+                }
+            });
+        });
+    }
+
+    fn draw_cursor_cluster(&mut self, ui: &mut egui::Ui) {
+        control_bay_frame().show(ui, |ui| {
+            ui.set_min_width(166.0);
+            section_label(ui, "CURSOR");
+            egui::Grid::new("cursor_cluster")
+                .num_columns(3)
+                .spacing([5.0, 5.0])
+                .show(ui, |ui| {
+                    ui.label("");
+                    if panel_button(ui, "^", 42.0).clicked() {
+                        self.dispatch_event(HardwareEvent::Press {
+                            control: PanelControl::CursorUp,
+                        });
+                    }
+                    ui.label("");
+                    ui.end_row();
+                    if panel_button(ui, "<", 42.0).clicked() {
+                        self.dispatch_event(HardwareEvent::Press {
+                            control: PanelControl::CursorLeft,
+                        });
+                    }
+                    if panel_button(ui, "v", 42.0).clicked() {
+                        self.dispatch_event(HardwareEvent::Press {
+                            control: PanelControl::CursorDown,
+                        });
+                    }
+                    if panel_button(ui, ">", 42.0).clicked() {
+                        self.dispatch_event(HardwareEvent::Press {
+                            control: PanelControl::CursorRight,
+                        });
+                    }
+                    ui.end_row();
+                });
+        });
+    }
+
+    fn draw_pad_mode_controls(&mut self, ui: &mut egui::Ui) {
+        pad_control_frame().show(ui, |ui| {
+            ui.horizontal_wrapped(|ui| {
+                if panel_button(ui, "FULL LEVEL", 80.0).clicked() {
+                    self.midi_velocity = 127;
+                }
+                if panel_button(ui, "16 LEVELS", 78.0).clicked() {
+                    self.midi_velocity = 100;
+                }
+                if panel_button(ui, "NEXT SEQ", 72.0).clicked() {
+                    self.dispatch_event(HardwareEvent::Press {
+                        control: PanelControl::Song,
                     });
                 }
-                if panel_button(ui, "NOTE OFF", 82.0).clicked() {
-                    self.dispatch_event(HardwareEvent::MidiNoteOff {
-                        channel: self.midi_channel,
-                        note: self.midi_note,
-                        velocity: 64,
+                if panel_button(ui, "TRACK MUTE", 88.0).clicked() {
+                    self.dispatch_event(HardwareEvent::Press {
+                        control: PanelControl::SoftKey(4),
                     });
                 }
+                knob_indicator(ui, "REC GAIN", record_red());
+                knob_indicator(ui, "MAIN VOLUME", knob_yellow());
             });
         });
     }
@@ -941,38 +1004,46 @@ impl MpcDesktopApp {
     fn draw_lcd(&mut self, ui: &mut egui::Ui) {
         let lcd = self.core.state().lcd.clone();
         egui::Frame::new()
-            .fill(lcd_background())
+            .fill(lcd_window())
             .stroke(egui::Stroke::new(2.0, lcd_bezel()))
-            .corner_radius(egui::CornerRadius::same(4))
-            .inner_margin(egui::Margin::symmetric(14, 12))
+            .corner_radius(egui::CornerRadius::same(2))
+            .inner_margin(egui::Margin::symmetric(16, 12))
             .show(ui, |ui| {
-                ui.set_min_width(470.0);
-                ui.set_min_height(150.0);
-                ui.horizontal(|ui| {
-                    ui.label(
-                        egui::RichText::new(lcd.title)
-                            .size(20.0)
-                            .strong()
-                            .monospace()
-                            .color(lcd_text()),
-                    );
-                    ui.separator();
-                    ui.label(
-                        egui::RichText::new("LCD")
-                            .size(11.0)
-                            .monospace()
-                            .color(lcd_dim_text()),
-                    );
-                });
-                ui.add_space(4.0);
-                for line in &lcd.lines {
-                    ui.label(
-                        egui::RichText::new(line)
-                            .size(15.0)
-                            .monospace()
-                            .color(lcd_text()),
-                    );
-                }
+                ui.set_min_width(520.0);
+                ui.set_min_height(174.0);
+                egui::Frame::new()
+                    .fill(lcd_background())
+                    .stroke(egui::Stroke::new(1.0, lcd_inner_stroke()))
+                    .corner_radius(egui::CornerRadius::same(1))
+                    .inner_margin(egui::Margin::symmetric(12, 8))
+                    .show(ui, |ui| {
+                        ui.set_min_height(110.0);
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                egui::RichText::new(lcd.title)
+                                    .size(20.0)
+                                    .strong()
+                                    .monospace()
+                                    .color(lcd_text()),
+                            );
+                            ui.separator();
+                            ui.label(
+                                egui::RichText::new("MAIN SCREEN")
+                                    .size(10.0)
+                                    .monospace()
+                                    .color(lcd_dim_text()),
+                            );
+                        });
+                        ui.add_space(4.0);
+                        for line in &lcd.lines {
+                            ui.label(
+                                egui::RichText::new(line)
+                                    .size(14.0)
+                                    .monospace()
+                                    .color(lcd_text()),
+                            );
+                        }
+                    });
                 ui.add_space(8.0);
                 ui.horizontal_wrapped(|ui| {
                     for (index, soft_key) in lcd.soft_keys.iter().enumerate() {
@@ -984,9 +1055,10 @@ impl MpcDesktopApp {
                                         .size(11.0)
                                         .monospace(),
                                 )
-                                .fill(lcd_key_fill())
+                                .fill(cream_button_fill())
                                 .stroke(egui::Stroke::new(1.0, lcd_bezel()))
-                                .min_size(egui::vec2(64.0, 24.0)),
+                                .corner_radius(egui::CornerRadius::same(2))
+                                .min_size(egui::vec2(76.0, 24.0)),
                             )
                             .clicked()
                         {
@@ -1001,44 +1073,47 @@ impl MpcDesktopApp {
 
     fn draw_mode_buttons(&mut self, ui: &mut egui::Ui) {
         control_bay_frame().show(ui, |ui| {
-            section_label(ui, "MODES");
-            ui.horizontal_wrapped(|ui| {
-                self.mode_button(ui, "MAIN", PanelControl::MainScreen, Mode::Main);
-                self.mode_button(ui, "PROGRAM", PanelControl::Program, Mode::Program);
-                self.mode_button(ui, "SAMPLE", PanelControl::Sample, Mode::Sample);
-                self.mode_button(ui, "TRIM", PanelControl::Trim, Mode::Trim);
-                self.mode_button(ui, "SONG", PanelControl::Song, Mode::Song);
-                self.mode_button(ui, "MIDI", PanelControl::Midi, Mode::Midi);
-                self.mode_button(
-                    ui,
-                    "TIMING",
-                    PanelControl::TimingCorrect,
-                    Mode::TimingCorrect,
-                );
-                self.mode_button(ui, "DISK", PanelControl::Disk, Mode::Disk);
-                self.mode_button(ui, "SETUP", PanelControl::Setup, Mode::Setup);
-            });
+            ui.set_min_width(168.0);
+            section_label(ui, "NUMERIC / MODE KEYS");
+            egui::Grid::new("mode_keys")
+                .num_columns(3)
+                .spacing([7.0, 6.0])
+                .show(ui, |ui| {
+                    self.mode_button(ui, "1 MAIN", PanelControl::MainScreen, Mode::Main);
+                    self.mode_button(ui, "2 SAMPLE", PanelControl::Sample, Mode::Sample);
+                    self.mode_button(ui, "3 TRIM", PanelControl::Trim, Mode::Trim);
+                    ui.end_row();
+                    self.mode_button(ui, "4 PGM", PanelControl::Program, Mode::Program);
+                    self.mode_button(ui, "5 SONG", PanelControl::Song, Mode::Song);
+                    self.mode_button(ui, "6 MIDI", PanelControl::Midi, Mode::Midi);
+                    ui.end_row();
+                    self.mode_button(ui, "7 DISK", PanelControl::Disk, Mode::Disk);
+                    self.mode_button(ui, "8 SETUP", PanelControl::Setup, Mode::Setup);
+                    self.mode_button(ui, "9 TC", PanelControl::TimingCorrect, Mode::TimingCorrect);
+                    ui.end_row();
+                });
         });
     }
 
     fn mode_button(&mut self, ui: &mut egui::Ui, label: &str, control: PanelControl, mode: Mode) {
         let selected = self.core.state().mode == mode;
         let fill = if selected {
-            accent_blue()
+            mode_blue_active()
         } else {
-            control_fill()
+            mode_blue()
         };
         let text = if selected {
             egui::Color32::WHITE
         } else {
-            primary_text()
+            egui::Color32::WHITE
         };
         if ui
             .add(
-                egui::Button::new(egui::RichText::new(label).size(11.0).strong().color(text))
+                egui::Button::new(egui::RichText::new(label).size(10.0).strong().color(text))
                     .fill(fill)
-                    .stroke(egui::Stroke::new(1.0, control_stroke()))
-                    .min_size(egui::vec2(76.0, 28.0)),
+                    .stroke(egui::Stroke::new(1.0, mode_blue_stroke()))
+                    .corner_radius(egui::CornerRadius::same(2))
+                    .min_size(egui::vec2(48.0, 25.0)),
             )
             .clicked()
         {
@@ -1047,38 +1122,7 @@ impl MpcDesktopApp {
     }
 
     fn draw_edit_controls(&mut self, ui: &mut egui::Ui) {
-        control_bay_frame().show(ui, |ui| {
-            section_label(ui, "NAVIGATION");
-            ui.horizontal_wrapped(|ui| {
-                if panel_button(ui, "UP", 46.0).clicked() {
-                    self.dispatch_event(HardwareEvent::Press {
-                        control: PanelControl::CursorUp,
-                    });
-                }
-                if panel_button(ui, "DOWN", 58.0).clicked() {
-                    self.dispatch_event(HardwareEvent::Press {
-                        control: PanelControl::CursorDown,
-                    });
-                }
-                if panel_button(ui, "LEFT", 54.0).clicked() {
-                    self.dispatch_event(HardwareEvent::Press {
-                        control: PanelControl::CursorLeft,
-                    });
-                }
-                if panel_button(ui, "RIGHT", 58.0).clicked() {
-                    self.dispatch_event(HardwareEvent::Press {
-                        control: PanelControl::CursorRight,
-                    });
-                }
-                ui.separator();
-                if panel_button(ui, "DATA -", 70.0).clicked() {
-                    self.dispatch_event(HardwareEvent::TurnDataWheel { delta: -1 });
-                }
-                if panel_button(ui, "DATA +", 70.0).clicked() {
-                    self.dispatch_event(HardwareEvent::TurnDataWheel { delta: 1 });
-                }
-            });
-        });
+        self.draw_cursor_cluster(ui);
     }
 
     fn draw_project_snapshot_controls(&mut self, ui: &mut egui::Ui) {
@@ -2291,16 +2335,6 @@ impl MpcDesktopApp {
         control_bay_frame().show(ui, |ui| {
             section_label(ui, "TRANSPORT");
             ui.horizontal_wrapped(|ui| {
-                if transport_button(ui, "STOP", stop_red()).clicked() {
-                    self.dispatch_event(HardwareEvent::Press {
-                        control: PanelControl::Stop,
-                    });
-                }
-                if transport_button(ui, "PLAY", ok_green()).clicked() {
-                    self.dispatch_event(HardwareEvent::Press {
-                        control: PanelControl::Play,
-                    });
-                }
                 if transport_button(ui, "REC", record_red()).clicked() {
                     self.dispatch_event(HardwareEvent::Press {
                         control: PanelControl::Rec,
@@ -2311,7 +2345,17 @@ impl MpcDesktopApp {
                         control: PanelControl::Overdub,
                     });
                 }
-                if panel_button(ui, "LOCATE", 82.0).clicked() {
+                if transport_button(ui, "STOP", cream_button_fill()).clicked() {
+                    self.dispatch_event(HardwareEvent::Press {
+                        control: PanelControl::Stop,
+                    });
+                }
+                if transport_button(ui, "PLAY", cream_button_fill()).clicked() {
+                    self.dispatch_event(HardwareEvent::Press {
+                        control: PanelControl::Play,
+                    });
+                }
+                if panel_button(ui, "PLAY START", 84.0).clicked() {
                     self.dispatch_event(HardwareEvent::Press {
                         control: PanelControl::LocateStart,
                     });
@@ -2326,7 +2370,7 @@ impl MpcDesktopApp {
                         control: PanelControl::ToggleLoop,
                     });
                 }
-                if panel_button(ui, "TICK", 62.0).clicked() {
+                if panel_button(ui, "TAP TEMPO", 84.0).clicked() {
                     self.dispatch_event(HardwareEvent::Tick { micros: 100_000 });
                 }
             });
@@ -2889,7 +2933,10 @@ impl MpcDesktopApp {
                 .num_columns(4)
                 .spacing([12.0, 12.0])
                 .show(ui, |ui| {
-                    for pad in 1..=16 {
+                    for (index, pad) in [13u8, 14, 15, 16, 9, 10, 11, 12, 5, 6, 7, 8, 1, 2, 3, 4]
+                        .into_iter()
+                        .enumerate()
+                    {
                         let pad_address = ProgramPad {
                             bank: active_bank,
                             pad_number: pad,
@@ -2914,10 +2961,13 @@ impl MpcDesktopApp {
                             now,
                         );
                         let fill = pad_color_for_visual_state(visual);
-                        let label = egui::RichText::new(program_pad_label(pad_address))
-                            .size(14.0)
-                            .strong()
-                            .color(pad_label_text_color_for_fill(fill));
+                        let label = egui::RichText::new(format!(
+                            "PAD {pad}\n{}",
+                            program_pad_label(pad_address)
+                        ))
+                        .size(14.0)
+                        .strong()
+                        .color(pad_label_text_color_for_fill(fill));
                         let stroke = if selected {
                             egui::Stroke::new(2.0, egui::Color32::WHITE)
                         } else {
@@ -2927,7 +2977,7 @@ impl MpcDesktopApp {
                             .fill(fill)
                             .stroke(stroke)
                             .corner_radius(egui::CornerRadius::same(4))
-                            .min_size(egui::vec2(74.0, 58.0));
+                            .min_size(egui::vec2(84.0, 68.0));
                         if ui.add(button).clicked() {
                             self.dispatch_event(HardwareEvent::StrikePad {
                                 bank: active_bank,
@@ -2935,7 +2985,7 @@ impl MpcDesktopApp {
                                 velocity: 100,
                             });
                         }
-                        if pad % 4 == 0 {
+                        if index % 4 == 3 {
                             ui.end_row();
                         }
                     }
@@ -2954,18 +3004,19 @@ impl MpcDesktopApp {
         let fill = if selected {
             accent_blue()
         } else {
-            control_fill()
+            cream_button_fill()
         };
         let text = if selected {
             egui::Color32::WHITE
         } else {
-            primary_text()
+            faceplate_text()
         };
         if ui
             .add(
                 egui::Button::new(egui::RichText::new(label).strong().size(13.0).color(text))
                     .fill(fill)
                     .stroke(egui::Stroke::new(1.0, control_stroke()))
+                    .corner_radius(egui::CornerRadius::same(2))
                     .min_size(egui::vec2(42.0, 28.0)),
             )
             .clicked()
@@ -3094,107 +3145,152 @@ impl MpcDesktopApp {
 fn apply_mpc_style(ui: &mut egui::Ui) {
     ui.visuals_mut().override_text_color = Some(primary_text());
     ui.visuals_mut().hyperlink_color = accent_blue();
-    ui.spacing_mut().button_padding = egui::vec2(8.0, 5.0);
+    ui.visuals_mut().widgets.noninteractive.bg_stroke = egui::Stroke::new(1.0, panel_stroke());
+    ui.spacing_mut().button_padding = egui::vec2(7.0, 4.0);
 }
 
 fn app_background() -> egui::Color32 {
-    egui::Color32::from_rgb(20, 21, 21)
+    egui::Color32::from_rgb(29, 30, 30)
 }
 
 fn front_panel_bg() -> egui::Color32 {
-    egui::Color32::from_rgb(66, 68, 65)
+    egui::Color32::from_rgb(226, 222, 205)
 }
 
 fn section_bg() -> egui::Color32 {
-    egui::Color32::from_rgb(37, 39, 38)
+    egui::Color32::from_rgb(238, 234, 216)
 }
 
 fn control_bay_bg() -> egui::Color32 {
-    egui::Color32::from_rgb(48, 50, 48)
+    egui::Color32::from_rgb(218, 214, 198)
 }
 
 fn pad_bay_bg() -> egui::Color32 {
-    egui::Color32::from_rgb(43, 45, 43)
+    egui::Color32::from_rgb(158, 166, 166)
 }
 
 fn status_bar_bg() -> egui::Color32 {
-    egui::Color32::from_rgb(18, 19, 18)
+    egui::Color32::from_rgb(49, 50, 48)
 }
 
 fn panel_stroke() -> egui::Color32 {
-    egui::Color32::from_rgb(104, 108, 102)
+    egui::Color32::from_rgb(126, 123, 111)
 }
 
 fn primary_text() -> egui::Color32 {
-    egui::Color32::from_rgb(235, 235, 226)
+    egui::Color32::from_rgb(37, 37, 34)
 }
 
 fn muted_text() -> egui::Color32 {
-    egui::Color32::from_rgb(169, 172, 164)
+    egui::Color32::from_rgb(95, 94, 86)
+}
+
+fn faceplate_text() -> egui::Color32 {
+    egui::Color32::from_rgb(46, 46, 42)
+}
+
+fn muted_faceplate_text() -> egui::Color32 {
+    egui::Color32::from_rgb(108, 106, 96)
+}
+
+fn model_text() -> egui::Color32 {
+    egui::Color32::from_rgb(108, 110, 104)
 }
 
 fn brand_red() -> egui::Color32 {
-    egui::Color32::from_rgb(222, 58, 52)
+    egui::Color32::from_rgb(187, 27, 28)
 }
 
 fn accent_blue() -> egui::Color32 {
-    egui::Color32::from_rgb(34, 132, 170)
-}
-
-fn ok_green() -> egui::Color32 {
-    egui::Color32::from_rgb(67, 151, 91)
+    egui::Color32::from_rgb(31, 115, 166)
 }
 
 fn warning_amber() -> egui::Color32 {
     egui::Color32::from_rgb(190, 132, 49)
 }
 
-fn stop_red() -> egui::Color32 {
-    egui::Color32::from_rgb(128, 45, 41)
-}
-
 fn record_red() -> egui::Color32 {
-    egui::Color32::from_rgb(176, 42, 42)
+    egui::Color32::from_rgb(204, 48, 61)
 }
 
-fn control_fill() -> egui::Color32 {
-    egui::Color32::from_rgb(78, 80, 76)
+fn knob_yellow() -> egui::Color32 {
+    egui::Color32::from_rgb(231, 225, 177)
+}
+
+fn cream_button_fill() -> egui::Color32 {
+    egui::Color32::from_rgb(231, 232, 214)
 }
 
 fn control_stroke() -> egui::Color32 {
-    egui::Color32::from_rgb(120, 124, 116)
+    egui::Color32::from_rgb(106, 105, 96)
+}
+
+fn mode_blue() -> egui::Color32 {
+    egui::Color32::from_rgb(24, 58, 145)
+}
+
+fn mode_blue_active() -> egui::Color32 {
+    egui::Color32::from_rgb(18, 118, 194)
+}
+
+fn mode_blue_stroke() -> egui::Color32 {
+    egui::Color32::from_rgb(13, 35, 95)
 }
 
 fn pad_stroke() -> egui::Color32 {
-    egui::Color32::from_rgb(24, 26, 24)
+    egui::Color32::from_rgb(28, 29, 29)
+}
+
+fn pad_deck_stroke() -> egui::Color32 {
+    egui::Color32::from_rgb(112, 119, 120)
+}
+
+fn pad_rubber_base() -> egui::Color32 {
+    egui::Color32::from_rgb(48, 50, 50)
 }
 
 fn lcd_background() -> egui::Color32 {
-    egui::Color32::from_rgb(69, 93, 67)
+    egui::Color32::from_rgb(157, 188, 170)
+}
+
+fn lcd_window() -> egui::Color32 {
+    egui::Color32::from_rgb(18, 19, 20)
 }
 
 fn lcd_bezel() -> egui::Color32 {
-    egui::Color32::from_rgb(20, 25, 20)
+    egui::Color32::from_rgb(3, 4, 5)
+}
+
+fn lcd_inner_stroke() -> egui::Color32 {
+    egui::Color32::from_rgb(82, 102, 93)
 }
 
 fn lcd_text() -> egui::Color32 {
-    egui::Color32::from_rgb(211, 235, 176)
+    egui::Color32::from_rgb(21, 47, 42)
 }
 
 fn lcd_dim_text() -> egui::Color32 {
-    egui::Color32::from_rgb(147, 176, 125)
+    egui::Color32::from_rgb(68, 91, 84)
 }
 
-fn lcd_key_fill() -> egui::Color32 {
-    egui::Color32::from_rgb(41, 58, 40)
+fn data_wheel_outer() -> egui::Color32 {
+    egui::Color32::from_rgb(22, 22, 21)
+}
+
+fn data_wheel_inner() -> egui::Color32 {
+    egui::Color32::from_rgb(35, 35, 33)
+}
+
+fn data_wheel_stroke() -> egui::Color32 {
+    egui::Color32::from_rgb(94, 94, 87)
 }
 
 fn front_panel_frame() -> egui::Frame {
     egui::Frame::new()
         .fill(front_panel_bg())
-        .stroke(egui::Stroke::new(1.0, panel_stroke()))
-        .corner_radius(egui::CornerRadius::same(6))
-        .inner_margin(egui::Margin::same(14))
+        .stroke(egui::Stroke::new(2.0, panel_stroke()))
+        .corner_radius(egui::CornerRadius::same(2))
+        .inner_margin(egui::Margin::same(16))
 }
 
 fn section_frame() -> egui::Frame {
@@ -3209,15 +3305,23 @@ fn control_bay_frame() -> egui::Frame {
     egui::Frame::new()
         .fill(control_bay_bg())
         .stroke(egui::Stroke::new(1.0, panel_stroke()))
-        .corner_radius(egui::CornerRadius::same(4))
-        .inner_margin(egui::Margin::same(10))
+        .corner_radius(egui::CornerRadius::same(2))
+        .inner_margin(egui::Margin::same(8))
+}
+
+fn pad_control_frame() -> egui::Frame {
+    egui::Frame::new()
+        .fill(pad_bay_bg())
+        .stroke(egui::Stroke::new(1.0, pad_deck_stroke()))
+        .corner_radius(egui::CornerRadius::same(1))
+        .inner_margin(egui::Margin::same(8))
 }
 
 fn pad_bay_frame() -> egui::Frame {
     egui::Frame::new()
         .fill(pad_bay_bg())
-        .stroke(egui::Stroke::new(1.0, panel_stroke()))
-        .corner_radius(egui::CornerRadius::same(5))
+        .stroke(egui::Stroke::new(1.5, pad_deck_stroke()))
+        .corner_radius(egui::CornerRadius::same(1))
         .inner_margin(egui::Margin::same(12))
 }
 
@@ -3228,6 +3332,45 @@ fn section_label(ui: &mut egui::Ui, label: &str) {
             .strong()
             .color(muted_text()),
     );
+}
+
+fn floppy_slot(ui: &mut egui::Ui) {
+    egui::Frame::new()
+        .fill(egui::Color32::from_rgb(35, 35, 33))
+        .stroke(egui::Stroke::new(1.0, data_wheel_stroke()))
+        .corner_radius(egui::CornerRadius::same(1))
+        .inner_margin(egui::Margin::symmetric(12, 5))
+        .show(ui, |ui| {
+            ui.set_min_width(170.0);
+            ui.label(
+                egui::RichText::new("DISK DRIVE")
+                    .size(10.0)
+                    .strong()
+                    .color(egui::Color32::from_rgb(190, 190, 174)),
+            );
+        });
+}
+
+fn knob_indicator(ui: &mut egui::Ui, label: &str, color: egui::Color32) {
+    ui.vertical_centered(|ui| {
+        let (rect, _) = ui.allocate_exact_size(egui::vec2(54.0, 42.0), egui::Sense::hover());
+        let center = egui::pos2(rect.center().x, rect.top() + 18.0);
+        let painter = ui.painter();
+        painter.circle_filled(center, 15.0, cream_button_fill());
+        painter.circle_filled(center, 11.0, color);
+        painter.circle_stroke(center, 15.0, egui::Stroke::new(1.0, control_stroke()));
+        painter.line_segment(
+            [center, egui::pos2(center.x, center.y - 12.0)],
+            egui::Stroke::new(2.0, data_wheel_outer()),
+        );
+        painter.text(
+            egui::pos2(rect.center().x, rect.bottom() - 3.0),
+            egui::Align2::CENTER_BOTTOM,
+            label,
+            egui::FontId::proportional(8.0),
+            faceplate_text(),
+        );
+    });
 }
 
 fn status_chip(ui: &mut egui::Ui, label: &str, value: impl Into<String>, accent: egui::Color32) {
@@ -3256,22 +3399,22 @@ fn status_chip(ui: &mut egui::Ui, label: &str, value: impl Into<String>, accent:
 
 fn meter_tile(ui: &mut egui::Ui, label: &str, value: impl Into<String>) {
     egui::Frame::new()
-        .fill(section_bg())
+        .fill(egui::Color32::from_rgb(211, 207, 191))
         .stroke(egui::Stroke::new(1.0, panel_stroke()))
-        .corner_radius(egui::CornerRadius::same(3))
-        .inner_margin(egui::Margin::symmetric(9, 6))
+        .corner_radius(egui::CornerRadius::same(1))
+        .inner_margin(egui::Margin::symmetric(8, 5))
         .show(ui, |ui| {
-            ui.set_min_width(104.0);
+            ui.set_min_width(76.0);
             ui.vertical(|ui| {
                 ui.label(
                     egui::RichText::new(label)
-                        .size(10.0)
+                        .size(9.0)
                         .strong()
                         .color(muted_text()),
                 );
                 ui.label(
                     egui::RichText::new(value.into())
-                        .size(13.0)
+                        .size(12.0)
                         .strong()
                         .color(primary_text()),
                 );
@@ -3279,40 +3422,38 @@ fn meter_tile(ui: &mut egui::Ui, label: &str, value: impl Into<String>) {
         });
 }
 
-fn transport_summary_text(playing: bool, recording: bool, loop_enabled: bool) -> String {
-    let play = if playing { "PLAY" } else { "STOP" };
-    let rec = if recording { "REC" } else { "SAFE" };
-    let loop_text = if loop_enabled { "LOOP" } else { "NO LOOP" };
-    format!("{play} / {rec} / {loop_text}")
-}
-
 fn panel_button(ui: &mut egui::Ui, label: &str, width: f32) -> egui::Response {
     ui.add(
         egui::Button::new(
             egui::RichText::new(label)
-                .size(11.0)
+                .size(10.0)
                 .strong()
-                .color(primary_text()),
+                .color(faceplate_text()),
         )
-        .fill(control_fill())
+        .fill(cream_button_fill())
         .stroke(egui::Stroke::new(1.0, control_stroke()))
-        .corner_radius(egui::CornerRadius::same(3))
-        .min_size(egui::vec2(width, 30.0)),
+        .corner_radius(egui::CornerRadius::same(2))
+        .min_size(egui::vec2(width, 27.0)),
     )
 }
 
 fn transport_button(ui: &mut egui::Ui, label: &str, fill: egui::Color32) -> egui::Response {
+    let text_color = if fill == record_red() || fill == warning_amber() {
+        egui::Color32::WHITE
+    } else {
+        faceplate_text()
+    };
     ui.add(
         egui::Button::new(
             egui::RichText::new(label)
-                .size(11.0)
+                .size(10.0)
                 .strong()
-                .color(egui::Color32::WHITE),
+                .color(text_color),
         )
         .fill(fill)
         .stroke(egui::Stroke::new(1.0, control_stroke()))
-        .corner_radius(egui::CornerRadius::same(3))
-        .min_size(egui::vec2(74.0, 32.0)),
+        .corner_radius(egui::CornerRadius::same(2))
+        .min_size(egui::vec2(70.0, 31.0)),
     )
 }
 
@@ -3450,16 +3591,21 @@ fn pad_visual_state(
 
 fn pad_color_for_visual_state(visual: PadVisualState) -> egui::Color32 {
     if visual.missing_runtime_sample {
-        let red = (154.0 + 86.0 * visual.intensity) as u8;
-        let green = if visual.selected { 76 } else { 54 };
-        let blue = if visual.selected { 64 } else { 38 };
+        let red = (80.0 + 110.0 * visual.intensity) as u8;
+        let green = if visual.selected { 54 } else { 44 };
+        let blue = if visual.selected { 50 } else { 42 };
         return egui::Color32::from_rgb(red, green, blue);
     }
 
-    let green = (42.0 + 190.0 * visual.intensity) as u8;
-    let blue = (44.0 + 112.0 * visual.hit_memory) as u8;
-    let red = if visual.selected { 92 } else { 36 };
-    egui::Color32::from_rgb(red, green, blue)
+    let base = pad_rubber_base();
+    let red = (f32::from(base.r()) + 42.0 * visual.hit_memory) as u8;
+    let green = (f32::from(base.g()) + 88.0 * visual.intensity) as u8;
+    let blue = (f32::from(base.b()) + 58.0 * visual.hit_memory) as u8;
+    if visual.selected {
+        egui::Color32::from_rgb(red.saturating_add(18), green.saturating_add(26), blue)
+    } else {
+        egui::Color32::from_rgb(red, green, blue)
+    }
 }
 
 fn pad_label_text_color_for_fill(fill: egui::Color32) -> egui::Color32 {
