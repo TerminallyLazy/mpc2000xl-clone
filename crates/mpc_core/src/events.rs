@@ -168,8 +168,24 @@ pub struct SampleReleaseIntent {
     pub release_velocity: u8,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MidiOutputIntentKind {
+    #[default]
+    NoteOn,
+    NoteOff,
+}
+
+impl MidiOutputIntentKind {
+    pub fn is_note_on(&self) -> bool {
+        *self == Self::NoteOn
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MidiOutputIntent {
+    #[serde(default, skip_serializing_if = "MidiOutputIntentKind::is_note_on")]
+    pub kind: MidiOutputIntentKind,
     pub selected_track: u8,
     pub program_index: u8,
     pub program_name: String,
@@ -180,6 +196,8 @@ pub struct MidiOutputIntent {
     pub channel: u8,
     pub note: u8,
     pub velocity: u8,
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub window_length_frames: u32,
 }
 
 impl<'de> Deserialize<'de> for SamplePlaybackIntent {
@@ -264,6 +282,10 @@ impl<'de> Deserialize<'de> for SamplePlaybackIntent {
 }
 
 fn is_zero_u8(value: &u8) -> bool {
+    *value == 0
+}
+
+fn is_zero_u32(value: &u32) -> bool {
     *value == 0
 }
 

@@ -150,7 +150,8 @@
         "source_sample_name": "SYN-A01",
         "channel": 1,
         "note": 36,
-        "velocity": 90
+        "velocity": 90,
+        "window_length_frames": 48000
       }
     },
     {
@@ -294,7 +295,8 @@
           "source_sample_name": "SYN-A01",
           "channel": 1,
           "note": 36,
-          "velocity": 90
+          "velocity": 90,
+          "window_length_frames": 48000
         }
       }
     ],

@@ -974,6 +974,36 @@ impl DeterministicDeviceAudioOutputProbe {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AudioOutputDeviceDescriptor {
+    pub index: usize,
+    pub id: String,
+    pub name: String,
+    pub is_default: bool,
+    pub sample_rate_hz: Option<u32>,
+    pub channels: Option<u16>,
+    pub sample_format: Option<String>,
+}
+
+impl AudioOutputDeviceDescriptor {
+    pub fn display_label(&self) -> String {
+        let mut label = self.name.clone();
+        if self.is_default {
+            label.push_str(" (default)");
+        }
+        if let (Some(sample_rate_hz), Some(channels), Some(sample_format)) = (
+            self.sample_rate_hz,
+            self.channels,
+            self.sample_format.as_ref(),
+        ) {
+            label.push_str(&format!(
+                " - {sample_rate_hz} Hz, {channels} ch, {sample_format}"
+            ));
+        }
+        label
+    }
+}
+
 pub struct DeviceAudioBackend {
     backend_name: String,
     device_name: String,
@@ -998,16 +1028,126 @@ impl std::fmt::Debug for DeviceAudioBackend {
     }
 }
 
+pub fn list_output_devices() -> Result<Vec<AudioOutputDeviceDescriptor>, HostAudioBackendError> {
+    let host = cpal::default_host();
+    let default_id = host
+        .default_output_device()
+        .and_then(|device| device_audio_device_id(&device).ok());
+    let devices = host.output_devices().map_err(|error| {
+        device_audio_backend_error(format!("output device list failed: {error}"))
+    })?;
+
+    Ok(devices
+        .enumerate()
+        .filter_map(|(index, device)| {
+            audio_output_device_descriptor(index, &device, default_id.as_deref())
+        })
+        .collect())
+}
+
+fn audio_output_device_descriptor(
+    index: usize,
+    device: &cpal::Device,
+    default_id: Option<&str>,
+) -> Option<AudioOutputDeviceDescriptor> {
+    let name = device
+        .description()
+        .map(|description| description.name().to_string())
+        .unwrap_or_else(|error| format!("unknown output device ({error})"));
+    let config = device.default_output_config().ok();
+    audio_output_device_descriptor_from_metadata(
+        index,
+        device
+            .id()
+            .map(|id| id.to_string())
+            .map_err(|error| error.to_string()),
+        name,
+        default_id,
+        config.as_ref().map(|config| config.config().sample_rate),
+        config.as_ref().map(|config| config.config().channels),
+        config
+            .as_ref()
+            .map(|config| format!("{:?}", config.sample_format())),
+    )
+}
+
+fn audio_output_device_descriptor_from_metadata(
+    index: usize,
+    id: Result<String, String>,
+    name: String,
+    default_id: Option<&str>,
+    sample_rate_hz: Option<u32>,
+    channels: Option<u16>,
+    sample_format: Option<String>,
+) -> Option<AudioOutputDeviceDescriptor> {
+    let id = id.ok()?;
+    Some(AudioOutputDeviceDescriptor {
+        index,
+        is_default: default_id == Some(id.as_str()),
+        id,
+        name,
+        sample_rate_hz,
+        channels,
+        sample_format,
+    })
+}
+
+fn device_audio_device_id(device: &cpal::Device) -> Result<String, HostAudioBackendError> {
+    device
+        .id()
+        .map(|id| id.to_string())
+        .map_err(|error| device_audio_backend_error(format!("output device id failed: {error}")))
+}
+
+fn output_device_label_from_id_result(device_id: Result<String, String>) -> String {
+    device_id.unwrap_or_else(|error| format!("unknown output device ({error})"))
+}
+
+fn fallback_output_device_label(device: &cpal::Device) -> String {
+    output_device_label_from_id_result(
+        device
+            .id()
+            .map(|id| id.to_string())
+            .map_err(|error| error.to_string()),
+    )
+}
+
 impl DeviceAudioBackend {
     pub fn open_default(config: DeviceAudioBackendConfig) -> Result<Self, HostAudioBackendError> {
         let host = cpal::default_host();
         let device = host
             .default_output_device()
             .ok_or_else(|| device_audio_backend_error("default output device is not available"))?;
-        let device_name = device
-            .id()
-            .map(|id| id.to_string())
-            .unwrap_or_else(|error| format!("unknown output device ({error})"));
+        let device_name = fallback_output_device_label(&device);
+        Self::open_device(device, device_name, config)
+    }
+
+    pub fn open_output_device_id(
+        device_id: &str,
+        config: DeviceAudioBackendConfig,
+    ) -> Result<Self, HostAudioBackendError> {
+        let host = cpal::default_host();
+        let devices = host.output_devices().map_err(|error| {
+            device_audio_backend_error(format!("output device list failed: {error}"))
+        })?;
+        for device in devices {
+            let Ok(id) = device_audio_device_id(&device) else {
+                continue;
+            };
+            if id == device_id {
+                return Self::open_device(device, id, config);
+            }
+        }
+        Err(device_audio_backend_error(format!(
+            "output device id {device_id:?} is not available"
+        )))
+    }
+
+    fn open_device(
+        device: cpal::Device,
+        device_name: String,
+        config: DeviceAudioBackendConfig,
+    ) -> Result<Self, HostAudioBackendError> {
         let supported_config = device.default_output_config().map_err(|error| {
             device_audio_backend_error(format!("default output config failed: {error}"))
         })?;
@@ -2227,6 +2367,63 @@ fn channel_balance(peak_left: i16, peak_right: i16) -> ChannelBalance {
 mod tests {
     use super::*;
     use mpc_core::{CountInClickIntent, PadBank};
+
+    #[test]
+    fn audio_output_descriptor_label_marks_default_and_format() {
+        let descriptor = AudioOutputDeviceDescriptor {
+            index: 2,
+            id: "built-in-output".to_string(),
+            name: "Built-in Output".to_string(),
+            is_default: true,
+            sample_rate_hz: Some(48_000),
+            channels: Some(2),
+            sample_format: Some("F32".to_string()),
+        };
+
+        assert_eq!(
+            descriptor.display_label(),
+            "Built-in Output (default) - 48000 Hz, 2 ch, F32"
+        );
+    }
+
+    #[test]
+    fn audio_output_descriptor_label_handles_unknown_config() {
+        let descriptor = AudioOutputDeviceDescriptor {
+            index: 0,
+            id: "external".to_string(),
+            name: "External Interface".to_string(),
+            is_default: false,
+            sample_rate_hz: None,
+            channels: None,
+            sample_format: None,
+        };
+
+        assert_eq!(descriptor.display_label(), "External Interface");
+    }
+
+    #[test]
+    fn audio_output_descriptor_label_skips_unreadable_device_id() {
+        assert_eq!(
+            audio_output_device_descriptor_from_metadata(
+                1,
+                Err("device unavailable".to_string()),
+                "Transient Device".to_string(),
+                Some("built-in-output"),
+                Some(48_000),
+                Some(2),
+                Some("F32".to_string()),
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn device_audio_output_label_falls_back_when_device_id_fails() {
+        assert_eq!(
+            output_device_label_from_id_result(Err("core audio denied id".to_string())),
+            "unknown output device (core audio denied id)"
+        );
+    }
 
     #[test]
     fn same_intent_and_settings_render_exact_same_frames() {

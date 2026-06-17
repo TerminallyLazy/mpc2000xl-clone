@@ -37,4 +37,10 @@ The desktop SAMPLE view can load a user-owned 16-bit PCM mono/stereo WAV from an
 local-assets/samples/import.wav
 ```
 
-The decoded audio stays in memory for playback only. Project files persist metadata and trim state, not WAV bytes or local file contents.
+The decoded audio stays in memory for playback only. Project files persist imported sample metadata plus rights-safe media references to user-owned local WAV paths. They do not embed WAV bytes. On project load, the desktop app tries to relink those paths and marks missing imported pads without deleting their assignments.
+
+## Runtime Host I/O
+
+The desktop shell can refresh and select real host audio output devices through CPAL. Capture mode remains the deterministic test backend. MIDI output sends note-on and scheduled note-off messages through the selected MIDI backend so external synths do not hang on one-shot pad or sequence playback.
+
+Pad lights are runtime UI state. Assigned pads are dim, recent hits glow briefly, missing imported WAV payloads are marked distinctly, and active strikes use velocity-derived brightness.

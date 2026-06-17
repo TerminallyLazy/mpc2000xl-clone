@@ -166,7 +166,8 @@
         "source_sample_name": "SYN-B12",
         "channel": 1,
         "note": 63,
-        "velocity": 96
+        "velocity": 96,
+        "window_length_frames": 80400
       }
     },
     {
@@ -237,7 +238,8 @@
         "source_sample_name": "SYN-B12",
         "channel": 1,
         "note": 63,
-        "velocity": 96
+        "velocity": 96,
+        "window_length_frames": 80400
       }
     },
     {

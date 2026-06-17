@@ -2,7 +2,7 @@ use midir::{
     Ignore, MidiInput as MidirInput, MidiInputConnection, MidiOutput as MidirOutput,
     MidiOutputConnection,
 };
-use mpc_core::MidiOutputIntent;
+use mpc_core::{MidiOutputIntent, MidiOutputIntentKind};
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use std::fmt;
@@ -42,8 +42,18 @@ pub struct HostMidiState {
     pub last_event: Option<HostMidiEvent>,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MidiMessageKind {
+    #[default]
+    NoteOn,
+    NoteOff,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MidiMessage {
+    #[serde(default)]
+    pub kind: MidiMessageKind,
     pub channel: u8,
     pub note: u8,
     pub velocity: u8,
@@ -111,6 +121,106 @@ pub enum HostMidiEvent {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HostMidiOutputReport {
     pub event: HostMidiEvent,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PendingOutboundMidiNote {
+    pub intent: MidiOutputIntent,
+    pub note_off_due_millis: u64,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OutboundMidiNoteScheduler {
+    pending_notes: Vec<PendingOutboundMidiNote>,
+}
+
+impl OutboundMidiNoteScheduler {
+    pub fn pending_count(&self) -> usize {
+        self.pending_notes.len()
+    }
+
+    pub fn has_pending(&self) -> bool {
+        !self.pending_notes.is_empty()
+    }
+
+    pub fn register_note_on(
+        &mut self,
+        intent: &MidiOutputIntent,
+        now_millis: u64,
+        duration_millis: u64,
+    ) -> Vec<MidiOutputIntent> {
+        if intent.kind != MidiOutputIntentKind::NoteOn {
+            return Vec::new();
+        }
+        let due = now_millis.saturating_add(duration_millis);
+        let mut replaced = Vec::new();
+        let mut pending = Vec::with_capacity(self.pending_notes.len());
+        for note in self.pending_notes.drain(..) {
+            if same_outbound_note(&note.intent, intent) {
+                replaced.push(note_off_intent(&note.intent));
+            } else {
+                pending.push(note);
+            }
+        }
+        self.pending_notes = pending;
+        self.pending_notes.push(PendingOutboundMidiNote {
+            intent: intent.clone(),
+            note_off_due_millis: due,
+        });
+        replaced
+    }
+
+    pub fn drain_due_note_offs(&mut self, now_millis: u64) -> Vec<MidiOutputIntent> {
+        let mut due = Vec::new();
+        let mut pending = Vec::with_capacity(self.pending_notes.len());
+        for note in self.pending_notes.drain(..) {
+            if note.note_off_due_millis <= now_millis {
+                due.push(note_off_intent(&note.intent));
+            } else {
+                pending.push(note);
+            }
+        }
+        self.pending_notes = pending;
+        due
+    }
+
+    pub fn release_matching_note(
+        &mut self,
+        intent: &MidiOutputIntent,
+        _now_millis: u64,
+    ) -> Vec<MidiOutputIntent> {
+        let mut released = Vec::new();
+        let mut pending = Vec::with_capacity(self.pending_notes.len());
+        for note in self.pending_notes.drain(..) {
+            if same_outbound_note(&note.intent, intent) {
+                released.push(note_off_intent(&note.intent));
+            } else {
+                pending.push(note);
+            }
+        }
+        self.pending_notes = pending;
+        released
+    }
+
+    pub fn clear(&mut self) {
+        self.pending_notes.clear();
+    }
+}
+
+fn same_outbound_note(left: &MidiOutputIntent, right: &MidiOutputIntent) -> bool {
+    left.channel == right.channel
+        && left.note == right.note
+        && left.bank == right.bank
+        && left.pad_number == right.pad_number
+        && left.source_sample_id == right.source_sample_id
+        && left.selected_track == right.selected_track
+}
+
+fn note_off_intent(intent: &MidiOutputIntent) -> MidiOutputIntent {
+    let mut note_off = intent.clone();
+    note_off.kind = MidiOutputIntentKind::NoteOff;
+    note_off.velocity = 0;
+    note_off
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -261,7 +371,7 @@ impl HostMidiBackend for DeviceMidiOutputBackend {
     }
 
     fn send(&mut self, message: MidiMessage) -> Result<HostMidiBackendReceipt, HostMidiError> {
-        let bytes = encode_note_on_message(&message)?;
+        let bytes = encode_midi_message(&message)?;
         self.connection
             .send(&bytes)
             .map_err(|error| device_midi_error(format!("output send failed: {error}")))?;
@@ -579,6 +689,10 @@ impl<B: HostMidiBackend> HostMidiEngine<B> {
 }
 
 fn message_from_intent(intent: &MidiOutputIntent) -> Result<MidiMessage, HostMidiError> {
+    let kind = match intent.kind {
+        MidiOutputIntentKind::NoteOn => MidiMessageKind::NoteOn,
+        MidiOutputIntentKind::NoteOff => MidiMessageKind::NoteOff,
+    };
     validate_range(
         "channel",
         intent.channel,
@@ -593,15 +707,24 @@ fn message_from_intent(intent: &MidiOutputIntent) -> Result<MidiMessage, HostMid
         MIDI_MAX_NOTE,
         "must be in range 0..=127",
     )?;
+    let min_velocity = match kind {
+        MidiMessageKind::NoteOn => 1,
+        MidiMessageKind::NoteOff => 0,
+    };
     validate_range(
         "velocity",
         intent.velocity,
-        1,
+        min_velocity,
         MIDI_MAX_VELOCITY,
-        "must be in range 1..=127",
+        if kind == MidiMessageKind::NoteOn {
+            "must be in range 1..=127"
+        } else {
+            "must be in range 0..=127"
+        },
     )?;
 
     Ok(MidiMessage {
+        kind,
         channel: intent.channel,
         note: intent.note,
         velocity: intent.velocity,
@@ -665,7 +788,7 @@ pub fn list_device_midi_output_ports() -> Result<Vec<MidiPortDescriptor>, HostMi
         .collect()
 }
 
-pub fn encode_note_on_message(message: &MidiMessage) -> Result<[u8; 3], HostMidiError> {
+pub fn encode_midi_message(message: &MidiMessage) -> Result<[u8; 3], HostMidiError> {
     validate_range(
         "channel",
         message.channel,
@@ -680,19 +803,37 @@ pub fn encode_note_on_message(message: &MidiMessage) -> Result<[u8; 3], HostMidi
         MIDI_MAX_NOTE,
         "must be in range 0..=127",
     )?;
+    let min_velocity = match message.kind {
+        MidiMessageKind::NoteOn => 1,
+        MidiMessageKind::NoteOff => 0,
+    };
     validate_range(
         "velocity",
         message.velocity,
-        1,
+        min_velocity,
         MIDI_MAX_VELOCITY,
-        "must be in range 1..=127",
+        if message.kind == MidiMessageKind::NoteOn {
+            "must be in range 1..=127"
+        } else {
+            "must be in range 0..=127"
+        },
     )?;
 
+    let status = match message.kind {
+        MidiMessageKind::NoteOn => MIDI_NOTE_ON_STATUS,
+        MidiMessageKind::NoteOff => MIDI_NOTE_OFF_STATUS,
+    };
     Ok([
-        MIDI_NOTE_ON_STATUS | (message.channel - 1),
+        status | (message.channel - 1),
         message.note,
         message.velocity,
     ])
+}
+
+pub fn encode_note_on_message(message: &MidiMessage) -> Result<[u8; 3], HostMidiError> {
+    let mut message = message.clone();
+    message.kind = MidiMessageKind::NoteOn;
+    encode_midi_message(&message)
 }
 
 pub fn decode_midi_input_event(bytes: &[u8]) -> Result<Option<MidiInputEvent>, String> {
@@ -798,6 +939,7 @@ mod tests {
         assert_eq!(
             engine.backend().messages(),
             &[MidiMessage {
+                kind: MidiMessageKind::NoteOn,
                 channel: 2,
                 note: 55,
                 velocity: 84
@@ -832,6 +974,7 @@ mod tests {
 
         backend
             .send(MidiMessage {
+                kind: MidiMessageKind::NoteOn,
                 channel: 1,
                 note: 36,
                 velocity: 80,
@@ -839,6 +982,7 @@ mod tests {
             .expect("first send should queue");
         backend
             .send(MidiMessage {
+                kind: MidiMessageKind::NoteOn,
                 channel: 1,
                 note: 37,
                 velocity: 81,
@@ -846,6 +990,7 @@ mod tests {
             .expect("second send should queue");
         backend
             .send(MidiMessage {
+                kind: MidiMessageKind::NoteOn,
                 channel: 1,
                 note: 38,
                 velocity: 82,
@@ -857,11 +1002,13 @@ mod tests {
             backend.messages(),
             &[
                 MidiMessage {
+                    kind: MidiMessageKind::NoteOn,
                     channel: 1,
                     note: 37,
                     velocity: 81
                 },
                 MidiMessage {
+                    kind: MidiMessageKind::NoteOn,
                     channel: 1,
                     note: 38,
                     velocity: 82
@@ -873,6 +1020,7 @@ mod tests {
     #[test]
     fn note_on_message_encodes_to_midi_bytes() {
         let bytes = encode_note_on_message(&MidiMessage {
+            kind: MidiMessageKind::NoteOn,
             channel: 2,
             note: 55,
             velocity: 84,
@@ -883,8 +1031,95 @@ mod tests {
     }
 
     #[test]
+    fn note_off_message_encodes_to_midi_bytes() {
+        let bytes = encode_midi_message(&MidiMessage {
+            kind: MidiMessageKind::NoteOff,
+            channel: 2,
+            note: 55,
+            velocity: 0,
+        })
+        .expect("valid note-off should encode");
+
+        assert_eq!(bytes, [0x81, 55, 0]);
+    }
+
+    #[test]
+    fn outbound_note_scheduler_expires_note_on_into_note_off_intent() {
+        let mut scheduler = OutboundMidiNoteScheduler::default();
+        let note_on = intent();
+
+        assert!(scheduler.register_note_on(&note_on, 100, 250).is_empty());
+        assert_eq!(scheduler.pending_count(), 1);
+        assert!(scheduler.drain_due_note_offs(349).is_empty());
+
+        let due = scheduler.drain_due_note_offs(350);
+        assert_eq!(due.len(), 1);
+        assert_eq!(due[0].kind, mpc_core::MidiOutputIntentKind::NoteOff);
+        assert_eq!(due[0].channel, note_on.channel);
+        assert_eq!(due[0].note, note_on.note);
+        assert_eq!(due[0].velocity, 0);
+        assert_eq!(scheduler.pending_count(), 0);
+    }
+
+    #[test]
+    fn outbound_note_scheduler_releases_matching_note_early() {
+        let mut scheduler = OutboundMidiNoteScheduler::default();
+        let note_on = intent();
+
+        assert!(scheduler.register_note_on(&note_on, 100, 250).is_empty());
+        let released = scheduler.release_matching_note(&note_on, 150);
+
+        assert_eq!(released.len(), 1);
+        assert_eq!(released[0].kind, mpc_core::MidiOutputIntentKind::NoteOff);
+        assert_eq!(released[0].note, note_on.note);
+        assert_eq!(scheduler.pending_count(), 0);
+        assert!(scheduler.drain_due_note_offs(400).is_empty());
+    }
+
+    #[test]
+    fn outbound_note_scheduler_retrigger_returns_displaced_note_off() {
+        let mut scheduler = OutboundMidiNoteScheduler::default();
+        let note_on = intent();
+
+        assert!(scheduler.register_note_on(&note_on, 100, 250).is_empty());
+        let displaced = scheduler.register_note_on(&note_on, 150, 250);
+
+        assert_eq!(displaced.len(), 1);
+        assert_eq!(displaced[0].kind, mpc_core::MidiOutputIntentKind::NoteOff);
+        assert_eq!(displaced[0].channel, note_on.channel);
+        assert_eq!(displaced[0].note, note_on.note);
+        assert_eq!(displaced[0].velocity, 0);
+        assert_eq!(scheduler.pending_count(), 1);
+        assert!(scheduler.drain_due_note_offs(399).is_empty());
+        assert_eq!(scheduler.drain_due_note_offs(400).len(), 1);
+        assert_eq!(scheduler.pending_count(), 0);
+    }
+
+    #[test]
+    fn midi_message_missing_kind_deserializes_as_note_on() {
+        use serde::de::IntoDeserializer;
+
+        let fields = [
+            ("channel".into_deserializer(), 2u8.into_deserializer()),
+            ("note".into_deserializer(), 55u8.into_deserializer()),
+            ("velocity".into_deserializer(), 84u8.into_deserializer()),
+        ];
+        let message = MidiMessage::deserialize(serde::de::value::MapDeserializer::<
+            _,
+            serde::de::value::Error,
+        >::new(fields.into_iter()))
+        .expect("old message payload should deserialize");
+
+        assert_eq!(message.kind, MidiMessageKind::NoteOn);
+        assert_eq!(message.channel, 2);
+        assert_eq!(message.note, 55);
+        assert_eq!(message.velocity, 84);
+    }
+
+    #[test]
     fn note_on_message_rejects_invalid_channel_without_bytes() {
         let error = encode_note_on_message(&MidiMessage {
+            kind: MidiMessageKind::NoteOn,
             channel: 17,
             note: 55,
             velocity: 84,
@@ -992,6 +1227,7 @@ mod tests {
 
     fn intent() -> MidiOutputIntent {
         MidiOutputIntent {
+            kind: mpc_core::MidiOutputIntentKind::NoteOn,
             selected_track: 2,
             program_index: 1,
             program_name: "Program01".to_string(),
@@ -1002,6 +1238,7 @@ mod tests {
             channel: 2,
             note: 55,
             velocity: 84,
+            window_length_frames: 48_000,
         }
     }
 
