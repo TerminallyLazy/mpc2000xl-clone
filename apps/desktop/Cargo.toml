@@ -5,6 +5,12 @@ edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 authors.workspace = true
+build = "build.rs"
+autobins = false
+
+[[bin]]
+name = "mpc_desktop"
+path = "src/sample_flip_main.rs"
 
 [dependencies]
 eframe.workspace = true
