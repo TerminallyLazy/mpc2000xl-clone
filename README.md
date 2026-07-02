@@ -39,6 +39,12 @@ local-assets/samples/import.wav
 
 The decoded audio stays in memory for playback only. Project files persist imported sample metadata plus rights-safe media references to user-owned local WAV paths. They do not embed WAV bytes. On project load, the desktop app tries to relink those paths and marks missing imported pads without deleting their assignments.
 
+## Sample Flip Planner
+
+`mpc_core::sample_flip` adds a rights-safe planner for the MPC-style workflow of taking one authorized source region and laying 16 slices across a pad bank. The planner accepts clean source metadata, an optional externally chosen region, and a target bank. It then builds imported pad assignments, trim windows, media references, and playback-intent rewrites for the project snapshot.
+
+This deliberately does **not** download media from YouTube or any other site. A future playlist/LLM scanner should resolve only user-authorized, public-domain, Creative Commons, or otherwise licensed material into local WAV paths first, then pass that local metadata and selected region into the planner. Project files continue to store metadata and local references only; they do not embed media bytes.
+
 ## Runtime Host I/O
 
 The desktop shell can refresh and select real host audio output devices through CPAL. Capture mode remains the deterministic test backend. MIDI output sends note-on and scheduled note-off messages through the selected MIDI backend so external synths do not hang on one-shot pad or sequence playback.
