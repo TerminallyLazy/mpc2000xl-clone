@@ -37,13 +37,16 @@ For a 16-pad bank, the planner creates:
 
 No WAV bytes, YouTube audio, proprietary Akai assets, or copied media are written into `.mpc2000xl-project.json` snapshots.
 
-## Desktop UI target
+## Desktop UI
 
-A practical UI pass can add a `FLIP` section to the SAMPLE panel:
+The desktop app now exposes the first rights-safe flip control in SAMPLE mode. Use the `Flip` controls in the SAMPLE row to choose a local authorized WAV, pick a target bank, optionally choose start/end frames, and press `Flip WAV to bank`.
 
-- `Source WAV / playlist manifest` path field,
-- `Scan` button for local/authorized candidates,
-- `Flip to Bank A/B/C/D` button,
-- short status text showing selected region, number of slices, and any relink issues.
+Runtime behavior:
 
-The UI should make the safe path the default: local authorized audio first, metadata saved in project files, runtime WAV payloads held outside git.
+- end frame `0` means use the loaded source through its final frame,
+- start/end values are clamped to the loaded WAV bounds,
+- the selected target bank is replaced with 16 trimmed chops,
+- runtime WAV payloads are inserted for immediate pad playback,
+- project files still save only metadata and local media references.
+
+A future `Scan` pass can feed the same controls from local manifests produced by authorized playlist discovery, but the UI deliberately keeps local authorized audio as the default path.
