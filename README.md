@@ -19,6 +19,15 @@ cargo check -p mpc_desktop
 python3 tools/check_assets.py
 ```
 
+## Desktop Downloads
+
+The `Desktop Release` workflow builds downloadable desktop artifacts for Linux, macOS, and Windows.
+
+- Run the workflow manually from GitHub Actions to produce downloadable build artifacts for the current branch.
+- Push a version tag such as `v0.1.0` to build and attach packaged desktop apps to a GitHub Release.
+
+The packaged apps contain the desktop executable and README only. User WAVs, project files, firmware images, and local assets stay outside git and outside release packages.
+
 ## Project Files
 
 The desktop shell can save and load repo-owned metadata snapshots at paths ending in `.mpc2000xl-project.json`. The default path is ignored by git:
