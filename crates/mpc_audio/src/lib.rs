@@ -199,7 +199,7 @@ impl WavSamplePayload {
 pub struct RuntimeSample {
     pub sample_id: String,
     pub sample_name: String,
-    pub payload: WavSamplePayload,
+    pub payload: Arc<WavSamplePayload>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -212,7 +212,7 @@ impl RuntimeSampleLibrary {
         &mut self,
         sample_id: impl Into<String>,
         sample_name: impl Into<String>,
-        payload: WavSamplePayload,
+        payload: impl Into<Arc<WavSamplePayload>>,
     ) {
         let sample_id = sample_id.into();
         self.samples.insert(
@@ -220,7 +220,7 @@ impl RuntimeSampleLibrary {
             RuntimeSample {
                 sample_id,
                 sample_name: sample_name.into(),
-                payload,
+                payload: payload.into(),
             },
         );
     }

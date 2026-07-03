@@ -15,9 +15,8 @@ pub use events::{
 };
 pub use lcd::LcdFrame;
 pub use sample_flip::{
-    SAMPLE_FLIP_PAD_COUNT, SampleFlipError, SampleFlipPadSlice, SampleFlipPlan,
-    SampleFlipRegion, SampleFlipSource, apply_sample_flip_plan_to_project_snapshot,
-    build_pad_bank_sample_flip_plan,
+    SAMPLE_FLIP_PAD_COUNT, SampleFlipError, SampleFlipPadSlice, SampleFlipPlan, SampleFlipRegion,
+    SampleFlipSource, apply_sample_flip_plan_to_project_snapshot, build_pad_bank_sample_flip_plan,
 };
 pub use state::{
     FOUNDATION_BEATS_PER_BAR, INTERNAL_PPQN, MainScreenField, MpcCore, MpcState,

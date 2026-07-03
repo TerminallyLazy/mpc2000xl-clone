@@ -73,11 +73,16 @@ pub struct SampleFlipPlan {
 
 impl SampleFlipPlan {
     pub fn sample_ids(&self) -> BTreeSet<String> {
-        self.slices.iter().map(|slice| slice.sample_id.clone()).collect()
+        self.slices
+            .iter()
+            .map(|slice| slice.sample_id.clone())
+            .collect()
     }
 
     pub fn slice_for_pad(&self, pad_number: u8) -> Option<&SampleFlipPadSlice> {
-        self.slices.iter().find(|slice| slice.pad.pad_number == pad_number)
+        self.slices
+            .iter()
+            .find(|slice| slice.pad.pad_number == pad_number)
     }
 
     pub fn program_name(&self) -> String {
@@ -178,10 +183,13 @@ pub fn apply_sample_flip_plan_to_project_snapshot(
     snapshot.program.sample_trims.retain(|trim| {
         !removed_sample_ids.contains(&trim.sample_id) && !plan_sample_ids.contains(&trim.sample_id)
     });
-    snapshot.program.imported_media_references.retain(|reference| {
-        !removed_sample_ids.contains(&reference.sample_id)
-            && !plan_sample_ids.contains(&reference.sample_id)
-    });
+    snapshot
+        .program
+        .imported_media_references
+        .retain(|reference| {
+            !removed_sample_ids.contains(&reference.sample_id)
+                && !plan_sample_ids.contains(&reference.sample_id)
+        });
 
     for slice in &plan.slices {
         snapshot.program.pad_assignments.push(PadAssignment {
@@ -218,8 +226,14 @@ pub fn apply_sample_flip_plan_to_project_snapshot(
     }
 
     snapshot.program.name = plan.program_name();
-    snapshot.program.pad_assignments.sort_by_key(|assignment| assignment.pad);
-    snapshot.program.sample_trims.sort_by(|left, right| left.sample_id.cmp(&right.sample_id));
+    snapshot
+        .program
+        .pad_assignments
+        .sort_by_key(|assignment| assignment.pad);
+    snapshot
+        .program
+        .sample_trims
+        .sort_by(|left, right| left.sample_id.cmp(&right.sample_id));
     snapshot
         .program
         .imported_media_references
@@ -230,7 +244,13 @@ pub fn apply_sample_flip_plan_to_project_snapshot(
     for event in &mut snapshot.sequence.recorded_events {
         if event.pad_bank == plan.bank {
             event.playback = plan.slice_for_pad(event.pad_number).map(|slice| {
-                playback_intent_from_slice(slice, program_index, &program_name, event.selected_track, event.velocity)
+                playback_intent_from_slice(
+                    slice,
+                    program_index,
+                    &program_name,
+                    event.selected_track,
+                    event.velocity,
+                )
             });
         }
     }
@@ -430,12 +450,20 @@ fn sanitized_identifier(input: &str) -> Option<String> {
     while output.ends_with('_') {
         output.pop();
     }
-    if output.is_empty() { None } else { Some(output) }
+    if output.is_empty() {
+        None
+    } else {
+        Some(output)
+    }
 }
 
 fn truncate_chars(value: &str, max_chars: usize) -> String {
     let truncated = value.trim().chars().take(max_chars).collect::<String>();
-    if truncated.is_empty() { "Sample Flip".to_string() } else { truncated }
+    if truncated.is_empty() {
+        "Sample Flip".to_string()
+    } else {
+        truncated
+    }
 }
 
 fn program_pad_label(pad: ProgramPad) -> String {
