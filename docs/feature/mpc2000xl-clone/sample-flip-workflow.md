@@ -37,8 +37,15 @@ For a 16-pad bank, the planner creates:
 
 No WAV bytes, YouTube audio, proprietary Akai assets, or copied media are written into `.mpc2000xl-project.json` snapshots.
 
-## Desktop UI
+## Desktop UI target
 
-The desktop SAMPLE panel now exposes `Flip WAV to active bank` beside the existing `Load WAV to pad` control. The button uses the current WAV path field and the active pad bank, builds a 16-slice plan across the full authorized WAV, applies that metadata to the current project snapshot, restores the project state, and loads runtime-only WAV payloads for immediate pad playback.
+The generated-entrypoint desktop UI prototype was removed after PR review because string-replacement source generation is fragile. The next UI pass should wire the same planner directly in `apps/desktop/src/main.rs`:
 
-This first UI pass keeps the safe path as the default: local authorized audio first, metadata saved in project files, runtime WAV payloads held outside git. A later playlist/LLM scanner can add candidate discovery and smarter region picking before calling the same core planner.
+- reuse the existing SAMPLE-mode local WAV path field,
+- add a direct `Flip WAV to active bank` button beside `Load WAV to pad`,
+- load only local/user-authorized WAVs,
+- call `build_pad_bank_sample_flip_plan` and `apply_sample_flip_plan_to_project_snapshot`,
+- insert runtime-only WAV payloads for the created slice sample IDs,
+- keep project files metadata-only.
+
+A future `Scan` pass can feed the same flow from local manifests produced by authorized playlist discovery, but local authorized audio remains the default path.
