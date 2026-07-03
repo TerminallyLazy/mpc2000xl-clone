@@ -1,6 +1,6 @@
 use mpc_core::{
-    apply_sample_flip_plan_to_project_snapshot, build_pad_bank_sample_flip_plan, MpcCore, PadBank,
-    ProgramPad, SampleFlipRegion, SampleFlipSource, SampleSourceKind, SAMPLE_FLIP_PAD_COUNT,
+    MpcCore, PadBank, ProgramPad, SAMPLE_FLIP_PAD_COUNT, SampleFlipRegion, SampleFlipSource,
+    SampleSourceKind, apply_sample_flip_plan_to_project_snapshot, build_pad_bank_sample_flip_plan,
 };
 
 #[test]
@@ -62,9 +62,11 @@ fn applies_flip_plan_as_imported_trimmed_bank_metadata() {
         .filter(|assignment| assignment.pad.bank == PadBank::C)
         .collect::<Vec<_>>();
     assert_eq!(bank_c_assignments.len(), usize::from(SAMPLE_FLIP_PAD_COUNT));
-    assert!(bank_c_assignments
-        .iter()
-        .all(|assignment| assignment.sample.source_kind == SampleSourceKind::Imported));
+    assert!(
+        bank_c_assignments
+            .iter()
+            .all(|assignment| assignment.sample.source_kind == SampleSourceKind::Imported)
+    );
     assert_eq!(
         snapshot.program.sample_trims.len(),
         usize::from(SAMPLE_FLIP_PAD_COUNT)
